@@ -1,0 +1,39 @@
+
+# Whether or not to run a dry run
+dryRun: false
+
+todoist:
+  # Access Token from Todoist Account
+  # Or alternatively set environment variable TODOIST_ACCESS_TOKEN
+  accessToken: <TODOIST_ACCESS_TOKEN> # Access Token from Todoist Account
+  # An array of Todoist Labels that if they are present in an event, they will be scheduled into a calendar
+  labelsToInclude:
+    - cal
+    - no-kids
+
+# How many milliseconds to sleep in between each CalDAV API call.
+# Set this if your server doesn't like hitting the CalDAV API so rapidly.
+# 0 means that it won't sleep at all.
+rateLimitMs: 10
+
+# How often to sleep in between syncs
+# If 0, will run once and exit
+syncIntervalMs: 60000
+
+# The maximum number of HTTP Connections per HTTP Client
+# The caldav4j library has some connection leaks, so if you see things "hanging" when making requests, increase this.
+maxConnectionsPerHttpClient: 500
+
+caldav:
+  # The Base URL of your CALDAV server
+  baseUrl: <CALDAV_BASE_URL>
+  auth:
+    # Authentication Scheme
+    # Currently supported schemes: BASIC
+    scheme: BASIC
+    basicAuth:
+      # The username to use with authentication scheme "BASIC"
+      username: <BASIC_AUTH_USERNAME>
+      # The password to use with authentication scheme "BASIC"
+      # Or alternatively set environment variable CALDAV_AUTH_BASICAUTH_PASSWORD
+      password: <BASIC_AUTH_PASSWORD>

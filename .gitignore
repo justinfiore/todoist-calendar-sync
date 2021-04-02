@@ -1,0 +1,3 @@
+conf/todoist-calendar-sync.conf.yaml
+*.state.yaml
+logs/
