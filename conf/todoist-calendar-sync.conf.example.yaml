@@ -45,6 +45,9 @@ caldav:
     url: http://example.com/caldav/myuser/example
     # auth: # Each Calendar can have an `auth` object like the one in the `default` section except that it is specific to this calendar.
     # If no `auth` is specified for a calendar, it will use the `caldav.default.auth` configuration
+    # An optional prefix to add to the event summary for every event for this calendar
+    # To not use a prefix, just delete this property
+    prefix: TD: 
 
 
   # A list of "rules" where each rule contains a "rule" and a "calendarName"

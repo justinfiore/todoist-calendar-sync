@@ -106,6 +106,7 @@ class TodoistCalDavSync {
     def caldavHttpClientsByCalendar = [:]
     def urlsByCalendar = [:]
     def connectionManagers = [:]
+    def prefixesByCalendar = [:]
 
     def TodoistCalDavSync(configFile, stateFile) {
         def slurper = new YamlSlurper();
@@ -148,6 +149,9 @@ class TodoistCalDavSync {
                 throw new IllegalArgumentException("name property of a calendar must not be empty")
             }
             urlsByCalendar[calName] = calUrl
+            if(calConfig.prefix) {
+                prefixesByCalendar[calName] = calConfig.prefix
+            }
          }
     }
 
@@ -492,7 +496,7 @@ class TodoistCalDavSync {
             CalDAVCollection collection = new CalDAVCollection(calendarUrl);
             
             items.each { item ->
-                def vevent = itemToEvent(todoistUserId, item)
+                def vevent = itemToEvent(todoistUserId, item, calendarName)
                 Calendar calendar = new Calendar();
                 calendar.getProperties().add(new ProdId(CalDAVConstants.PROC_ID_DEFAULT));
                 calendar.getProperties().add(Version.VERSION_2_0);
@@ -546,13 +550,17 @@ class TodoistCalDavSync {
         }
     }
 
-    def itemToEvent(todoistUserId, item) {
+    def itemToEvent(todoistUserId, item, calendarName) {
         def id = "${todoistUserId}-${item.id}"
         def encodedId = base32Codec.encodeToString(id.getBytes("UTF-8")).replace("=", "").toLowerCase()
         log.debug("Calendar Event ID: $id")
         log.debug("Calendar Event Encoded ID: $encodedId")
         VEvent event = new VEvent();
-        event.getProperties().add(new Summary(item.content))
+        def summary = item.content
+        if(prefixesByCalendar[calendarName]) {
+            summary = prefixesByCalendar[calendarName] + summary
+        }
+        event.getProperties().add(new Summary(summary))
         event.getProperties().add(new Description(renderDescription(item)))
         event.getProperties().add(new Uid(encodedId))
         def iCalPriority = todoistToICalPriority(item.priority)
