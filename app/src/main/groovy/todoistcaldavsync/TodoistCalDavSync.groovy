@@ -557,9 +557,11 @@ class TodoistCalDavSync {
         event.getProperties().add(new Uid(encodedId))
         def iCalPriority = todoistToICalPriority(item.priority)
         event.getProperties().add(new Priority(iCalPriority))
+        /* TODO: Add Configurable Color
         def color = new Color()
         color.setValue("silver")
         event.getProperties().add(color)
+        */
 		
         def dueDateWithTimeZone = item.due.date
 		if(!dueDateWithTimeZone.endsWith("Z")) {
