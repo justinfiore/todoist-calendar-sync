@@ -1,3 +1,12 @@
 conf/todoist-calendar-sync.conf.yaml
 *.state.yaml
-logs/
+logs
+conf/user
+conf/StoredCredential
+conf/client_secret.json
+
+# Ignore Gradle project-specific cache directory
+.gradle
+
+# Ignore Gradle build output directory
+build

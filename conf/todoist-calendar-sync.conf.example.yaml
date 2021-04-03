@@ -25,15 +25,40 @@ syncIntervalMs: 60000
 maxConnectionsPerHttpClient: 500
 
 caldav:
-  # The Base URL of your CALDAV server
-  baseUrl: <CALDAV_BASE_URL>
-  auth:
-    # Authentication Scheme
-    # Currently supported schemes: BASIC
-    scheme: BASIC
-    basicAuth:
-      # The username to use with authentication scheme "BASIC"
-      username: <BASIC_AUTH_USERNAME>
-      # The password to use with authentication scheme "BASIC"
-      # Or alternatively set environment variable CALDAV_AUTH_BASICAUTH_PASSWORD
-      password: <BASIC_AUTH_PASSWORD>
+  default:
+    auth:
+      # Authentication Scheme
+      # Currently supported schemes: BASIC, GOOGLE_OAUTH2
+      scheme: BASIC
+      basicAuth:
+        # The username to use with authentication scheme "BASIC"
+        username: <BASIC_AUTH_USERNAME>
+        # The password to use with authentication scheme "BASIC"
+        # Or alternatively set environment variable CALDAV_AUTH_BASICAUTH_PASSWORD
+        password: <BASIC_AUTH_PASSWORD>
+      # scheme: GOOGLE_OAUTH2
+      #  google:
+      #    The Google Username to use with the calendar
+      #    username: foo@gmail.com
+  calendars:
+  - name: "Example calendar"
+    url: http://example.com/caldav/myuser/example
+    # auth: # Each Calendar can have an `auth` object like the one in the `default` section except that it is specific to this calendar.
+    # If no `auth` is specified for a calendar, it will use the `caldav.default.auth` configuration
+
+
+  # A list of "rules" where each rule contains a "rule" and a "calendarName"
+  # The first rule to match in the list is the one to whose calendar the Todoist task will be added.
+  # Rule support:
+    # The rules are pretty rudimentary.
+    # They only support labels currently
+    # and the keywords `AND` and `NOT`
+    # Examples:
+    # foo # would match any items that have the label `foo`
+    # foo AND bar # would match any items that have the label `foo` and the label `bar`
+    # NOT foo AND bar # would match any items that have label `bar` and don't have the label `foo`
+    # to get "OR" semantics, simply add additional rules referencing the same `calendarName`
+  rules:
+  - calendarName: "Example calendar"
+    rule: cal AND foo
+

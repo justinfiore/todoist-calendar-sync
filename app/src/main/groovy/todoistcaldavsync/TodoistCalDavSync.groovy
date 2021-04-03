@@ -1,13 +1,4 @@
-
-
-@Grab(group='org.codehaus.groovy.modules.http-builder', module='http-builder', version='0.7.1')
-@Grab(group='log4j', module='log4j', version='1.2.17')
-@Grab(group='commons-io', module='commons-io', version='2.4')
-@Grab(group='org.apache.commons', module='commons-lang3', version='3.12.0')
-@Grab('commons-codec:commons-codec:1.10')
-@Grab('com.github.caldav4j:caldav4j:1.0.1')
-@Grab('javax.cache:cache-api:1.0.0')
-@Grab(group='org.ehcache', module='jcache', version='1.0.1')
+package todoistcaldavsync
 
 import org.apache.commons.codec.binary.Base32
 import java.time.*;
@@ -39,6 +30,8 @@ import net.fortuna.ical4j.model.property.Duration;
 import net.fortuna.ical4j.model.property.Uid;
 import net.fortuna.ical4j.model.property.ProdId;
 import net.fortuna.ical4j.model.property.Version;
+import net.fortuna.ical4j.model.property.Priority;
+import net.fortuna.ical4j.model.property.Color;
 import net.fortuna.ical4j.model.property.CalScale;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -52,18 +45,20 @@ import com.github.caldav4j.util.ICalendarUtils;
 import com.github.caldav4j.CalDAVConstants;
 import com.github.caldav4j.exceptions.ResourceNotFoundException
 import java.util.concurrent.TimeUnit
+import groovy.cli.picocli.CliBuilder
+import com.google.api.client.auth.oauth2.Credential;
 
 
 @Log4j
-class TodoistICalSync {
+class TodoistCalDavSync {
 
     public static void showHelp(cli) {
         cli.usage()
     }
     
     public static void main(String[] args) {
-        def cli = new CliBuilder(usage: 'todoist-ical-sync.groovy -f configFile -l log4j.groovy')
-        cli.setFooter("Syncs Todoist Events with iCal Calendars")
+        def cli = new CliBuilder(usage: 'TodoistCalDavSync.groovy -f configFile -l log4j.groovy')
+        cli.setFooter("Syncs Todoist Events with CalDav Calendars")
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
         cli.h(args: 0, "Show the help")
@@ -92,7 +87,7 @@ class TodoistICalSync {
         def configFile = new File(options.f);
         def stateFile = new File(configFile.getParentFile(), configFile.getName().replace(".conf", ".state"))
 
-        def syncer = new TodoistICalSync(configFile, stateFile)
+        def syncer = new TodoistCalDavSync(configFile, stateFile)
         syncer.syncLoop()
 
     }
@@ -112,7 +107,7 @@ class TodoistICalSync {
     def urlsByCalendar = [:]
     def connectionManagers = [:]
 
-    def TodoistICalSync(configFile, stateFile) {
+    def TodoistCalDavSync(configFile, stateFile) {
         def slurper = new YamlSlurper();
 		def config = slurper.parse(configFile);
 		this.config = config
@@ -139,8 +134,7 @@ class TodoistICalSync {
 
     }
 
-    def AUTH_SCHEME_BASIC = 'BASIC'
-    def SUPPORTED_AUTH_SCHEMES = [AUTH_SCHEME_BASIC]
+    def SUPPORTED_AUTH_SCHEMES = [AuthScheme.BASIC, AuthScheme.GOOGLE_OAUTH2]
 
     def configureCalendarUrls() {
          config.caldav.calendars.each { calConfig ->
@@ -172,6 +166,8 @@ class TodoistICalSync {
         caldavHttpClientsByCalendar = [:]
     }
 
+    GoogleAuthProvider googleAuthProvider = null
+
     def configureCalDavHttpClients() {
 
         if(!caldavHttpClientsByCalendar.isEmpty()) {
@@ -194,12 +190,12 @@ class TodoistICalSync {
             def httpClientBuilder = HttpClients.custom()
 
             if(calAuthProps) {
-                def scheme = calAuthProps.scheme
+                def scheme = AuthScheme.valueOf(calAuthProps.scheme)
                 if(!SUPPORTED_AUTH_SCHEMES.contains(scheme)) {
                     throw new IllegalArgumentException("Invalid scheme: $scheme. Valid Schemes: ${SUPPORTED_AUTH_SCHEMES}")
                 }
 
-                if(AUTH_SCHEME_BASIC.equals(scheme)) {
+                if(scheme == AuthScheme.BASIC) {
                     def password = StringUtils.defaultString(calAuthProps.basicAuth?.password, System.getenv("CALDAV_AUTH_BASICAUTH_PASSWORD"))
                     def username = calAuthProps.basicAuth?.username
                     if(StringUtils.isBlank(password)) {
@@ -215,6 +211,19 @@ class TodoistICalSync {
                             new UsernamePasswordCredentials(username, password))
                     httpClientBuilder.setDefaultCredentialsProvider(credsProvider)
                     log.info("Using username: $username with calendar name: $calName")
+                }
+                if(scheme == AuthScheme.GOOGLE_OAUTH2) {
+                    if(googleAuthProvider == null) {
+                        googleAuthProvider = new GoogleAuthProvider(configFile.getParentFile())
+                    }
+                    def username = calAuthProps.google?.username
+                    log.debug("Configuring Google OAuth2 Authentication Scheme for username: $username")
+                    if(StringUtils.isBlank(username)) {
+                        throw new IllegalArgumentException("Invalid username. It is blank")
+                    }
+                    Credential credential = googleAuthProvider.getCredential(username)
+                    def googleOAuthInterceptor = new GoogleOAuthRequestInterceptor(credential)
+                    httpClientBuilder.addInterceptorFirst(googleOAuthInterceptor)
                 }
             }
             def timeout = 5
@@ -469,12 +478,6 @@ class TodoistICalSync {
             }
             PoolStats ps = ((PoolingHttpClientConnectionManager) connectionManagers[calendarName]).getTotalStats()
             log.info("ConnectionPoolStats for calendarName: $calendarName $ps")
-
-            if(ps.getLeased() > 0) {
-                log.info("Attempting to close expired and idle connections ...")
-                connectionManagers[calendarName].closeExpiredConnections()
-                connectionManagers[calendarName].closeIdleConnections(5, TimeUnit.SECONDS)
-            }
         }, 3)
     }
 
@@ -500,7 +503,7 @@ class TodoistICalSync {
                 if(dryRun) {
                     log.info("$DRY_RUN_PREFIX Would have deleted event: ${item.content} with uid: ${uid} from calendars: ${otherCalendarNames}")
                 } else {
-                    log.debug("Deleting event: ${item.content} with uid: ${uid} from calendars: ${otherCalendarNames}")
+                    log.info("Deleting event: ${item.content} with uid: ${uid} from calendars: ${otherCalendarNames}")
                     deleteFromCalendars(otherCalendarNames, uid)
                 }
 
@@ -508,21 +511,15 @@ class TodoistICalSync {
                 PoolStats ps = ((PoolingHttpClientConnectionManager) connectionManagers[calendarName]).getTotalStats()
                 log.info("ConnectionPoolStats for calendarName: $calendarName $ps")
 
-                if(ps.getLeased() > 0) {
-                    log.info("Attempting to close expired and idle connections ...")
-                    connectionManagers[calendarName].closeExpiredConnections()
-                    connectionManagers[calendarName].closeIdleConnections(5, TimeUnit.SECONDS)
-                }
-
                 if(dryRun) {
                     log.debug("$DRY_RUN_PREFIX Would have put event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
                 } else {
                     deleteIfExists(httpClient, calendarName, calendarUrl, uid)
-                    log.debug("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
+                    log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
                     retry({
                         collection.add(httpClient, calendar, false)
                     }, 3)
-                    log.debug("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
+                    log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
                     doRateLimit()
                 }
             }
@@ -535,15 +532,34 @@ class TodoistICalSync {
 
     def base32Codec = new Base32(true)
 
+    def todoistToICalPriority(todoistPriority) {
+        if(todoistPriority == 4) {
+            return 1
+        } else if(todoistPriority == 3) {
+            return 2
+        } else if(todoistPriority == 2) {
+            return 3
+        } else if(todoistPriority == 1) {
+            return 4
+        } else {
+            return 5
+        }
+    }
+
     def itemToEvent(todoistUserId, item) {
         def id = "${todoistUserId}-${item.id}"
         def encodedId = base32Codec.encodeToString(id.getBytes("UTF-8")).replace("=", "").toLowerCase()
-        log.info("ID: $id")
-        log.info("Encoded ID: $encodedId")
+        log.debug("Calendar Event ID: $id")
+        log.debug("Calendar Event Encoded ID: $encodedId")
         VEvent event = new VEvent();
         event.getProperties().add(new Summary(item.content))
         event.getProperties().add(new Description(renderDescription(item)))
         event.getProperties().add(new Uid(encodedId))
+        def iCalPriority = todoistToICalPriority(item.priority)
+        event.getProperties().add(new Priority(iCalPriority))
+        def color = new Color()
+        color.setValue("silver")
+        event.getProperties().add(color)
 		
         def dueDateWithTimeZone = item.due.date
 		if(!dueDateWithTimeZone.endsWith("Z")) {
@@ -572,7 +588,7 @@ class TodoistICalSync {
         }
 
         def startDateTimeAsStr = dateTimeFormat.format(startDate)
-        log.info("startDateTimeAsStr: $startDateTimeAsStr")
+        log.debug("startDateTimeAsStr: $startDateTimeAsStr")
 
         event.getProperties().add(new DtStart(new DateTime(startDate.getTime())));
 
