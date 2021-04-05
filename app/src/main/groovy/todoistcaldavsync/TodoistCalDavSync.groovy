@@ -249,15 +249,11 @@ class TodoistCalDavSync {
         log.info("Configured Calendars: ${caldavHttpClientsByCalendar.keySet()}")
     }
 
-    def saveStateFile(state, backup = false) {
+    def saveStateFile(state) {
         if(dryRun) {
-            
             log.info("$DRY_RUN_PREFIX Would have written to state file: ${stateFile.getAbsolutePath()} $state")
         } else {
-            if(backup) {
-                stateFile.renameTo(new File(stateFile.getParentFile(), stateFile.getName() + ".${stateFile.lastModified()}.bak"))
-            }
-            // TODO: Clean up state files and keep last 5
+
             def builder = new YamlBuilder()
             builder state: state
             stateFile.write(builder.toString(), "UTF-8")
