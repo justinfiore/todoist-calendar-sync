@@ -12,6 +12,7 @@ plugins {
 
     // Apply the application plugin to add support for building a CLI application in Java.
     id 'application'
+
 }
 
 repositories {
@@ -43,7 +44,22 @@ dependencies {
     //testImplementation 'junit:junit:4.13'
 }
 
+applicationName = "todoist-caldav-sync"
+
 application {
     // Define the main class for the application.
     mainClass = project.hasProperty("mainClass") ? project.getProperty("mainClass") : 'todoistcaldavsync.TodoistCalDavSync'
+
+}
+
+startScripts {
+    doLast {
+        def winScriptFile  = file getWindowsScript()
+        def winFileText = winScriptFile.text
+
+        // Remove too-long-classpath and use pathing jar instead
+        winFileText = winFileText.replaceAll('set CLASSPATH=.*', 'set CLASSPATH=%APP_HOME%/lib/*')
+
+        winScriptFile.text = winFileText
+    }
 }
