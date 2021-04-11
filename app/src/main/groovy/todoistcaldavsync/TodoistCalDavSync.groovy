@@ -287,9 +287,13 @@ class TodoistCalDavSync {
         if(config.syncIntervalMs > 0) {
             while(true) {
                 log.info("Syncing ...")
-                sync()
-                log.info("Sync run complete.")
-                configureCalDavHttpClients()
+                try {
+                    sync()
+                    log.info("Sync run complete.")
+                    configureCalDavHttpClients()
+                } catch(Throwable t) {
+                    log.error("Sync run failed with exception: ", t)
+                }
                 log.info("Sleeping for ${config.syncIntervalMs} ms before next sync run ...")
                 Thread.sleep((long) config.syncIntervalMs)
 
