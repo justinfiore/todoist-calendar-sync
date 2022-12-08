@@ -656,11 +656,7 @@ class TodoistCalDavSync {
 
     def resolveLabelNames(items, labelsById) {
         items.each { item ->
-            def labelNames = []
-            item.labels.each { labelId ->
-                labelNames.add(labelsById[labelId])
-            }
-            item.label_names = labelNames
+            item.label_names = item.labels
         }
         return items
     }
