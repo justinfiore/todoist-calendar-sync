@@ -92,7 +92,7 @@ class TodoistCalDavSync {
 
     }
 
-    static def todoistApiBaseUrl = "https://api.todoist.com/sync/v8"
+    static def todoistApiBaseUrl = "https://api.todoist.com/sync/v9"
 
     def currentTimeZoneOffset = String.format("%tz", Instant.now().atZone(ZoneId.systemDefault()));
 
@@ -322,15 +322,15 @@ class TodoistCalDavSync {
         def restClient = new RESTClient(todoistApiBaseUrl)
 		//ignoreSSLIssues(restClient)
 		def syncToken = state.syncToken ?: '*'
-        def todoistParamsForItems = [sync_token: syncToken, token: todoistAccessToken, resource_types: '["items"]']
-        def todoistParams = [sync_token: '*', token: todoistAccessToken, resource_types: '["projects", "labels", "user"]']
+        def todoistParamsForItems = [sync_token: syncToken, resource_types: '["items"]']
+        def todoistParams = [sync_token: '*', resource_types: '["projects", "labels", "user"]']
         def todoistData = [:]
         def items = []
         def todoistUserId = 0
         def todoistEmail = ""
         try {
             log.info("Calling Todoist Sync API for items with params: $todoistParamsForItems")
-            def itemsResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParamsForItems)
+            def itemsResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParamsForItems, headers: ["Authorization": "Bearer $todoistAccessToken"])
             if(itemsResponse.status != 200) {
                 log.error("API call to Todoist to retrieve items failed with statusCode: ${itemsResponse.status} and body: ${itemsResponse.data.text}")
                 throw new RuntimeException("API Call to Todoist failed.")
@@ -342,7 +342,7 @@ class TodoistCalDavSync {
 
             if(items.size() > 0) {
                 log.info("Calling Todoist Sync API for metadata with params: $todoistParams")
-                def metadataResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParams)
+                def metadataResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParams, headers: ["Authorization": "Bearer $todoistAccessToken"])
                 if (metadataResponse.status == 200) {
                     log.info("Got 200 from Todoist Sync API")
                     todoistData = metadataResponse.data
