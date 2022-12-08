@@ -353,13 +353,13 @@ class TodoistCalDavSync {
                     log.info("labelsById: $labelsById")
                     log.info("labelsByName: $labelsByName")
 
-                    items = resolveLabelNames(items, labelsById)
+                    items = resolveLabelNames(items)
 					//log.info("Items with label names: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
                     items = resolveProjectName(items, projectsById)
 					//log.info("Items with project names: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
                     items = removeItemsWithNoDueDates(items)
 					//log.info("Items after filtering no due dates: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
-                    items = filterItemsForIncludedLabels(items, labelsById, labelsToInclude)
+                    items = filterItemsForIncludedLabels(items, labelsToInclude)
 					//log.info("Items after filtering for included labels: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
 
                 } else {
@@ -644,17 +644,17 @@ class TodoistCalDavSync {
         return [byId, byName]
     }
 
-    def filterItemsForIncludedLabels(items, labelsById, labelsToInclude) {
+    def filterItemsForIncludedLabels(items, labelsToInclude) {
         return items.findAll { item ->
-            def includedLabels = item.labels.findAll { labelId ->
-                labelsToInclude.contains(labelsById[labelId])
+            def includedLabels = item.labels.findAll { labelName ->
+                labelsToInclude.contains(labelName)
             }
             includedLabels.size() > 0
         }
 
     }
 
-    def resolveLabelNames(items, labelsById) {
+    def resolveLabelNames(items) {
         items.each { item ->
             item.label_names = item.labels
         }
