@@ -10,6 +10,9 @@ todoist:
   labelsToInclude:
     - cal
     - no-kids
+  # An array of Todoist Project Names. Any events in these projects will automatically be scheduled into a calendar (even if the labelsToInclude don't match)
+  projectsToInclude:
+    - ABC Company
 
 # How many milliseconds to sleep in between each CalDAV API call.
 # Set this if your server doesn't like hitting the CalDAV API so rapidly.
@@ -54,12 +57,15 @@ caldav:
   # The first rule to match in the list is the one to whose calendar the Todoist task will be added.
   # Rule support:
     # The rules are pretty rudimentary.
-    # They only support labels currently
+    # They only support labels and project names currently
     # and the keywords `AND` and `NOT`
+    # project names need to be prefixed with "p:" and must match the name exactly.
+    # For example, if the project name is "ABC Company" then use "p:ABC Company" in the rule
     # Examples:
     # foo # would match any items that have the label `foo`
     # foo AND bar # would match any items that have the label `foo` and the label `bar`
     # NOT foo AND bar # would match any items that have label `bar` and don't have the label `foo`
+    # NOT foo AND p:ABC Company #  would match any items that don't have the label `foo` and are in the project "ABC Company"
     # to get "OR" semantics, simply add additional rules referencing the same `calendarName`
   rules:
   - calendarName: "Example calendar"

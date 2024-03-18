@@ -98,9 +98,19 @@ class TodoistCalDavSync {
         return String.format("%tz", Instant.now().atZone(ZoneId.systemDefault()));
     }
 
+    def dateTimeFormatWithNoTimeZone = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
+    def dateFormatWithNoTimeZone = new SimpleDateFormat("yyyy-MM-dd")
+
     def getTimeZoneOffsetAtDateTime(dateTimeStrWithoutZone) {
-        def dateTimeFormatWithNoTimeZone = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
-        def dateTime = dateTimeFormatWithNoTimeZone.parse(dateTimeStrWithoutZone);
+        def dateTime = null
+        try {
+            dateTime = dateTimeFormatWithNoTimeZone.parse(dateTimeStrWithoutZone);
+        } catch(ParseException e) {
+            dateTime = dateFormatWithNoTimeZone.parse(dateTimeStrWithoutZone)
+        }
+        if(dateTime == null) {
+            return ""
+        }
         return String.format("%tz", Instant.ofEpochMilli(dateTime.getTime()).atZone(ZoneId.systemDefault()));
     }
 
@@ -284,13 +294,21 @@ class TodoistCalDavSync {
     def getLabelsToInclude() {
 
         def labelsToInclude = config.todoist.labelsToInclude
-        println(labelsToInclude)
-        println(labelsToInclude.getClass())
         
         if(!labelsToInclude instanceof List || ((List) labelsToInclude).size() == 0) {
             throw new IllegalStateException("todoist.labelsToInclude must be a non-empty array of label names")
         }
         return ((List) labelsToInclude);
+    }
+
+    def getProjectsToInclude() {
+        def projectsToInclude = config.todoist.projectsToInclude
+        
+        if(!projectsToInclude || !projectsToInclude instanceof List || ((List) projectsToInclude).size() == 0) {
+            return (List) []
+        } else {
+            return ((List) projectsToInclude);
+        }
     }
 
     def syncLoop() {
@@ -322,10 +340,12 @@ class TodoistCalDavSync {
         def todoistAccessToken = getTodoistAccessToken();
         def todoistBasePath = new URL(todoistApiBaseUrl).getPath()
         def labelsToInclude = getLabelsToInclude();
+        def projectsToInclude = getProjectsToInclude();
 
         log.info("Using todoistAccessToken: $todoistAccessToken")
         log.info("todoistApiBaseUrl: $todoistApiBaseUrl")
         log.info("todoistBasePath: $todoistBasePath")
+        log.info("projectsToInclude: $projectsToInclude")
         log.info("labelsToInclude: $labelsToInclude")
         
 
@@ -379,7 +399,7 @@ class TodoistCalDavSync {
 					//log.info("Items with project names: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
                     items = removeItemsWithNoDueDates(items)
 					//log.info("Items after filtering no due dates: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
-                    items = filterItemsForIncludedLabels(items, labelsToInclude)
+                    items = filterItemsForInclusionInCalendar(items, labelsToInclude, projectsToInclude)
 					//log.info("Items after filtering for included labels: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
 
                 } else {
@@ -439,9 +459,20 @@ class TodoistCalDavSync {
                     def labelMatches = labelsMustMatch.collect { labelName ->
                         labelName = labelName.trim()
                         if(labelName.startsWith("NOT ")){
-                            return !item.label_names.contains(labelName)
+                            labelName = labelName.replaceFirst("NOT ", "")
+                            if(labelName.startsWith("p:")) {
+                                def projectName = labelName.replaceFirst("p:", "")
+                                return item.project_name != projectName
+                            } else {
+                                return !item.label_names.contains(labelName)
+                            }
                         } else {
-                            return item.label_names.contains(labelName)
+                            if(labelName.startsWith("p:")) {
+                                def projectName = labelName.replaceFirst("p:", "")
+                                return item.project_name == projectName
+                            } else {
+                                return item.label_names.contains(labelName)
+                            }
                         }
                     }
                     if(labelMatches.findAll{ it -> it == false}.size() == 0) {
@@ -688,12 +719,14 @@ class TodoistCalDavSync {
         return [byId, byName]
     }
 
-    def filterItemsForIncludedLabels(items, labelsToInclude) {
+    def filterItemsForInclusionInCalendar(items, labelsToInclude, projectsToInclude) {
         return items.findAll { item ->
             def includedLabels = item.labels.findAll { labelName ->
                 labelsToInclude.contains(labelName)
             }
-            includedLabels.size() > 0
+            def includedByLabels = includedLabels.size() > 0
+            def includedByProjectName = projectsToInclude.contains(item.project_name)
+            return includedByLabels || includedByProjectName
         }
 
     }
