@@ -349,7 +349,7 @@ class TodoistCalDavSync {
             syncToken = itemsResponseData.sync_token
             items = itemsResponseData.items
 			log.info("Items before filtering: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
-
+            
             if(items.size() > 0) {
                 log.info("Calling Todoist Sync API for metadata with params: $todoistParams")
                 def metadataResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParams, headers: ["Authorization": "Bearer $todoistAccessToken"])
@@ -363,6 +363,16 @@ class TodoistCalDavSync {
                     log.info("labelsById: $labelsById")
                     log.info("labelsByName: $labelsByName")
 
+                    def deletedItems = items.findAll { item -> item.is_deleted == true }
+
+                    if(deletedItems.size() > 0) {
+                        deletedItems.each { item -> 
+                            def uid = generateUidFromItem(todoistUserId, item)
+                            log.info("Deleting event from all calendars because it was deleted with uid: $uid")
+                            deleteFromAllCalendars(uid)
+                        }
+                    }
+    
                     items = resolveLabelNames(items)
 					//log.info("Items with label names: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
                     items = resolveProjectName(items, projectsById)
@@ -458,6 +468,10 @@ class TodoistCalDavSync {
             def calendarUrl = urlsByCalendar[calendarName]
             deleteIfExists(httpClient, calendarName, calendarUrl, uid)
         }
+    }
+
+    def deleteFromAllCalendars(uid) {
+        deleteFromCalendars(urlsByCalendar.keySet(), uid);
     }
 
     def retry(f, retries) {
@@ -560,11 +574,15 @@ class TodoistCalDavSync {
         }
     }
 
-    def itemToEvent(todoistUserId, item, calendarName) {
+    def generateUidFromItem(todoistUserId, item) {
         def id = "${todoistUserId}-${item.id}"
         def encodedId = base32Codec.encodeToString(id.getBytes("UTF-8")).replace("=", "").toLowerCase()
         log.debug("Calendar Event ID: $id")
         log.debug("Calendar Event Encoded ID: $encodedId")
+        return encodedId
+    }
+
+    def itemToEvent(todoistUserId, item, calendarName) {
         VEvent event = new VEvent();
         def summary = item.content
         if(prefixesByCalendar[calendarName]) {
@@ -572,7 +590,7 @@ class TodoistCalDavSync {
         }
         event.getProperties().add(new Summary(summary))
         event.getProperties().add(new Description(renderDescription(item)))
-        event.getProperties().add(new Uid(encodedId))
+        event.getProperties().add(new Uid(generateUidFromItem(todoistUserId, item)))
         def iCalPriority = todoistToICalPriority(item.priority)
         event.getProperties().add(new Priority(iCalPriority))
         /* TODO: Add Configurable Color
