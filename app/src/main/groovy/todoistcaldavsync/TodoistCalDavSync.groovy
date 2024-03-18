@@ -94,7 +94,17 @@ class TodoistCalDavSync {
 
     static def todoistApiBaseUrl = "https://api.todoist.com/sync/v9"
 
-    def currentTimeZoneOffset = String.format("%tz", Instant.now().atZone(ZoneId.systemDefault()));
+    def currentTimeZoneOffset() {
+        return String.format("%tz", Instant.now().atZone(ZoneId.systemDefault()));
+    }
+
+    def getTimeZoneOffsetAtDateTime(dateTimeStrWithoutZone) {
+        def dateTimeFormatWithNoTimeZone = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
+        def dateTime = dateTimeFormatWithNoTimeZone.parse(dateTimeStrWithoutZone);
+        return String.format("%tz", Instant.ofEpochMilli(dateTime.getTime()).atZone(ZoneId.systemDefault()));
+    }
+
+    
 
     def config = [:]
     def state = [:]
@@ -157,14 +167,14 @@ class TodoistCalDavSync {
 
     def destroyHttpClients() {
         connectionManagers.each { calendarName, cm ->
-            log.info("Shutting down ConnectionManager for calendar: $calendarName ...")
+            log.trace("Shutting down ConnectionManager for calendar: $calendarName ...")
             cm.shutdown()
-            log.info("Shutting down ConnectionManager for calendar: $calendarName successful.")
+            log.trace("Shutting down ConnectionManager for calendar: $calendarName successful.")
         }
         caldavHttpClientsByCalendar.each { calendarName, httpClient ->
-            log.info("Shutting down HttpClient for calendar: $calendarName ...")
+            log.trace("Shutting down HttpClient for calendar: $calendarName ...")
             httpClient.close()
-            log.info("Shutting down HttpClient for calendar: $calendarName successful.")
+            log.trace("Shutting down HttpClient for calendar: $calendarName successful.")
         }
         connectionManagers = [:]
         caldavHttpClientsByCalendar = [:]
@@ -307,7 +317,7 @@ class TodoistCalDavSync {
 
     def sync() {
 		
-		log.info("Current Time Zone: " + currentTimeZoneOffset);
+		log.info("Current Time Zone: " + currentTimeZoneOffset());
 		
         def todoistAccessToken = getTodoistAccessToken();
         def todoistBasePath = new URL(todoistApiBaseUrl).getPath()
@@ -570,10 +580,12 @@ class TodoistCalDavSync {
         color.setValue("silver")
         event.getProperties().add(color)
         */
-		
+		log.debug("Found Due Date: ${item.due.date} ")
         def dueDateWithTimeZone = item.due.date
 		if(!dueDateWithTimeZone.endsWith("Z")) {
-			dueDateWithTimeZone += currentTimeZoneOffset
+			def timeZoneAtDate = getTimeZoneOffsetAtDateTime(dueDateWithTimeZone)
+            log.debug("Appended Timezone: ${timeZoneAtDate}");
+            dueDateWithTimeZone += timeZoneAtDate
 		}
         dueDateWithTimeZone = dueDateWithTimeZone.replace("Z", "+0000")
 		
@@ -589,6 +601,7 @@ class TodoistCalDavSync {
 			}
 			
 		}
+        log.debug("StartDate parsed: $startDate")
         
         // TODO: Customize the "start time" for all-day events
         if(item.all_day) {
