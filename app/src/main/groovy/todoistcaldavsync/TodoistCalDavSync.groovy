@@ -639,6 +639,19 @@ class TodoistCalDavSync {
             //TODO: Make default duration configurable
             dur = new Dur(0, 0, defaultDurationMinutes, 0)
         }
+
+        // Parse the "duration" from Todoist.
+        if(item.duration) {
+            def amount = item.duration.amount
+            def unit = item.duration.unit
+            if(unit == "minute") {
+                dur = new Dur(0, 0, amount, 0)
+            } else if(unit == "hour") {
+                dur = new Dur(0, amount, 0, 0)
+            }
+            log.debug("Parsed duration from Todoist into: $dur")
+        }
+
         event.getProperties().add(new Duration(dur))
 
         log.debug("Built event:\n${event}")
