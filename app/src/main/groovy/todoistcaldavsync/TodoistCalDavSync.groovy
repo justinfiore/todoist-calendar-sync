@@ -532,7 +532,9 @@ class TodoistCalDavSync {
             } catch(ResourceNotFoundException e) {
                 // Ignore this since we are deleting it if it exists.
                 log.debug("Couldn't delete event: $uid because it didn't exist in calendar: $calendarName")
-            } finally {
+            } catch(Throwable t) {
+                log.warn("Couldn't delete event: $uid from calendar: $calendarName because: ", t)
+ 	    } finally {
                 doRateLimit()
             }
             PoolStats ps = ((PoolingHttpClientConnectionManager) connectionManagers[calendarName]).getTotalStats()
