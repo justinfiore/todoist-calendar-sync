@@ -37,6 +37,7 @@ import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager
 import org.apache.http.pool.PoolStats
@@ -127,6 +128,8 @@ class TodoistCalDavSync {
     def urlsByCalendar = [:]
     def connectionManagers = [:]
     def prefixesByCalendar = [:]
+    def poolThresholdPercent = 50  // Reset pool when usage exceeds 50%
+    def lastPoolResetTime = [:]     // Track when pools were last reset
 
     def TodoistCalDavSync(configFile, stateFile) {
         def slurper = new YamlSlurper();
@@ -257,7 +260,7 @@ class TodoistCalDavSync {
                 .setSocketTimeout(timeout * 1000).build();
             PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager();
             
-            int maxConnections = config.maxConnectionsPerHttpClient ?: 500
+            int maxConnections = config.maxConnectionsPerHttpClient ?: 10
             cm.setMaxTotal(maxConnections);
             cm.setDefaultMaxPerRoute(maxConnections);
             connectionManagers[calName] = cm
@@ -495,9 +498,8 @@ class TodoistCalDavSync {
 
     def deleteFromCalendars(calendarNames, uid) {
         calendarNames.each { calendarName ->
-            def httpClient = caldavHttpClientsByCalendar[calendarName]
             def calendarUrl = urlsByCalendar[calendarName]
-            deleteIfExists(httpClient, calendarName, calendarUrl, uid)
+            deleteIfExists(calendarName, calendarUrl, uid)
         }
     }
 
@@ -519,38 +521,193 @@ class TodoistCalDavSync {
         }
     }
 
-    def deleteIfExists(httpClient, calendarName, calendarUrl, uid) {
+    def deleteIfExists(calendarName, calendarUrl, uid) {
         def eventUrl = calendarUrl + "/" + uid + ".ics"
-        retry({
+        deleteWithRetry({
             try {
+                // Fetch fresh httpClient inside closure to ensure we get latest after any reset
+                def currentHttpClient = caldavHttpClientsByCalendar[calendarName]
+                if (currentHttpClient == null) {
+                    log.error("HttpClient not found for calendar: $calendarName after pool reset")
+                    throw new RuntimeException("HttpClient not available for calendar: $calendarName")
+                }
                 CalDAVCollection collection = new CalDAVCollection(calendarUrl);
                 log.debug("Deleting event: ${uid} from calendar: $calendarName with eventUrl: $eventUrl")
-                collection.delete(httpClient, eventUrl)
+                collection.delete(currentHttpClient, eventUrl)
                 log.debug("Successfully deleted event: $uid")
-                
                     
             } catch(ResourceNotFoundException e) {
                 // Ignore this since we are deleting it if it exists.
                 log.debug("Couldn't delete event: $uid because it didn't exist in calendar: $calendarName")
-            } catch(Throwable t) {
-                log.warn("Couldn't delete event: $uid from calendar: $calendarName because: ", t)
- 	    } finally {
-                doRateLimit()
             }
-            PoolStats ps = ((PoolingHttpClientConnectionManager) connectionManagers[calendarName]).getTotalStats()
-            log.info("ConnectionPoolStats for calendarName: $calendarName $ps")
-        }, 3)
+        }, calendarName, uid, 3)
+    }
+
+    def deleteWithRetry(f, calendarName, uid, retries) {
+        int attempt = 0
+        while(attempt <= retries) {
+            try {
+                attempt++
+                // Proactively monitor and reset pool if needed
+                checkAndResetPoolIfNeeded(calendarName)
+                
+                f()
+                PoolStats ps = ((PoolingHttpClientConnectionManager) connectionManagers[calendarName]).getTotalStats()
+                log.info("ConnectionPoolStats for calendarName: $calendarName $ps")
+                return
+            } catch(Throwable t) {
+                PoolStats ps = ((PoolingHttpClientConnectionManager) connectionManagers[calendarName]).getTotalStats()
+                log.warn("Couldn't delete event: $uid from calendar: $calendarName (attempt $attempt/$retries) - $ps because: ${t.message}")
+                
+                if(attempt <= retries) {
+                    // Exponential backoff: 1s, 2s, 4s
+                    def backoffMs = (1000L << (attempt - 1))
+                    log.info("Waiting ${backoffMs}ms before retry...")
+                    Thread.sleep(backoffMs)
+                    doRateLimit()
+                } else {
+                    log.error("Failed to delete event: $uid after $retries retries", t)
+                    // Don't throw - allow sync to continue
+                }
+            }
+        }
+    }
+
+    def checkAndResetPoolIfNeeded(calendarName) {
+        PoolingHttpClientConnectionManager cm = (PoolingHttpClientConnectionManager) connectionManagers[calendarName]
+        if (cm == null) return
+        
+        PoolStats stats = cm.getTotalStats()
+        int usagePercent = (stats.leased * 100) / stats.max
+        
+        if (usagePercent > poolThresholdPercent) {
+            log.warn("Connection pool for $calendarName at ${usagePercent}% usage (${stats.leased}/${stats.max}). Resetting pool proactively...")
+            resetPoolForCalendar(calendarName)
+        }
+    }
+
+    def resetPoolForCalendar(calendarName) {
+        try {
+            // Prevent reset spam - only reset once per minute per calendar
+            def now = System.currentTimeMillis()
+            def lastReset = lastPoolResetTime[calendarName] ?: 0
+            if (now - lastReset < 2000) {
+                log.debug("Pool for $calendarName was reset recently, skipping...")
+                return
+            }
+            
+            log.info("Resetting HTTP connection pool for calendar: $calendarName")
+            
+            // Shutdown old client and manager
+            PoolingHttpClientConnectionManager oldCm = connectionManagers[calendarName]
+            CloseableHttpClient oldClient = caldavHttpClientsByCalendar[calendarName]
+            
+            if (oldClient != null) {
+                try {
+                    oldClient.close()
+                    log.info("Closed old HttpClient for $calendarName")
+                } catch (Exception e) {
+                    log.warn("Error closing old HttpClient for $calendarName: ${e.message}")
+                }
+            }
+            
+            if (oldCm != null) {
+                try {
+                    oldCm.shutdown()
+                    log.info("Shutdown old ConnectionManager for $calendarName")
+                } catch (Exception e) {
+                    log.warn("Error shutting down old ConnectionManager for $calendarName: ${e.message}")
+                }
+            }
+            
+            // Create fresh client and manager
+            createHttpClientForCalendar(calendarName)
+            lastPoolResetTime[calendarName] = now
+            
+            log.info("Successfully reset HTTP connection pool for calendar: $calendarName")
+        } catch (Exception e) {
+            log.error("Failed to reset connection pool for $calendarName: ${e.message}", e)
+            // Don't throw - allow sync to continue with potentially degraded pool
+        }
+    }
+
+    def createHttpClientForCalendar(calendarName) {
+        def calConfig = config.caldav.calendars.find { it.name == calendarName }
+        if (calConfig == null) {
+            log.error("Calendar config not found for: $calendarName")
+            return
+        }
+        
+        def calUrl = calConfig.url
+        def defaultAuthProps = config.caldav?.default?.auth
+        def calAuthProps = calConfig.auth ?: defaultAuthProps
+        
+        def httpClientBuilder = HttpClients.custom()
+        
+        if(calAuthProps) {
+            def scheme = AuthScheme.valueOf(calAuthProps.scheme)
+            if(!SUPPORTED_AUTH_SCHEMES.contains(scheme)) {
+                throw new IllegalArgumentException("Invalid scheme: $scheme. Valid Schemes: ${SUPPORTED_AUTH_SCHEMES}")
+            }
+
+            if(scheme == AuthScheme.BASIC) {
+                def password = StringUtils.defaultString(calAuthProps.basicAuth?.password, System.getenv("CALDAV_AUTH_BASICAUTH_PASSWORD"))
+                def username = calAuthProps.basicAuth?.username
+                if(StringUtils.isBlank(password)) {
+                    throw new IllegalArgumentException("Invalid password. It is blank")
+                }
+                if(StringUtils.isBlank(username)) {
+                    throw new IllegalArgumentException("Invalid username. It is blank")
+                }
+                BasicCredentialsProvider credsProvider = new BasicCredentialsProvider();
+                def url = new URL(calUrl)
+                credsProvider.setCredentials(
+                        new AuthScope(url.getHost(), url.getPort()),
+                        new UsernamePasswordCredentials(username, password))
+                httpClientBuilder.setDefaultCredentialsProvider(credsProvider)
+                log.info("Using username: $username with calendar name: $calendarName")
+            }
+            if(scheme == AuthScheme.GOOGLE_OAUTH2) {
+                // Reuse singleton googleAuthProvider instead of creating new
+                def username = calAuthProps.google?.username
+                log.debug("Configuring Google OAuth2 Authentication Scheme for username: $username")
+                if(StringUtils.isBlank(username)) {
+                    throw new IllegalArgumentException("Invalid username. It is blank")
+                }
+                Credential credential = googleAuthProvider.getCredential(username)
+                def googleOAuthInterceptor = new GoogleOAuthRequestInterceptor(credential)
+                httpClientBuilder.addInterceptorFirst(googleOAuthInterceptor)
+            }
+        }
+        
+        def timeout = 5
+        RequestConfig requestConfig = RequestConfig.custom()
+            .setConnectTimeout(timeout * 1000)
+            .setConnectionRequestTimeout(timeout * 1000)
+            .setSocketTimeout(timeout * 1000).build()
+        
+        PoolingHttpClientConnectionManager cm = new PoolingHttpClientConnectionManager()
+        int maxConnections = config.maxConnectionsPerHttpClient ?: 10
+        cm.setMaxTotal(maxConnections)
+        cm.setDefaultMaxPerRoute(maxConnections)
+        
+        connectionManagers[calendarName] = cm
+        httpClientBuilder.setConnectionManager(cm)
+        httpClientBuilder.setDefaultRequestConfig(requestConfig)
+        
+        def httpClient = httpClientBuilder.build()
+        caldavHttpClientsByCalendar[calendarName] = httpClient
+        
+        log.info("Created fresh HttpClient for calendar: $calendarName")
     }
 
     def updateCalendars(todoistUserId, itemsByCalendar) {
         itemsByCalendar.each { calendarName, items ->
-            def httpClient = caldavHttpClientsByCalendar[calendarName]
             def calendarUrl = urlsByCalendar[calendarName]
             def otherCalendarNames = urlsByCalendar.keySet().findAll { k -> !k.equals(calendarName)}
             
             log.info("Updating Events for Calendar: $calendarName: Count = ${items.size()} ...")
             log.info("Using Calendar Base URL: ${calendarUrl}")
-            CalDAVCollection collection = new CalDAVCollection(calendarUrl);
             
             items.each { item ->
                 def vevent = itemToEvent(todoistUserId, item, calendarName)
@@ -575,9 +732,16 @@ class TodoistCalDavSync {
                 if(dryRun) {
                     log.debug("$DRY_RUN_PREFIX Would have put event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
                 } else {
-                    deleteIfExists(httpClient, calendarName, calendarUrl, uid)
+                    deleteIfExists(calendarName, calendarUrl, uid)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
                     retry({
+                        // Fetch fresh httpClient inside closure to ensure we get latest after any reset
+                        def httpClient = caldavHttpClientsByCalendar[calendarName]
+                        if (httpClient == null) {
+                            log.error("HttpClient not found for calendar: $calendarName after pool reset")
+                            throw new RuntimeException("HttpClient not available for calendar: $calendarName")
+                        }
+                        CalDAVCollection collection = new CalDAVCollection(calendarUrl);
                         collection.add(httpClient, calendar, false)
                     }, 3)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
