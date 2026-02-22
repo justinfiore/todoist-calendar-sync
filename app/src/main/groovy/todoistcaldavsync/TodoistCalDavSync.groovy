@@ -93,7 +93,7 @@ class TodoistCalDavSync {
 
     }
 
-    static def todoistApiBaseUrl = "https://api.todoist.com/sync/v9"
+    static def todoistApiBaseUrl = "https://api.todoist.com/api/v1"
 
     def currentTimeZoneOffset() {
         return String.format("%tz", Instant.now().atZone(ZoneId.systemDefault()));
@@ -354,7 +354,12 @@ class TodoistCalDavSync {
 
         def restClient = new RESTClient(todoistApiBaseUrl)
 		//ignoreSSLIssues(restClient)
+		def needsV1Migration = !state.v1Migrated
 		def syncToken = state.syncToken ?: '*'
+		if(needsV1Migration) {
+			log.info("v1 API migration detected - forcing full sync to migrate calendar event IDs")
+			syncToken = '*'
+		}
         def todoistParamsForItems = [sync_token: syncToken, resource_types: '["items"]']
         def todoistParams = [sync_token: '*', resource_types: '["projects", "labels", "user"]']
         def todoistData = [:]
@@ -363,7 +368,7 @@ class TodoistCalDavSync {
         def todoistEmail = ""
         try {
             log.info("Calling Todoist Sync API for items with params: $todoistParamsForItems")
-            def itemsResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParamsForItems, headers: ["Authorization": "Bearer $todoistAccessToken"])
+            def itemsResponse = restClient.post(path: todoistBasePath + "/sync", body: todoistParamsForItems, requestContentType: URLENC, headers: ["Authorization": "Bearer $todoistAccessToken"])
             if(itemsResponse.status != 200) {
                 log.error("API call to Todoist to retrieve items failed with statusCode: ${itemsResponse.status} and body: ${itemsResponse.data.text}")
                 throw new RuntimeException("API Call to Todoist failed.")
@@ -375,12 +380,17 @@ class TodoistCalDavSync {
             
             if(items.size() > 0) {
                 log.info("Calling Todoist Sync API for metadata with params: $todoistParams")
-                def metadataResponse = restClient.get(path: todoistBasePath + "/sync", query: todoistParams, headers: ["Authorization": "Bearer $todoistAccessToken"])
+                def metadataResponse = restClient.post(path: todoistBasePath + "/sync", body: todoistParams, requestContentType: URLENC, headers: ["Authorization": "Bearer $todoistAccessToken"])
                 if (metadataResponse.status == 200) {
                     log.info("Got 200 from Todoist Sync API")
                     todoistData = metadataResponse.data
                     todoistUserId = todoistData.user.id
                     todoistEmail = todoistData.user.email
+
+                    if(needsV1Migration) {
+                        migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken)
+                    }
+
                     def (labelsById, labelsByName) = collectMapsByIdAndName(todoistData.labels)
                     def (projectsById, projectsByName) = collectMapsByIdAndName(todoistData.projects)
                     log.info("labelsById: $labelsById")
@@ -427,6 +437,9 @@ class TodoistCalDavSync {
 
         if(updateCalendars(todoistUserId, itemsByCalendar)) {
             log.info("Sync Succeeded, updating syncToken to: $syncToken")
+            if(needsV1Migration) {
+                state.v1Migrated = true
+            }
             state.syncToken = syncToken
             saveStateFile(state)
         }
@@ -505,6 +518,37 @@ class TodoistCalDavSync {
 
     def deleteFromAllCalendars(uid) {
         deleteFromCalendars(urlsByCalendar.keySet(), uid);
+    }
+
+    def migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken) {
+        log.info("=== Starting migration from Todoist API v9 to v1 ===")
+        log.info("Migrating calendar events for ${items.size()} items to new ID format")
+
+        def newIds = items.collect { it.id }
+        def deletedCount = 0
+
+        // ID mapping API supports up to 100 IDs at a time
+        newIds.collate(100).each { batch ->
+            def idsParam = batch.join(",")
+            try {
+                def response = restClient.get(
+                    path: todoistBasePath + "/id_mappings/tasks/" + idsParam,
+                    headers: ["Authorization": "Bearer $todoistAccessToken"]
+                )
+                if(response.data) {
+                    response.data.each { mapping ->
+                        def oldUid = generateUidFromItem(todoistUserId, [id: mapping.old_id])
+                        log.info("Deleting old calendar event - old_id: ${mapping.old_id}, new_id: ${mapping.new_id}, old_uid: $oldUid")
+                        deleteFromAllCalendars(oldUid)
+                        deletedCount++
+                    }
+                }
+            } catch(Exception e) {
+                log.warn("Failed to fetch ID mappings for batch: ${e.message}", e)
+            }
+        }
+
+        log.info("=== Migration complete. Deleted $deletedCount old calendar events. ===")
     }
 
     def retry(f, retries) {
