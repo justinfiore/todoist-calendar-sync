@@ -387,10 +387,6 @@ class TodoistCalDavSync {
                     todoistUserId = todoistData.user.id
                     todoistEmail = todoistData.user.email
 
-                    if(needsV1Migration) {
-                        migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken)
-                    }
-
                     def (labelsById, labelsByName) = collectMapsByIdAndName(todoistData.labels)
                     def (projectsById, projectsByName) = collectMapsByIdAndName(todoistData.projects)
                     log.info("labelsById: $labelsById")
@@ -414,6 +410,10 @@ class TodoistCalDavSync {
 					//log.info("Items after filtering no due dates: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
                     items = filterItemsForInclusionInCalendar(items, labelsToInclude, projectsToInclude)
 					//log.info("Items after filtering for included labels: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
+                    
+                    if(needsV1Migration) {
+                        migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken)
+                    }
 
                 } else {
                     log.error("API call to Todoist to retrieve metadata failed with statusCode: ${metadataResponse.status} and body: ${metadataResponse.data.text}")
