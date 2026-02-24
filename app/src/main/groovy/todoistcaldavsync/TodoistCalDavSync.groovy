@@ -608,7 +608,7 @@ class TodoistCalDavSync {
         }, calendarName, uid, 3)
     }
 
-    def putWithPoolReset(calendarName, calendarUrl, calendar, uid, eventName) {
+    def putWithLinearBackoff(calendarName, calendarUrl, calendar, uid, eventName) {
         int attempt = 0
         int maxAttempts = 10
         
@@ -624,19 +624,15 @@ class TodoistCalDavSync {
                 collection.add(httpClient, calendar, false)
                 return // Success
             } catch(BadStatusException e) {
-                // Check if this is a 403 (Forbidden) - could be rate limit or pool exhaustion
+                // Check if this is a 403 (Forbidden) - likely a rate limit from Google Calendar
                 if (e.message?.contains("403")) {
                     if (attempt < maxAttempts) {
                         // Linear backoff: 1s, 2s, 3s, ... up to 10s
+                        // https://developers.google.com/workspace/calendar/api/guides/errors
                         long backoffSeconds = attempt
                         long backoffMs = backoffSeconds * 1000
                         log.warn("Received 403 Forbidden for event: $eventName (attempt $attempt/$maxAttempts). Applying ${backoffSeconds}s linear backoff...")
                         log.warn("BadStatusException details: ${e.message}")
-                        
-                        if (attempt == 1) {
-                            // Only reset pool on first 403
-                            resetPoolForCalendar(calendarName)
-                        }
                         
                         Thread.sleep(backoffMs)
                         doRateLimit()
@@ -845,7 +841,7 @@ class TodoistCalDavSync {
                     deleteIfExists(calendarName, calendarUrl, uid)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
                     log.debug("iCal event being PUT for ${item.content}:\n${calendar.toString()}")
-                    putWithPoolReset(calendarName, calendarUrl, calendar, uid, item.content)
+                    putWithLinearBackoff(calendarName, calendarUrl, calendar, uid, item.content)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
                     doRateLimit()
                 }
