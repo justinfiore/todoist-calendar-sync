@@ -395,10 +395,17 @@ class TodoistCalDavSync {
                     def deletedItems = items.findAll { item -> item.is_deleted == true }
 
                     if(deletedItems.size() > 0) {
+                        def deletedCount = 0
+                        def totalDeleted = deletedItems.size()
                         deletedItems.each { item -> 
                             def uid = generateUidFromItem(todoistUserId, item)
                             log.info("Deleting event from all calendars because it was deleted with uid: $uid")
                             deleteFromAllCalendars(uid)
+                            deletedCount++
+                            
+                            // Calculate and log progress percentage
+                            def progressPercent = String.format("%.2f", (deletedCount.toDouble() / totalDeleted) * 100)
+                            log.info("$deletedCount out of $totalDeleted items deleted ($progressPercent% complete)")
                         }
                     }
     
@@ -529,9 +536,13 @@ class TodoistCalDavSync {
 
         def newIds = items.collect { it.id }
         def deletedCount = 0
+        def totalMappingsExpected = newIds.size()
+        def batchIndex = 0
+        def totalBatches = (newIds.size() + 99) / 100  // Round up
 
         // ID mapping API supports up to 100 IDs at a time
         newIds.collate(100).each { batch ->
+            batchIndex++
             def idsParam = batch.join(",")
             try {
                 def response = restClient.get(
@@ -547,10 +558,14 @@ class TodoistCalDavSync {
                         log.info("Deleting old calendar event - task: '$eventName', due: $dueDate, old_id: ${mapping.old_id}, new_id: ${mapping.new_id}, old_uid: $oldUid")
                         deleteFromAllCalendars(oldUid)
                         deletedCount++
+                        
+                        // Calculate and log progress percentage
+                        def progressPercent = String.format("%.2f", (deletedCount.toDouble() / totalMappingsExpected) * 100)
+                        log.info("$deletedCount out of $totalMappingsExpected items deleted ($progressPercent% complete)")
                     }
                 }
             } catch(Exception e) {
-                log.warn("Failed to fetch ID mappings for batch: ${e.message}", e)
+                log.warn("Failed to fetch ID mappings for batch $batchIndex/$totalBatches: ${e.message}", e)
             }
         }
 
