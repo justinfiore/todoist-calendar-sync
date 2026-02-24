@@ -666,8 +666,17 @@ class TodoistCalDavSync {
                 log.warn("Couldn't delete event: $uid from calendar: $calendarName (attempt $attempt/$retries) - $ps because: ${t.message}")
                 
                 if(attempt <= retries) {
-                    // Exponential backoff: 1s, 2s, 4s
-                    def backoffMs = (1000L << (attempt - 1))
+                    // Use linear backoff for 403 (rate limit), exponential for others
+                    // https://developers.google.com/workspace/calendar/api/guides/errors
+                    long backoffMs
+                    if (t.message?.contains("403")) {
+                        // Linear backoff for rate limits: 10s, 20s, 30s, ... up to 100s
+                        long backoffSeconds = attempt * 10
+                        backoffMs = backoffSeconds * 1000
+                    } else {
+                        // Exponential backoff for other errors: 1s, 2s, 4s
+                        backoffMs = (1000L << (attempt - 1))
+                    }
                     log.info("Waiting ${backoffMs}ms before retry...")
                     Thread.sleep(backoffMs)
                     doRateLimit()
