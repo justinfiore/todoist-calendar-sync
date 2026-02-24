@@ -624,7 +624,8 @@ class TodoistCalDavSync {
             }, 1)
         } catch(BadStatusException e) {
             // Check if this is a 403 (Forbidden) - likely due to exhausted connection pool
-            if (e.getHttpStatus() == 403 && !poolResetAttempted) {
+            // BadStatusException message format: "Bad status 403 invoking method..."
+            if (e.message?.contains("403") && !poolResetAttempted) {
                 log.warn("Received 403 Forbidden for event: $eventName. Resetting connection pool for $calendarName and retrying...")
                 poolResetAttempted = true
                 resetPoolForCalendar(calendarName)
