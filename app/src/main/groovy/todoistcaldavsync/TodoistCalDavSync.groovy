@@ -45,6 +45,7 @@ import com.github.caldav4j.CalDAVCollection;
 import com.github.caldav4j.util.ICalendarUtils;
 import com.github.caldav4j.CalDAVConstants;
 import com.github.caldav4j.exceptions.ResourceNotFoundException
+import com.github.caldav4j.exceptions.BadStatusException
 import java.util.concurrent.TimeUnit
 import groovy.cli.picocli.CliBuilder
 import com.google.api.client.auth.oauth2.Credential;
@@ -607,6 +608,44 @@ class TodoistCalDavSync {
         }, calendarName, uid, 3)
     }
 
+    def putWithPoolReset(calendarName, calendarUrl, calendar, uid, eventName) {
+        boolean poolResetAttempted = false
+        
+        try {
+            retry({
+                // Fetch fresh httpClient inside closure to ensure we get latest after any reset
+                def httpClient = caldavHttpClientsByCalendar[calendarName]
+                if (httpClient == null) {
+                    log.error("HttpClient not found for calendar: $calendarName after pool reset")
+                    throw new RuntimeException("HttpClient not available for calendar: $calendarName")
+                }
+                CalDAVCollection collection = new CalDAVCollection(calendarUrl);
+                collection.add(httpClient, calendar, false)
+            }, 1)
+        } catch(BadStatusException e) {
+            // Check if this is a 403 (Forbidden) - likely due to exhausted connection pool
+            if (e.getHttpStatus() == 403 && !poolResetAttempted) {
+                log.warn("Received 403 Forbidden for event: $eventName. Resetting connection pool for $calendarName and retrying...")
+                poolResetAttempted = true
+                resetPoolForCalendar(calendarName)
+                
+                // Retry once after pool reset with fresh client
+                retry({
+                    def httpClient = caldavHttpClientsByCalendar[calendarName]
+                    if (httpClient == null) {
+                        log.error("HttpClient not found for calendar: $calendarName after pool reset")
+                        throw new RuntimeException("HttpClient not available for calendar: $calendarName")
+                    }
+                    CalDAVCollection collection = new CalDAVCollection(calendarUrl);
+                    collection.add(httpClient, calendar, false)
+                }, 1)
+            } else {
+                // Not a 403 or already attempted pool reset, use normal retry logic
+                throw e
+            }
+        }
+    }
+
     def deleteWithRetry(f, calendarName, uid, retries) {
         int attempt = 0
         while(attempt <= retries) {
@@ -798,16 +837,7 @@ class TodoistCalDavSync {
                 } else {
                     deleteIfExists(calendarName, calendarUrl, uid)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
-                    retry({
-                        // Fetch fresh httpClient inside closure to ensure we get latest after any reset
-                        def httpClient = caldavHttpClientsByCalendar[calendarName]
-                        if (httpClient == null) {
-                            log.error("HttpClient not found for calendar: $calendarName after pool reset")
-                            throw new RuntimeException("HttpClient not available for calendar: $calendarName")
-                        }
-                        CalDAVCollection collection = new CalDAVCollection(calendarUrl);
-                        collection.add(httpClient, calendar, false)
-                    }, 3)
+                    putWithPoolReset(calendarName, calendarUrl, calendar, uid, item.content)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
                     doRateLimit()
                 }
