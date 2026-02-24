@@ -627,6 +627,7 @@ class TodoistCalDavSync {
             // BadStatusException message format: "Bad status 403 invoking method..."
             if (e.message?.contains("403") && !poolResetAttempted) {
                 log.warn("Received 403 Forbidden for event: $eventName. Resetting connection pool for $calendarName and retrying...")
+                log.warn("BadStatusException details: ${e.message}", e)
                 poolResetAttempted = true
                 resetPoolForCalendar(calendarName)
                 
@@ -642,6 +643,7 @@ class TodoistCalDavSync {
                 }, 1)
             } else {
                 // Not a 403 or already attempted pool reset, use normal retry logic
+                log.error("BadStatusException (not a 403 or already reset): ${e.message}", e)
                 throw e
             }
         }
@@ -838,6 +840,7 @@ class TodoistCalDavSync {
                 } else {
                     deleteIfExists(calendarName, calendarUrl, uid)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
+                    log.debug("iCal event being PUT for ${item.content}:\n${calendar.toString()}")
                     putWithPoolReset(calendarName, calendarUrl, calendar, uid, item.content)
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
                     doRateLimit()
