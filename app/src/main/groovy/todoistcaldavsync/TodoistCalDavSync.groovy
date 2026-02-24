@@ -609,42 +609,46 @@ class TodoistCalDavSync {
     }
 
     def putWithPoolReset(calendarName, calendarUrl, calendar, uid, eventName) {
-        boolean poolResetAttempted = false
+        int attempt = 0
+        int maxAttempts = 10
         
-        try {
-            retry({
-                // Fetch fresh httpClient inside closure to ensure we get latest after any reset
+        while (attempt < maxAttempts) {
+            attempt++
+            try {
                 def httpClient = caldavHttpClientsByCalendar[calendarName]
                 if (httpClient == null) {
-                    log.error("HttpClient not found for calendar: $calendarName after pool reset")
+                    log.error("HttpClient not found for calendar: $calendarName")
                     throw new RuntimeException("HttpClient not available for calendar: $calendarName")
                 }
                 CalDAVCollection collection = new CalDAVCollection(calendarUrl);
                 collection.add(httpClient, calendar, false)
-            }, 1)
-        } catch(BadStatusException e) {
-            // Check if this is a 403 (Forbidden) - likely due to exhausted connection pool
-            // BadStatusException message format: "Bad status 403 invoking method..."
-            if (e.message?.contains("403") && !poolResetAttempted) {
-                log.warn("Received 403 Forbidden for event: $eventName. Resetting connection pool for $calendarName and retrying...")
-                log.warn("BadStatusException details: ${e.message}", e)
-                poolResetAttempted = true
-                resetPoolForCalendar(calendarName)
-                
-                // Retry once after pool reset with fresh client
-                retry({
-                    def httpClient = caldavHttpClientsByCalendar[calendarName]
-                    if (httpClient == null) {
-                        log.error("HttpClient not found for calendar: $calendarName after pool reset")
-                        throw new RuntimeException("HttpClient not available for calendar: $calendarName")
+                return // Success
+            } catch(BadStatusException e) {
+                // Check if this is a 403 (Forbidden) - could be rate limit or pool exhaustion
+                if (e.message?.contains("403")) {
+                    if (attempt < maxAttempts) {
+                        // Linear backoff: 1s, 2s, 3s, ... up to 10s
+                        long backoffSeconds = attempt
+                        long backoffMs = backoffSeconds * 1000
+                        log.warn("Received 403 Forbidden for event: $eventName (attempt $attempt/$maxAttempts). Applying ${backoffSeconds}s linear backoff...")
+                        log.warn("BadStatusException details: ${e.message}")
+                        
+                        if (attempt == 1) {
+                            // Only reset pool on first 403
+                            resetPoolForCalendar(calendarName)
+                        }
+                        
+                        Thread.sleep(backoffMs)
+                        doRateLimit()
+                    } else {
+                        log.error("Failed to PUT event: $eventName after $maxAttempts attempts with 403 errors", e)
+                        throw e
                     }
-                    CalDAVCollection collection = new CalDAVCollection(calendarUrl);
-                    collection.add(httpClient, calendar, false)
-                }, 1)
-            } else {
-                // Not a 403 or already attempted pool reset, use normal retry logic
-                log.error("BadStatusException (not a 403 or already reset): ${e.message}", e)
-                throw e
+                } else {
+                    // Not a 403, throw immediately
+                    log.error("BadStatusException (non-403): ${e.message}", e)
+                    throw e
+                }
             }
         }
     }
