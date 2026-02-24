@@ -627,9 +627,9 @@ class TodoistCalDavSync {
                 // Check if this is a 403 (Forbidden) - likely a rate limit from Google Calendar
                 if (e.message?.contains("403")) {
                     if (attempt < maxAttempts) {
-                        // Linear backoff: 1s, 2s, 3s, ... up to 10s
+                        // Linear backoff: 10s, 20s, 30s, ... up to 100s
                         // https://developers.google.com/workspace/calendar/api/guides/errors
-                        long backoffSeconds = attempt
+                        long backoffSeconds = attempt * 10
                         long backoffMs = backoffSeconds * 1000
                         log.warn("Received 403 Forbidden for event: $eventName (attempt $attempt/$maxAttempts). Applying ${backoffSeconds}s linear backoff...")
                         log.warn("BadStatusException details: ${e.message}")
