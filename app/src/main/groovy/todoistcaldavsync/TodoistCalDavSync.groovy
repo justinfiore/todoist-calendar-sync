@@ -420,6 +420,8 @@ class TodoistCalDavSync {
                     
                     if(needsV1Migration) {
                         migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken)
+                        state.v1Migrated = true
+                        saveStateFile(state)
                     }
 
                 } else {
@@ -444,9 +446,6 @@ class TodoistCalDavSync {
 
         if(updateCalendars(todoistUserId, itemsByCalendar)) {
             log.info("Sync Succeeded, updating syncToken to: $syncToken")
-            if(needsV1Migration) {
-                state.v1Migrated = true
-            }
             state.syncToken = syncToken
             saveStateFile(state)
         }
