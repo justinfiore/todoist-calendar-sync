@@ -524,6 +524,9 @@ class TodoistCalDavSync {
         log.info("=== Starting migration from Todoist API v9 to v1 ===")
         log.info("Migrating calendar events for ${items.size()} items to new ID format")
 
+        // Create a map of new IDs to items for quick lookup
+        def itemsByNewId = items.collectEntries { [(it.id): it] }
+
         def newIds = items.collect { it.id }
         def deletedCount = 0
 
@@ -537,8 +540,11 @@ class TodoistCalDavSync {
                 )
                 if(response.data) {
                     response.data.each { mapping ->
+                        def item = itemsByNewId[mapping.new_id]
+                        def eventName = item?.content ?: "Unknown"
+                        def dueDate = item?.due?.date ?: "No due date"
                         def oldUid = generateUidFromItem(todoistUserId, [id: mapping.old_id])
-                        log.info("Deleting old calendar event - old_id: ${mapping.old_id}, new_id: ${mapping.new_id}, old_uid: $oldUid")
+                        log.info("Deleting old calendar event - task: '$eventName', due: $dueDate, old_id: ${mapping.old_id}, new_id: ${mapping.new_id}, old_uid: $oldUid")
                         deleteFromAllCalendars(oldUid)
                         deletedCount++
                     }
