@@ -101,4 +101,15 @@ class FixtureCalendarGateway implements CalendarReadGateway {
             ev.end.isAfter(rangeStart) && ev.start.isBefore(rangeEnd)
         }
     }
+
+    /**
+     * Global UID lookup across all fixture events (any calendarName).
+     */
+    @Override
+    CalendarEvent findEventByUid(String uid) {
+        if (!uid) {
+            return null
+        }
+        return events.find { it.uid == uid || it.id == uid }
+    }
 }

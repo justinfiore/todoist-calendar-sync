@@ -253,6 +253,6 @@ class ManualExclusionAndGatewaySpec extends Specification {
         void upsertEvent(CalendarEvent event) {}
 
         @Override
-        void deleteEvent(String eventId) {}
+        void deleteOwnedEvent(String eventUid, String expectedBlockId) {}
     }
 }
