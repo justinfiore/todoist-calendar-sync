@@ -1,0 +1,81 @@
+planner:
+  mode: preview
+  timezone: America/New_York
+  output_calendar: Todoist Planned
+
+  availability:
+    working_windows:
+      weekday: ["09:00-12:00", "13:00-17:00"]
+      weekend: ["10:00-14:00"]
+
+    calendars:
+      - calendar: Work
+        default_role: hard_blocker
+      - calendar: Family
+        default_role: soft_blocker
+      - calendar: Bob
+        default_role: informational
+      - calendar: Todoist Planned
+        default_role: managed_output
+
+    event_rules:
+      - name: Justin drives Bob
+        calendar_regex: "^Bob$"
+        title_regex: "(?i)\\bjustin\\b.*\\bdrives\\b"
+        role: hard_blocker
+        buffer_before_minutes: 15
+        buffer_after_minutes: 15
+      - name: Family logistics text
+        calendar_regex: "^Family$"
+        text_regex: "(?is)\\bpickup\\b"
+        role: soft_blocker
+      - name: Default Bob informational
+        calendar_regex: "^Bob$"
+        role: informational
+
+    unknown_calendar_fallback: informational
+
+  tasks:
+    scheduling_eligible_labels: [schedule]
+    manual_label: manual
+    default_duration_minutes: 30
+    duration_labels:
+      t15: 15
+      t30: 30
+      t45: 45
+      t60: 60
+      t90: 90
+    contexts:
+      phone:
+        match_labels: [phone]
+        preferred_windows: ["weekday 12:00-13:00", "weekday 13:00-14:00"]
+        preferred_bonus: 30
+        avoid_penalty: 20
+      home:
+        match_labels: [home]
+        preferred_windows: ["weekday 16:00-17:00", "weekend 10:00-12:00"]
+        preferred_bonus: 30
+        avoid_penalty: 20
+      computer:
+        match_labels: [computer]
+        preferred_windows: ["weekday 09:00-12:00"]
+        preferred_bonus: 25
+        avoid_penalty: 10
+      outdoor:
+        match_labels: [outdoor]
+        preferred_windows: ["weekend 10:00-14:00", "weekday 15:00-17:00"]
+        preferred_bonus: 35
+        avoid_penalty: 15
+
+  batching:
+    enabled: true
+    project_batch_bonus: 25
+    max_focus_block_minutes: 90
+    minimum_focus_block_minutes: 30
+    context_switch_penalty: 15
+
+  stability:
+    freeze_within: PT48H
+    keep_manual_moves: true
+    minimum_buffer_between_blocks_minutes: 10
+    churn_penalty: 40

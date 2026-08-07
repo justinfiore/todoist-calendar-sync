@@ -34,6 +34,62 @@ class PlannerConfigSpec extends Specification {
         config.calendarDefaults.any { it.calendarName == 'Work' && it.defaultRole == EventRole.HARD_BLOCKER }
         config.unknownCalendarFallback == EventRole.INFORMATIONAL
         config.workingWindows.any { it.dayOfWeek == DayOfWeek.MONDAY && it.start == LocalTime.of(6, 30) }
+        config.stability.freezeWithin.toHours() == 48
+        config.stability.keepManualMoves
+        config.stability.minimumBufferBetweenBlocksMinutes == 10
+        config.batching.enabled
+        config.batching.projectBatchBonus == 25
+        config.batching.maxFocusBlockMinutes == 90
+        config.taskContexts.any { it.name == 'phone' }
+    }
+
+    def "parses stability batching and task contexts"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            stability   : [
+                freeze_within                       : 'PT24H',
+                keep_manual_moves                   : false,
+                minimum_buffer_between_blocks_minutes: 5,
+                churn_penalty                       : 50
+            ],
+            batching    : [
+                enabled                    : true,
+                project_batch_bonus        : 10,
+                max_focus_block_minutes    : 60,
+                minimum_focus_block_minutes: 20,
+                context_switch_penalty     : 8
+            ],
+            tasks       : [
+                contexts: [
+                    phone: [match_labels: ['phone'], preferred_windows: ['weekday 12:00-13:00']]
+                ]
+            ]
+        ])
+
+        then:
+        config.stability.freezeWithin.toHours() == 24
+        !config.stability.keepManualMoves
+        config.stability.minimumBufferBetweenBlocksMinutes == 5
+        config.batching.projectBatchBonus == 10
+        config.batching.minimumFocusBlockMinutes == 20
+        config.taskContexts.size() == 1
+        config.taskContexts[0].preferredWindows.size() == 1
+    }
+
+    def "rejects min focus greater than max focus"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            batching    : [minimum_focus_block_minutes: 120, max_focus_block_minutes: 60]
+        ])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('minimum_focus') || e.message.toLowerCase().contains('max_focus')
     }
 
     def "rejects invalid mode and empty working windows"() {
@@ -183,6 +239,40 @@ class PlannerConfigSpec extends Specification {
         then:
         config.eventRules.find { it.name == 'hard' }.bufferBeforeMinutes == 5
         config.eventRules.find { it.name == 'soft' }.bufferAfterMinutes == 10
+    }
+
+    def "PreferredWindow.overlapsInstantRange is same-day only and DST-safe"() {
+        given:
+        def zone = java.time.ZoneId.of('America/New_York')
+        // US DST spring forward 2026-03-08; autumn back 2026-11-01
+        def win = PlannerConfig.PreferredWindow.parse('weekday 09:00-12:00', [], 'test')
+        def day = java.time.LocalDate.of(2026, 3, 9) // Monday after spring forward
+        def start = day.atTime(9, 30).atZone(zone)
+        def end = day.atTime(10, 30).atZone(zone)
+        def crossMidnightStart = day.atTime(23, 0).atZone(zone)
+        def crossMidnightEnd = day.plusDays(1).atTime(1, 0).atZone(zone)
+        // DST fall-back day afternoon still same local date
+        def fallDay = java.time.LocalDate.of(2026, 11, 2) // Monday
+        def fallStart = fallDay.atTime(10, 0).atZone(zone)
+        def fallEnd = fallDay.atTime(11, 0).atZone(zone)
+
+        expect:
+        win.overlapsInstantRange(start, end)
+        !win.overlapsInstantRange(crossMidnightStart, crossMidnightEnd)
+        win.overlapsInstantRange(fallStart, fallEnd)
+        !win.overlapsInstantRange(start, start) // zero-length
+    }
+
+    def "requireApprovalForMoveWithin is documented preview-only stability field"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            stability   : [require_approval_for_move_within: 'P3D']
+        ])
+
+        then:
+        config.stability.requireApprovalForMoveWithin.toDays() == 3
     }
 
     def "Builder.build rejects invalid state that cannot escape"() {
