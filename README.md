@@ -24,7 +24,7 @@ This app reads tasks from Todoist, filters them by labels/projects, routes each 
 
 ## Requirements
 
-- Java 8+ (JVM compatible with this Gradle/Groovy build)
+- Java 25 (the supported build and runtime baseline)
 - Network access to:
   - `https://api.todoist.com`
   - your CalDAV server(s)

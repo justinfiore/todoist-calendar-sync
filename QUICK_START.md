@@ -4,7 +4,7 @@ This guide gets `todoist-calendar-sync` running with minimal setup.
 
 ## 1) Prerequisites
 
-- Java 8+
+- Java 25 (the supported build and runtime baseline)
 - Todoist API token
 - CalDAV calendar URL + credentials
 
