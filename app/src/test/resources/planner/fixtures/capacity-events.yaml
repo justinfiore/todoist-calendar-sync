@@ -1,0 +1,42 @@
+events:
+  - id: "ev-standup"
+    title: "Team standup"
+    calendar: Work
+    start: "2026-08-06T14:00:00Z"
+    end: "2026-08-06T14:30:00Z"
+    description: "Daily sync"
+
+  - id: "ev-justin-drive"
+    title: "Justin drives Bob to practice"
+    calendar: Bob
+    start: "2026-08-06T16:00:00Z"
+    end: "2026-08-06T17:00:00Z"
+    description: ""
+
+  - id: "ev-bob-game"
+    title: "Soccer game"
+    calendar: Bob
+    start: "2026-08-06T18:00:00Z"
+    end: "2026-08-06T19:30:00Z"
+    description: "U12 recreational"
+
+  - id: "ev-family-pickup"
+    title: "School day"
+    calendar: Family
+    start: "2026-08-06T20:00:00Z"
+    end: "2026-08-06T20:30:00Z"
+    description: "Justin handles pickup today"
+
+  - id: "ev-planned"
+    title: "Planned: Clear email inbox"
+    calendar: Todoist Planned
+    start: "2026-08-06T16:00:00Z"
+    end: "2026-08-06T16:30:00Z"
+    description: "planner-owned"
+
+  - id: "ev-unknown"
+    title: "Mystery meetup"
+    calendar: Random External
+    start: "2026-08-07T15:00:00Z"
+    end: "2026-08-07T16:00:00Z"
+    description: "from somewhere"
