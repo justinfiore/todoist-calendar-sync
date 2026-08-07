@@ -1,0 +1,96 @@
+# Example planner configuration — safe preview / read-only defaults.
+# Phase 1: use with PlannerCli --mode capacity-report (no remote writes).
+
+planner:
+  # preview | approval_required | apply_safe_changes | fully_automated
+  # Safe default: preview (calculate/report only; no Todoist or calendar writes)
+  mode: preview
+  timezone: America/New_York
+  output_calendar: Todoist Planned
+
+  planning_runs:
+    - name: daily
+      horizon: P3D
+      schedule: "0 6 * * *"
+      create_concrete_blocks_until: P3D
+
+  stability:
+    freeze_within: PT48H
+    keep_manual_moves: true
+    require_approval_for_move_within: P7D
+    minimum_buffer_between_blocks_minutes: 10
+
+  availability:
+    working_windows:
+      weekday: ["06:30-07:30", "12:00-13:00", "20:00-22:00"]
+      weekend: ["09:00-12:00", "14:00-16:00"]
+
+    calendars:
+      - calendar: Work
+        default_role: hard_blocker
+      - calendar: Family
+        default_role: soft_blocker
+      - calendar: Bob
+        default_role: informational
+      - calendar: Todoist Planned
+        default_role: managed_output
+
+    # First matching rule wins (configuration order).
+    event_rules:
+      - name: Justin transports or attends an activity
+        calendar_regex: "^Bob$"
+        title_regex: "(?i)\\b(justin|dad)\\b.*\\b(takes|drive|drives|coaches|attend)\\b"
+        role: hard_blocker
+        buffer_before_minutes: 15
+        buffer_after_minutes: 20
+      - name: Family logistics involving Justin
+        calendar_regex: "^(Family|Kids)$"
+        text_regex: "(?is)\\b(justin|dad)\\b.*\\b(pickup|drop.?off|transport|volleyball|scouts)\\b"
+        role: soft_blocker
+      - name: Default informational child event
+        calendar_regex: "^(Bob|Kids)$"
+        role: informational
+
+    # Unknown calendars use this visible fallback (diagnostic, not silent free time)
+    unknown_calendar_fallback: informational
+
+  tasks:
+    scheduling_eligible_labels: [schedule]
+    manual_label: manual
+    default_duration_minutes: 30
+    duration_labels:
+      t15: 15
+      t30: 30
+      t60: 60
+      t90: 90
+    contexts:
+      phone:
+        match_labels: [phone]
+        preferred_windows: ["weekday 12:00-13:00"]
+      home:
+        match_labels: [home]
+        preferred_windows: ["weekday 20:00-22:00", "weekend 09:00-12:00"]
+      computer:
+        match_labels: [computer]
+        preferred_windows: ["weekday 06:30-07:30", "weekday 20:00-22:00"]
+
+  batching:
+    enabled: true
+    project_batch_bonus: 25
+    max_focus_block_minutes: 90
+    minimum_focus_block_minutes: 30
+    context_switch_penalty: 15
+
+  weather:
+    enabled: false
+
+  messaging:
+    enabled: false
+
+  ai:
+    enabled: false
+    safety:
+      never_apply_changes_directly: true
+      require_structured_output: true
+      require_confirmation_for_policy_changes: true
+      send_minimum_necessary_data: true

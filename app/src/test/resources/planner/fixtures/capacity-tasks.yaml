@@ -1,0 +1,55 @@
+tasks:
+  - id: "t-deck"
+    content: "Paint the Deck"
+    project_id: "p-home"
+    project_name: "Home"
+    labels: [schedule, outdoor, t90]
+    priority: 4
+    deadline:
+      date: "2026-08-07"
+    due:
+      date: null
+    duration: null
+
+  - id: "t-email"
+    content: "Clear email inbox"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, phone, t30]
+    priority: 2
+    deadline:
+      date: "2026-08-06T22:00:00-04:00"
+    due:
+      date: "2026-08-06T12:00:00-04:00"
+
+  - id: "t-native-dur"
+    content: "Deep work block"
+    project_id: "p-ai"
+    project_name: "AI"
+    labels: [schedule, computer, t15]
+    priority: 3
+    deadline:
+      date: "2026-08-08"
+    duration:
+      amount: 45
+      unit: minute
+
+  - id: "t-manual"
+    content: "Doctor appointment prep"
+    project_id: "p-personal"
+    project_name: "Personal"
+    labels: [schedule, manual, t60]
+    priority: 3
+    due:
+      date: "2026-08-06T15:00:00-04:00"
+    deadline:
+      date: "2026-08-06"
+
+  - id: "t-impossible"
+    content: "Rewrite monorepo"
+    project_id: "p-ai"
+    project_name: "AI"
+    labels: [schedule, computer, t90]
+    priority: 4
+    deadline:
+      date: "2026-08-06T10:00:00-04:00"
