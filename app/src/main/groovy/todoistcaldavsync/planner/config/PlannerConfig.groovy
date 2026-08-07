@@ -32,6 +32,7 @@ final class PlannerConfig {
     final StabilityConfig stability
     final BatchingConfig batching
     final List<TaskContext> taskContexts
+    final WeatherConfig weather
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
 
@@ -51,6 +52,7 @@ final class PlannerConfig {
         this.stability = b.stability ?: StabilityConfig.defaults()
         this.batching = b.batching ?: BatchingConfig.defaults()
         this.taskContexts = Collections.unmodifiableList(new ArrayList<>(b.taskContexts ?: []))
+        this.weather = b.weather ?: WeatherConfig.disabled()
     }
 
     static Builder builder() {
@@ -161,6 +163,7 @@ final class PlannerConfig {
         StabilityConfig stability = parseStability(p.stability instanceof Map ? p.stability as Map : [:], errors)
         BatchingConfig batching = parseBatching(p.batching instanceof Map ? p.batching as Map : [:], errors)
         List<TaskContext> taskContexts = parseTaskContexts(tasks.contexts, errors)
+        WeatherConfig weather = parseWeather(p.weather instanceof Map ? p.weather as Map : null, timezone, errors)
 
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
@@ -181,6 +184,7 @@ final class PlannerConfig {
             .stability(stability)
             .batching(batching)
             .taskContexts(taskContexts)
+            .weather(weather)
             .build()
     }
 
@@ -276,6 +280,108 @@ final class PlannerConfig {
                     rule.role != EventRole.HARD_BLOCKER && rule.role != EventRole.SOFT_BLOCKER) {
                     errors << "eventRules[${idx}] ('${rule.name}'): buffers are only allowed for hard_blocker and soft_blocker roles (got ${rule.role?.configValue})"
                 }
+            }
+        }
+        if (b.weather == null) {
+            errors << 'planner.weather is required'
+        } else {
+            errors.addAll(collectWeatherErrors(b.weather))
+        }
+        return errors
+    }
+
+    static List<String> collectWeatherErrors(WeatherConfig w) {
+        List<String> errors = []
+        if (w == null) {
+            errors << 'planner.weather is required'
+            return errors
+        }
+        // Coordinates: when present (enabled or disabled), must be finite and in range.
+        // When enabled, both are required.
+        if (w.enabled && (w.latitude == null || w.longitude == null)) {
+            errors << 'planner.weather.latitude and longitude are required when weather is enabled'
+        }
+        if (w.latitude != null) {
+            if (!Double.isFinite(w.latitude)) {
+                errors << "planner.weather.latitude must be finite, got: ${w.latitude}"
+            } else if (w.latitude < -90d || w.latitude > 90d) {
+                errors << "planner.weather.latitude out of range: ${w.latitude}"
+            }
+        }
+        if (w.longitude != null) {
+            if (!Double.isFinite(w.longitude)) {
+                errors << "planner.weather.longitude must be finite, got: ${w.longitude}"
+            } else if (w.longitude < -180d || w.longitude > 180d) {
+                errors << "planner.weather.longitude out of range: ${w.longitude}"
+            }
+        }
+        if (w.provider) {
+            String p = w.provider.toLowerCase(Locale.ROOT)
+            if (!(p in ['open_meteo', 'open-meteo', 'fixture', 'none', 'disabled'] as Set)) {
+                errors << "planner.weather.provider unsupported: ${w.provider}"
+            }
+        }
+        if (w.maxAge != null && w.maxAge.isNegative()) {
+            errors << 'planner.weather.max_age must be non-negative'
+        }
+        if (w.forecastHorizonDays != null && (w.forecastHorizonDays < 1 || w.forecastHorizonDays > 16)) {
+            errors << 'planner.weather.forecast_horizon_days must be 1..16'
+        }
+        if (w.suitabilityBonus < 0) {
+            errors << 'planner.weather.suitability_bonus must be non-negative'
+        }
+        String fb = (w.fallback ?: 'fail_closed').toLowerCase(Locale.ROOT)
+        if (!(fb in ['fail_closed', 'fail_open', 'closed', 'open', 'allow'] as Set)) {
+            errors << "planner.weather.fallback must be fail_closed or fail_open, got: ${w.fallback}"
+        }
+        // task_rules validated even when disabled so misconfiguration fails loudly
+        w.taskRules?.eachWithIndex { WeatherTaskRule rule, int idx ->
+            if (rule == null) {
+                errors << "planner.weather.task_rules[${idx}] must not be null"
+                return
+            }
+            if (!rule.matchLabels) {
+                errors << "planner.weather.task_rules[${idx}].match_labels must not be empty"
+            }
+            if (rule.precipitationProbabilityMax != null &&
+                (rule.precipitationProbabilityMax < 0d || rule.precipitationProbabilityMax > 100d ||
+                    !Double.isFinite(rule.precipitationProbabilityMax))) {
+                errors << "planner.weather.task_rules[${idx}].require.precipitation_probability_max must be 0..100"
+            }
+            if (rule.precipitationMmMax != null &&
+                (rule.precipitationMmMax < 0d || !Double.isFinite(rule.precipitationMmMax))) {
+                errors << "planner.weather.task_rules[${idx}].require.precipitation_mm_max must be non-negative"
+            }
+            if (rule.windSpeedKphMax != null &&
+                (rule.windSpeedKphMax < 0d || !Double.isFinite(rule.windSpeedKphMax))) {
+                errors << "planner.weather.task_rules[${idx}].require.wind_speed_kph_max must be non-negative"
+            }
+            if (rule.temperatureMinC != null && !Double.isFinite(rule.temperatureMinC)) {
+                errors << "planner.weather.task_rules[${idx}].require.temperature_min_c must be finite"
+            }
+            if (rule.temperatureMaxC != null && !Double.isFinite(rule.temperatureMaxC)) {
+                errors << "planner.weather.task_rules[${idx}].require.temperature_max_c must be finite"
+            }
+            if (rule.temperatureMinC != null && rule.temperatureMaxC != null &&
+                rule.temperatureMinC > rule.temperatureMaxC) {
+                errors << "planner.weather.task_rules[${idx}].require temperature_min_c must be <= temperature_max_c"
+            }
+            if (rule.preferredForecastConfidenceMin != null &&
+                (rule.preferredForecastConfidenceMin < 0d || rule.preferredForecastConfidenceMin > 1d ||
+                    !Double.isFinite(rule.preferredForecastConfidenceMin))) {
+                errors << "planner.weather.task_rules[${idx}].preferred.forecast_confidence_min must be 0..1"
+            }
+            boolean anyConstraint =
+                rule.precipitationProbabilityMax != null ||
+                    rule.precipitationMmMax != null ||
+                    rule.windSpeedKphMax != null ||
+                    rule.temperatureMinC != null ||
+                    rule.temperatureMaxC != null ||
+                    rule.requireDaylight != null ||
+                    rule.preferredDaylight != null ||
+                    rule.preferredForecastConfidenceMin != null
+            if (!anyConstraint) {
+                errors << "planner.weather.task_rules[${idx}] must define at least one require/preferred constraint"
             }
         }
         return errors
@@ -598,6 +704,158 @@ final class PlannerConfig {
         }
     }
 
+    /**
+     * Optional weather section. Absent or {@code enabled: false} preserves Phase 2 schedules
+     * for non-weather tasks and does not require a provider at startup.
+     *
+     * Per-task policy is deterministic: first {@code task_rules} entry whose
+     * {@code match_labels} intersects the task labels (case-insensitive) wins.
+     */
+    private static WeatherConfig parseWeather(Map raw, ZoneId plannerTimezone, List errors) {
+        if (raw == null || raw.isEmpty()) {
+            return WeatherConfig.disabled()
+        }
+        boolean enabled = raw.enabled != null ? Boolean.valueOf(raw.enabled.toString()) : false
+        // Disabled without any weather keys beyond enabled remains backward-compatible.
+        // When task_rules / thresholds / coordinates are provided while disabled, still
+        // parse and validate them so misconfiguration fails loudly; scheduler ignores
+        // because enabled=false.
+        boolean hasExtraKeys = raw.keySet().any { k ->
+            String key = k?.toString()?.toLowerCase(Locale.ROOT)
+            key && key != 'enabled'
+        }
+        if (!enabled && !hasExtraKeys) {
+            return WeatherConfig.disabled()
+        }
+        String provider = (raw.provider ?: (enabled ? 'open_meteo' : 'none')).toString()
+        Double lat = parseDoubleOpt(raw.latitude ?: raw.lat, 'planner.weather.latitude', errors)
+        Double lon = parseDoubleOpt(raw.longitude ?: raw.lon ?: raw.lng, 'planner.weather.longitude', errors)
+        ZoneId weatherTz = plannerTimezone
+        def tzRaw = raw.timezone ?: raw.time_zone ?: raw.timeZone
+        if (tzRaw) {
+            try {
+                weatherTz = ZoneId.of(tzRaw.toString())
+            } catch (Exception e) {
+                errors << "planner.weather.timezone is invalid: ${tzRaw}"
+            }
+        }
+        Duration maxAge = parseDurationValue(
+            raw.max_age ?: raw.maxAge ?: raw.freshness, Duration.ofHours(6),
+            'planner.weather.max_age', errors)
+        Integer horizon = null
+        def hz = raw.forecast_horizon_days ?: raw.forecastHorizonDays ?: raw.forecast_days
+        if (hz != null) {
+            try {
+                horizon = hz as int
+                if (horizon < 1 || horizon > 16) {
+                    errors << 'planner.weather.forecast_horizon_days must be 1..16'
+                    horizon = 7
+                }
+            } catch (Exception e) {
+                errors << "planner.weather.forecast_horizon_days is invalid: ${hz}"
+                horizon = 7
+            }
+        } else {
+            horizon = 7
+        }
+        String fallback = (raw.fallback ?: raw.missing_data_policy ?: raw.missingDataPolicy ?: 'fail_closed').toString()
+        long suitabilityBonus = 35L
+        def bonusRaw = raw.suitability_bonus ?: raw.suitabilityBonus ?: raw.weather_suitability_bonus
+        if (bonusRaw != null) {
+            try {
+                suitabilityBonus = bonusRaw as long
+                if (suitabilityBonus < 0L) {
+                    errors << 'planner.weather.suitability_bonus must be non-negative'
+                    suitabilityBonus = 35L
+                }
+            } catch (Exception e) {
+                errors << "planner.weather.suitability_bonus is invalid: ${bonusRaw}"
+            }
+        }
+        List<WeatherTaskRule> rules = parseWeatherTaskRules(
+            raw.task_rules ?: raw.taskRules, errors)
+        WeatherConfig cfg = new WeatherConfig(enabled, provider, lat, lon, weatherTz,
+            maxAge, horizon, fallback, suitabilityBonus, rules)
+        errors.addAll(collectWeatherErrors(cfg))
+        return cfg
+    }
+
+    private static List<WeatherTaskRule> parseWeatherTaskRules(def raw, List errors) {
+        List<WeatherTaskRule> result = []
+        if (raw == null) {
+            return result
+        }
+        if (!(raw instanceof Collection)) {
+            errors << 'planner.weather.task_rules must be a list'
+            return result
+        }
+        raw.eachWithIndex { entry, idx ->
+            if (!(entry instanceof Map)) {
+                errors << "planner.weather.task_rules[${idx}] must be a map"
+                return
+            }
+            Map m = entry as Map
+            String name = (m.name ?: m.id ?: "rule-${idx}").toString()
+            String id = (m.id ?: name).toString()
+            def matchRaw = m.match_labels ?: m.matchLabels ?: []
+            List<String> matchLabels = []
+            if (matchRaw instanceof Collection) {
+                matchLabels = matchRaw.collect { it.toString() }.findAll { it }
+            } else if (matchRaw != null) {
+                errors << "planner.weather.task_rules[${idx}].match_labels must be a list"
+            }
+            Map require = m.require instanceof Map ? m.require as Map : [:]
+            Map preferred = m.preferred instanceof Map ? m.preferred as Map : [:]
+            Double precipProbMax = parseDoubleOpt(
+                require.precipitation_probability_max ?: require.precipitationProbabilityMax,
+                "planner.weather.task_rules[${idx}].require.precipitation_probability_max", errors)
+            Double precipMmMax = parseDoubleOpt(
+                require.precipitation_mm_max ?: require.precipitationMmMax,
+                "planner.weather.task_rules[${idx}].require.precipitation_mm_max", errors)
+            Double windMax = parseDoubleOpt(
+                require.wind_speed_kph_max ?: require.windSpeedKphMax,
+                "planner.weather.task_rules[${idx}].require.wind_speed_kph_max", errors)
+            Double tempMin = parseDoubleOpt(
+                require.temperature_min_c ?: require.temperatureMinC,
+                "planner.weather.task_rules[${idx}].require.temperature_min_c", errors)
+            Double tempMax = parseDoubleOpt(
+                require.temperature_max_c ?: require.temperatureMaxC,
+                "planner.weather.task_rules[${idx}].require.temperature_max_c", errors)
+            Boolean requireDaylight = parseBooleanOpt(require.daylight)
+            Boolean preferredDaylight = parseBooleanOpt(preferred.daylight)
+            Double confMin = parseDoubleOpt(
+                preferred.forecast_confidence_min ?: preferred.forecastConfidenceMin,
+                "planner.weather.task_rules[${idx}].preferred.forecast_confidence_min", errors)
+            result << new WeatherTaskRule(id, name, matchLabels, precipProbMax, precipMmMax,
+                windMax, tempMin, tempMax, requireDaylight, preferredDaylight, confMin)
+        }
+        return result
+    }
+
+    private static Double parseDoubleOpt(def value, String path, List errors) {
+        if (value == null) {
+            return null
+        }
+        try {
+            double d = value as double
+            if (!Double.isFinite(d)) {
+                errors << "${path} must be finite, got: ${value}"
+                return null
+            }
+            return d
+        } catch (Exception e) {
+            errors << "${path} is invalid: ${value}"
+            return null
+        }
+    }
+
+    private static Boolean parseBooleanOpt(def value) {
+        if (value == null) {
+            return null
+        }
+        return Boolean.valueOf(value.toString())
+    }
+
     private static int parsePositiveInt(def value, int defaultValue, String path, List errors) {
         if (value == null) {
             return defaultValue
@@ -662,6 +920,79 @@ final class PlannerConfig {
 
         static BatchingConfig defaults() {
             new BatchingConfig(true, 25, 90, 30, 15)
+        }
+    }
+
+    /**
+     * Weather-aware planning controls. Disabled by default; when disabled the
+     * scheduler behavior matches Phase 2/3 exactly for all tasks.
+     */
+    static final class WeatherConfig {
+        final boolean enabled
+        final String provider
+        final Double latitude
+        final Double longitude
+        final ZoneId timezone
+        final Duration maxAge
+        final Integer forecastHorizonDays
+        /** fail_closed | fail_open for stale/missing forecast data. */
+        final String fallback
+        final long suitabilityBonus
+        final List<WeatherTaskRule> taskRules
+
+        WeatherConfig(boolean enabled, String provider, Double latitude, Double longitude,
+                      ZoneId timezone, Duration maxAge, Integer forecastHorizonDays,
+                      String fallback, long suitabilityBonus, List<WeatherTaskRule> taskRules) {
+            this.enabled = enabled
+            this.provider = provider
+            this.latitude = latitude
+            this.longitude = longitude
+            this.timezone = timezone
+            this.maxAge = maxAge
+            this.forecastHorizonDays = forecastHorizonDays
+            this.fallback = fallback ?: 'fail_closed'
+            this.suitabilityBonus = suitabilityBonus
+            this.taskRules = Collections.unmodifiableList(new ArrayList<>(taskRules ?: []))
+        }
+
+        static WeatherConfig disabled() {
+            new WeatherConfig(false, 'none', null, null, null, Duration.ofHours(6), 7,
+                'fail_closed', 35L, [])
+        }
+    }
+
+    /**
+     * First-match weather policy for tasks whose labels intersect {@link #matchLabels}.
+     */
+    static final class WeatherTaskRule {
+        final String id
+        final String name
+        final List<String> matchLabels
+        final Double precipitationProbabilityMax
+        final Double precipitationMmMax
+        final Double windSpeedKphMax
+        final Double temperatureMinC
+        final Double temperatureMaxC
+        final Boolean requireDaylight
+        final Boolean preferredDaylight
+        final Double preferredForecastConfidenceMin
+
+        WeatherTaskRule(String id, String name, List<String> matchLabels,
+                        Double precipitationProbabilityMax, Double precipitationMmMax,
+                        Double windSpeedKphMax, Double temperatureMinC, Double temperatureMaxC,
+                        Boolean requireDaylight, Boolean preferredDaylight,
+                        Double preferredForecastConfidenceMin) {
+            this.id = id
+            this.name = name
+            this.matchLabels = Collections.unmodifiableList(new ArrayList<>(matchLabels ?: []))
+            this.precipitationProbabilityMax = precipitationProbabilityMax
+            this.precipitationMmMax = precipitationMmMax
+            this.windSpeedKphMax = windSpeedKphMax
+            this.temperatureMinC = temperatureMinC
+            this.temperatureMaxC = temperatureMaxC
+            this.requireDaylight = requireDaylight
+            this.preferredDaylight = preferredDaylight
+            this.preferredForecastConfidenceMin = preferredForecastConfidenceMin
         }
     }
 
@@ -837,6 +1168,7 @@ final class PlannerConfig {
         private StabilityConfig stability = StabilityConfig.defaults()
         private BatchingConfig batching = BatchingConfig.defaults()
         private List<TaskContext> taskContexts = []
+        private WeatherConfig weather = WeatherConfig.disabled()
 
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
@@ -852,6 +1184,7 @@ final class PlannerConfig {
         Builder stability(StabilityConfig v) { this.stability = v; this }
         Builder batching(BatchingConfig v) { this.batching = v; this }
         Builder taskContexts(List<TaskContext> v) { this.taskContexts = v ?: []; this }
+        Builder weather(WeatherConfig v) { this.weather = v ?: WeatherConfig.disabled(); this }
 
         // package-private accessors for invariant validation
         String getMode() { mode }
@@ -865,6 +1198,7 @@ final class PlannerConfig {
         StabilityConfig getStability() { stability }
         BatchingConfig getBatching() { batching }
         List<TaskContext> getTaskContexts() { taskContexts }
+        WeatherConfig getWeather() { weather }
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)

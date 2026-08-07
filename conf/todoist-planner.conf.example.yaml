@@ -81,8 +81,36 @@ planner:
     minimum_focus_block_minutes: 30
     context_switch_penalty: 15
 
+  # Weather-aware outdoor task policy (Phase 4). Disabled by default — non-weather
+  # planning is unchanged. When enabled, first matching task_rules entry wins
+  # (case-insensitive label intersection). Missing/stale forecast uses fallback.
   weather:
     enabled: false
+    provider: open_meteo
+    # latitude: 40.7128
+    # longitude: -74.0060
+    # timezone: America/New_York   # defaults to planner.timezone
+    max_age: PT6H
+    forecast_horizon_days: 7
+    fallback: fail_closed          # fail_closed | fail_open
+    suitability_bonus: 35
+    # task_rules:
+    #   - name: outdoor-dry
+    #     match_labels: [outdoor, dry-weather]
+    #     require:
+    #       precipitation_probability_max: 25
+    #       precipitation_mm_max: 0.5
+    #       wind_speed_kph_max: 25
+    #   - name: deck-paint
+    #     match_labels: [paint, deck]
+    #     require:
+    #       precipitation_probability_max: 15
+    #       precipitation_mm_max: 0
+    #       temperature_min_c: 10
+    #       wind_speed_kph_max: 20
+    #     preferred:
+    #       daylight: true
+    #       forecast_confidence_min: 0.70
 
   messaging:
     enabled: false

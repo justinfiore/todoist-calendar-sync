@@ -41,6 +41,170 @@ class PlannerConfigSpec extends Specification {
         config.batching.projectBatchBonus == 25
         config.batching.maxFocusBlockMinutes == 90
         config.taskContexts.any { it.name == 'phone' }
+        !config.weather.enabled
+    }
+
+    def "parses enabled weather section with task rules"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [
+                enabled   : true,
+                provider  : 'open_meteo',
+                latitude  : 40.71,
+                longitude : -74.01,
+                max_age   : 'PT6H',
+                fallback  : 'fail_closed',
+                task_rules: [
+                    [
+                        name        : 'deck-paint',
+                        match_labels: ['paint', 'deck'],
+                        require     : [
+                            precipitation_probability_max: 15,
+                            precipitation_mm_max         : 0,
+                            temperature_min_c            : 10,
+                            wind_speed_kph_max           : 20
+                        ],
+                        preferred   : [daylight: true, forecast_confidence_min: 0.7]
+                    ]
+                ]
+            ]
+        ])
+
+        then:
+        config.weather.enabled
+        config.weather.provider == 'open_meteo'
+        config.weather.latitude == 40.71d
+        config.weather.taskRules.size() == 1
+        config.weather.taskRules[0].precipitationProbabilityMax == 15d
+        config.weather.taskRules[0].preferredDaylight == true
+        config.weather.taskRules[0].preferredForecastConfidenceMin == 0.7d
+    }
+
+    def "rejects weather enabled without coordinates"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [enabled: true, provider: 'open_meteo']
+        ])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('latitude') || e.message.toLowerCase().contains('longitude')
+    }
+
+    def "rejects invalid weather threshold ranges"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [
+                enabled  : true,
+                latitude : 40.0,
+                longitude: -74.0,
+                task_rules: [[
+                    match_labels: ['outdoor'],
+                    require     : [precipitation_probability_max: 150]
+                ]]
+            ]
+        ])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "disabled weather without provider does not fail startup"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [enabled: false]
+        ])
+
+        then:
+        !config.weather.enabled
+    }
+
+    def "disabled weather with invalid task rule fails validation"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [
+                enabled   : false,
+                task_rules: [[
+                    match_labels: ['outdoor'],
+                    require     : [precipitation_probability_max: 150]
+                ]]
+            ]
+        ])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('precipitation_probability') ||
+            e.message.toLowerCase().contains('task_rules')
+    }
+
+    def "disabled weather with valid rules parses and stores but remains disabled"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [
+                enabled   : false,
+                provider  : 'open_meteo',
+                latitude  : 40.71,
+                longitude : -74.01,
+                task_rules: [[
+                    name        : 'deck',
+                    match_labels: ['outdoor'],
+                    require     : [precipitation_probability_max: 15]
+                ]]
+            ]
+        ])
+
+        then:
+        !config.weather.enabled
+        config.weather.taskRules.size() == 1
+        config.weather.taskRules[0].precipitationProbabilityMax == 15d
+        config.weather.latitude == 40.71d
+    }
+
+    def "rejects non-finite weather coordinates when enabled"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [
+                enabled  : true,
+                latitude : 'NaN',
+                longitude: -74.0,
+                task_rules: [[match_labels: ['o'], require: [daylight: true]]]
+            ]
+        ])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('finite') || e.message.toLowerCase().contains('latitude')
+    }
+
+    def "rejects non-finite weather coordinates when provided while disabled"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            weather     : [
+                enabled  : false,
+                latitude : 'Infinity',
+                longitude: -74.0
+            ]
+        ])
+
+        then:
+        thrown(IllegalArgumentException)
     }
 
     def "parses stability batching and task contexts"() {

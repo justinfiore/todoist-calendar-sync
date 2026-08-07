@@ -18,6 +18,7 @@ import java.time.ZonedDateTime
  * + Todoist_priority_weight
  * + project_batching_bonus
  * + preferred_context_bonus
+ * + weather_suitability_bonus
  * - soft_conflict_penalty
  * - context_switch_penalty
  * - task_move_churn_penalty
@@ -161,11 +162,14 @@ class PlanScorer {
 
     /**
      * Full score for placing {@code task} at [start, end) in a candidate slot.
+     * @param weatherScoreDelta optional soft weather suitability bonus (hard weather
+     *        infeasibility must be applied by the caller before scoring, or pass
+     *        {@link #INFEASIBLE} via rejecting the candidate). Negative deltas are ignored.
      */
     long scorePlacement(Task task, Instant start, Instant end, TimeSlot placeableSlot,
                         List<TimeSlot> reportingSlots, Instant now, Instant rangeEnd,
                         String previousProjectId, Instant previousStart, boolean manualOverride,
-                        boolean batchedWithSameProject) {
+                        boolean batchedWithSameProject, long weatherScoreDelta = 0L) {
         if (start == null || end == null || !end.isAfter(start)) {
             return INFEASIBLE
         }
@@ -181,6 +185,9 @@ class PlanScorer {
         score += priorityWeight(task.priority)
         score += projectBatchBonus(batchedWithSameProject)
         score += contextScore(task, start, end)
+        if (weatherScoreDelta > 0L) {
+            score += weatherScoreDelta
+        }
         score -= softConflictPenaltyForRange(reportingSlots, start, end)
         score -= contextSwitchPenalty(previousProjectId, task)
         score -= churnPenalty(task, start, previousStart, manualOverride, now)
