@@ -6,7 +6,7 @@
 
 **Architecture:** Keep scheduling deterministic, explainable, and independently testable. New adapters normalize Todoist tasks, calendar events, weather forecasts, and optional Slack interactions into planner inputs. A policy engine classifies availability and task suitability; a deterministic scheduler creates versioned plan proposals; existing CalDAV output code writes only approved planner-owned events and updates Todoist due dates to the selected calendar block start time. An optional LLM layer may enrich, summarize, and interpret feedback, but cannot directly mutate a plan or calendar.
 
-**Tech Stack:** Existing Groovy 3 / Gradle 6.8.3 / Todoist Sync API v1 / CalDAV; add targeted Groovy tests; Google Calendar API or CalDAV read support; optional Open-Meteo-compatible weather adapter; optional Slack adapter; optional OpenAI-compatible/Anthropic/xAI/local LLM adapters.
+**Tech Stack:** Target baseline from the prerequisite upgrade PR: Java 25 / Groovy 5 / Gradle 9; Todoist Sync API v1 / CalDAV; targeted Groovy tests; Google Calendar API or CalDAV read support; optional Open-Meteo-compatible weather adapter; optional Slack adapter; optional OpenAI-compatible/Anthropic/xAI/local LLM adapters. This planner work assumes the Java/Gradle/Groovy upgrade and baseline-test work land separately first.
 
 ---
 
@@ -14,7 +14,7 @@
 
 ### 1.1 The problem being solved
 
-The current application is a sync renderer: it includes eligible Todoist tasks with due dates, assigns the Todoist due datetime directly to the generated event `DTSTART`, gives date-only tasks a 09:00 start, assumes 30 minutes without a duration, and writes every result to CalDAV. It does not read busy time, distinguish personally-attended events from informational family events, assess capacity, account for weather, batch project work, or preserve a stable plan.
+The current application is a sync renderer: it includes eligible Todoist tasks with due dates, assigns the Todoist due datetime directly to the generated event `DTSTART`, gives date-only tasks a 9:00 AM start, assumes 30 minutes without a duration, and writes every result to CalDAV. It does not read busy time, distinguish personally-attended events from informational family events, assess capacity, account for weather, batch project work, or preserve a stable plan.
 
 That makes the calendar a display of *demand*, not a feasible plan. It causes visible overlap and a daily cycle of moving tasks that could not have fit in the first place.
 
@@ -175,6 +175,7 @@ planner:
 
   tasks:
     scheduling_eligible_labels: [schedule]
+    manual_label: manual # displayed in Todoist as @manual
     default_duration_minutes: 30
     duration_labels:
       t15: 15
@@ -257,7 +258,9 @@ Persist the matched rule name and reason in the plan explanation. Unknown calend
 
 ### 3.2 Task metadata
 
-Recommended labels include `@schedule`, `@phone`, `@home`, `@computer`, `@outdoor`, `@errand`, `@deep`, `@admin`, `@no-kids`, and configured effort labels such as `t30` / `t60`. Todoist native duration takes precedence over labels. Labels guide suitability and weighting; they must not implicitly change a task deadline.
+Recommended labels include `@schedule`, `@manual`, `@phone`, `@home`, `@computer`, `@outdoor`, `@errand`, `@deep`, `@admin`, `@no-kids`, and configured effort labels such as `t30` / `t60`. Todoist native duration takes precedence over labels. Labels guide suitability and weighting; they must not implicitly change a task deadline.
+
+`@manual` is an explicit planner opt-out. The planner must not select, move, defer, score, or report a manual task as scheduling work. The legacy sync path continues to synchronize an eligible `@manual` task's calendar event to its already-set Todoist due date/time and duration exactly as it does today. This preserves user-owned scheduling while preventing the planner from changing it.
 
 ---
 
@@ -271,6 +274,8 @@ For each eligible task, normalize:
 - deadline as the primary latest-completion constraint;
 - current Todoist due date/time and managed calendar event as an existing scheduled placement;
 - project, task context, outdoor/weather rules, and manual-override state.
+
+Before candidate generation, exclude tasks with the configured `manual_label` from planner selection. Retain them in the legacy calendar-sync input/output path so their existing Todoist due datetime and duration continue to control their calendar event.
 
 For calendar events, normalize title, description, calendar name/ID, start/end, source, all-day state, and role/classification explanation.
 
@@ -335,11 +340,11 @@ Each run produces a versioned plan and a human-readable diff, for example:
 Plan #42
 
 Moved
-- Paint the Deck: Saturday 10:00 → Sunday 13:00
+- Paint the Deck: Saturday 10:00 AM → Sunday 1:00 PM
   Reason: Saturday precipitation probability (75%) exceeded the task rule maximum (15%).
 
 Added
-- Scouts focus block: Saturday 10:00–11:00
+- Scouts focus block: Saturday 10:00 AM–11:00 AM
   Reason: indoor work, project batching bonus, and upcoming project deadline.
 
 Unscheduled
@@ -371,6 +376,8 @@ The update must be idempotent and use a compensating/retry strategy. If one side
 
 Treat a user-moved managed calendar event or manually changed Todoist due time as a manual override when it differs from the last applied plan. Preserve it by default and include it in subsequent planning runs. A user may explicitly allow the planner to reconsider it.
 
+This user-move detection is distinct from the `@manual` label: a manual override is a planner-managed task whose selected time the user adjusted, while an `@manual` task is never considered by the planner at all.
+
 ---
 
 ## 6. Messaging and approval workflow
@@ -392,9 +399,9 @@ Messaging is an optional adapter. Slack is the first implementation but must not
 Today’s feasible plan
 Available focus capacity: 2h 15m
 Scheduled:
-- 08:00–09:00 — Scouts focus block
-- 12:15–12:35 — Phone/admin
-- 20:00–20:45 — AI project review
+- 8:00 AM–9:00 AM — Scouts focus block
+- 12:15 PM–12:35 PM — Phone/admin
+- 8:00 PM–8:45 PM — AI project review
 Reserve: 30m
 
 Risk: Paint the Deck has five days remaining, but no weather-safe slot is currently available.
@@ -419,6 +426,8 @@ Example resulting structured temporary override:
 
 Policy changes that persist beyond the plan must always require confirmation.
 
+All human-facing plan diffs, Slack messages, alerts, and approval summaries must render local times using a 12-hour clock with an explicit `AM`/`PM` suffix. Configuration values, API payloads, state, and machine-readable JSON may remain ISO-8601 / 24-hour time to avoid ambiguity.
+
 ---
 
 ## 7. Optional LLM design
@@ -442,47 +451,30 @@ All AI output must conform to a schema, be validated by deterministic code, and 
 
 ## 8. Phased implementation plan
 
-### Phase 0: Safety baseline and domain foundation
+### Phase 1: Domain foundation, read-only availability, and capacity diagnostics
 
-**Objective:** Make existing behavior safer, establish test infrastructure, and introduce planner domain models without changing scheduling behavior.
-
-**Files:**
-- Modify: `app/build.gradle`
-- Modify: `app/src/main/groovy/todoistcaldavsync/TodoistCalDavSync.groovy`
-- Create: `app/src/main/groovy/todoistcaldavsync/planner/domain/*.groovy`
-- Create: `app/src/test/groovy/todoistcaldavsync/planner/domain/*Spec.groovy`
-- Create: `conf/todoist-planner.conf.example.yaml`
-
-**Steps:**
-1. Add JUnit/Spock test support compatible with Groovy 3 and Gradle 6.8.3.
-2. Write a failing test for task/deadline/due-time normalization.
-3. Implement immutable/validated task, event, slot, plan, and explanation models.
-4. Remove sensitive access-token logging from the existing sync path; replace it with redacted diagnostics.
-5. Add configuration schema validation for planner mode and essential fields.
-6. Run `JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 ./gradlew test`.
-
-**Acceptance criteria:** Existing sync behavior remains intact; secrets are not logged; new domain tests execute and pass.
-
-### Phase 1: Read-only availability and capacity diagnostics
-
-**Objective:** Produce an explainable, non-mutating report of free capacity, task demand, event classification, and deadline risk.
+**Objective:** Using the Java 25 / Groovy 5 / Gradle 9 and baseline-test foundation delivered by the prerequisite PR, create validated planner domain models and produce an explainable, non-mutating report of free capacity, task demand, event classification, and deadline risk.
 
 **Files:**
+- Create: `planner/domain/*.groovy`
 - Create: `planner/policy/EventClassifier.groovy`
 - Create: `planner/scheduling/AvailabilityCalculator.groovy`
 - Create: `planner/PlannerCli.groovy`
-- Create tests for calendar defaults, title/description regex rules, buffers, and unknown-calendar behavior.
+- Create: `conf/todoist-planner.conf.example.yaml`
+- Create tests for domain normalization, calendar defaults, title/description regex rules, buffers, unknown-calendar behavior, and `@manual` exclusion.
 
 **Steps:**
-1. Write failing unit tests for calendar-default and event-rule precedence.
-2. Implement classifier with persisted matched-rule explanation.
-3. Write failing slot-generation tests with hard/soft/informational events.
-4. Implement free-slot calculation and working-window/buffer subtraction.
-5. Add read-only Todoist/calendar gateway methods; do not alter existing writer behavior.
-6. Implement a CLI `--mode capacity-report` that emits Markdown/JSON diagnostics.
-7. Verify with fixture data and a dry-run against a configured non-production account/calendar.
+1. Write failing tests for task/deadline/due-time normalization and immutable/validated task, event, slot, plan, and explanation models.
+2. Implement the domain models and planner configuration validation.
+3. Write failing unit tests for calendar-default and event-rule precedence.
+4. Implement classifier with persisted matched-rule explanation.
+5. Write failing slot-generation tests with hard/soft/informational events.
+6. Implement free-slot calculation and working-window/buffer subtraction.
+7. Add read-only Todoist/calendar gateway methods and `@manual` planner exclusion; do not alter the legacy writer's handling of manual tasks.
+8. Implement a CLI `--mode capacity-report` that emits Markdown/JSON diagnostics.
+9. Verify with fixture data and a dry-run against a configured non-production account/calendar.
 
-**Acceptance criteria:** Report identifies usable capacity, tasks that cannot fit before deadlines, and why each relevant event consumed or did not consume time. No remote writes occur.
+**Acceptance criteria:** Report identifies usable capacity, tasks that cannot fit before deadlines, and why each relevant event consumed or did not consume time. `@manual` tasks are absent from planner candidates but remain eligible for legacy due-time/duration synchronization. No remote writes occur.
 
 ### Phase 2: Deterministic proposal scheduler
 
@@ -501,7 +493,7 @@ All AI output must conform to a schema, be validated by deterministic code, and 
 4. Implement batching with explicit aggregate block membership.
 5. Add frozen/manual move penalties and an output plan diff.
 6. Add plan snapshot/state persistence without changing Todoist or calendars.
-7. Run the full test suite on Java 8 and inspect a sample two-week proposal manually.
+7. Run the full test suite on the prerequisite Java 25 / Groovy 5 / Gradle 9 baseline and inspect a sample two-week proposal manually.
 
 **Acceptance criteria:** Same fixture always returns the same plan; no conflicts with hard blockers; proposal explicitly lists unscheduled tasks and reasons; all changes remain preview-only.
 
