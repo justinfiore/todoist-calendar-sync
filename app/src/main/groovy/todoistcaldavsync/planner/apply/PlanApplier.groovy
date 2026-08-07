@@ -97,23 +97,93 @@ class PlanApplier {
     }
 
     /**
-     * Apply plan under mode/approval gates. Returns auditable receipt (always persisted when
-     * any evaluation runs — including zero-write gated outcomes).
+     * Apply plan under stored plan.mode / config mode gates and optional approval.
+     * Phase 3 modes unchanged: preview, approval_required, apply_safe_changes (when stored),
+     * fully_automated refused. Does not mutate the plan.
      */
     ApplicationReceipt apply(Plan plan, Approval approval = null) {
+        if (plan == null) {
+            throw new IllegalArgumentException('plan is required')
+        }
+        String mode = plan.mode ?: config.mode ?: MODE_PREVIEW
+        // Phase 3: preview on plan or config blocks ordinary apply
+        boolean forcePreview = (mode == MODE_PREVIEW || config.mode == MODE_PREVIEW)
+        return applyWithEffectiveMode(plan, approval, forcePreview ? MODE_PREVIEW : mode)
+    }
+
+    /**
+     * Explicit user APPLY_SAFE entry: execute with effective gate mode {@link #MODE_APPLY_SAFE}
+     * without mutating/rebuilding the stored Plan or weakening semantic hash/approval behavior.
+     * Requires no approval; ordinary safe blocks may apply while frozen, manualOverride, and
+     * approvalRequired blocks are always skipped. Never escalates to fully_automated.
+     * Works when stored Plan.mode is approval_required, preview, or other non-fully-automated
+     * proposal mode — effective mode is apply_safe_changes for gates and receipt.mode only.
+     *
+     * <p>Outer safety gate: if stored {@code plan.mode} OR {@code config.mode} is
+     * {@link #MODE_FULLY_AUTOMATED}, zero-write refuse immediately. Does not use the effective
+     * mode override to bypass this gate.
+     */
+    ApplicationReceipt applySafeChanges(Plan plan) {
         if (plan == null) {
             throw new IllegalArgumentException('plan is required')
         }
         Instant started = clock.get()
         String planHash = PlanHash.compute(plan)
         String receiptId = buildReceiptId(plan.id, plan.version, started, planHash)
+        String planMode = plan.mode
+        String configMode = config.mode
+        if (planMode == MODE_FULLY_AUTOMATED || configMode == MODE_FULLY_AUTOMATED) {
+            String reason =
+                "applySafeChanges refuses fully_automated (plan.mode=${planMode}, config.mode=${configMode})"
+            ApplicationReceipt receipt = ApplicationReceipt.builder()
+                .id(receiptId)
+                .planId(plan.id)
+                .planVersion(plan.version)
+                .planHash(planHash)
+                .mode(MODE_APPLY_SAFE)
+                .startedAt(started)
+                .finishedAt(clock.get())
+                .overallStatus(ApplyItemStatus.SKIPPED_UNAPPROVED)
+                .items([])
+                .errors([reason])
+                .metadata([
+                    writeCount     : 0,
+                    refused        : true,
+                    refusedReason  : 'fully_automated',
+                    planMode       : planMode,
+                    configMode     : configMode,
+                    gate           : 'applySafeChanges_fully_automated',
+                    effectiveMode  : MODE_APPLY_SAFE
+                ])
+                .build()
+            stateStore.saveReceipt(receipt)
+            return receipt
+        }
+        return applyWithEffectiveMode(plan, null, MODE_APPLY_SAFE)
+    }
+
+    /**
+     * Re-run apply for reconciliation (same gates as {@link #apply}). Completes partial Todoist
+     * sides without duplicate calendar writes when live owned event already matches proposed block.
+     */
+    ApplicationReceipt reconcile(Plan plan, Approval approval = null) {
+        return apply(plan, approval)
+    }
+
+    /**
+     * Internal apply with caller-chosen effective mode (gates + receipt.mode). Never mutates plan.
+     */
+    private ApplicationReceipt applyWithEffectiveMode(Plan plan, Approval approval, String effectiveMode) {
+        Instant started = clock.get()
+        String planHash = PlanHash.compute(plan)
+        String receiptId = buildReceiptId(plan.id, plan.version, started, planHash)
         List<AppliedMapping> items = []
         List<Map<String, Object>> drifts = []
         List<String> errors = []
-        String mode = plan.mode ?: config.mode ?: MODE_PREVIEW
+        String mode = effectiveMode ?: MODE_PREVIEW
 
         // --- Gate: preview never writes ---
-        if (mode == MODE_PREVIEW || config.mode == MODE_PREVIEW) {
+        if (mode == MODE_PREVIEW) {
             ApplicationReceipt receipt = ApplicationReceipt.builder()
                 .id(receiptId)
                 .planId(plan.id)
@@ -207,7 +277,8 @@ class PlanApplier {
             blockCount      : blocks.size(),
             approvalBound  : gate.explicitApproval,
             explicitApproval: gate.explicitApproval,
-            approvalValid   : gate.invalidApprovalReason == null && (approval == null || gate.explicitApproval || mode == MODE_APPLY_SAFE)
+            approvalValid   : gate.invalidApprovalReason == null && (approval == null || gate.explicitApproval || mode == MODE_APPLY_SAFE),
+            effectiveMode   : mode
         ]
         if (gate.invalidApprovalReason) {
             meta.approvalValid = false
@@ -239,14 +310,6 @@ class PlanApplier {
             .build()
         stateStore.saveReceipt(receipt)
         return receipt
-    }
-
-    /**
-     * Re-run apply for reconciliation (same gates). Completes partial Todoist sides without
-     * duplicate calendar writes when live owned event already matches proposed block.
-     */
-    ApplicationReceipt reconcile(Plan plan, Approval approval = null) {
-        return apply(plan, approval)
     }
 
     private void applyBlock(Plan plan, String planHash, Approval approval, ScheduledBlock block,

@@ -33,6 +33,7 @@ final class PlannerConfig {
     final BatchingConfig batching
     final List<TaskContext> taskContexts
     final WeatherConfig weather
+    final MessagingConfig messaging
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
 
@@ -53,6 +54,7 @@ final class PlannerConfig {
         this.batching = b.batching ?: BatchingConfig.defaults()
         this.taskContexts = Collections.unmodifiableList(new ArrayList<>(b.taskContexts ?: []))
         this.weather = b.weather ?: WeatherConfig.disabled()
+        this.messaging = b.messaging ?: MessagingConfig.disabled()
     }
 
     static Builder builder() {
@@ -164,6 +166,8 @@ final class PlannerConfig {
         BatchingConfig batching = parseBatching(p.batching instanceof Map ? p.batching as Map : [:], errors)
         List<TaskContext> taskContexts = parseTaskContexts(tasks.contexts, errors)
         WeatherConfig weather = parseWeather(p.weather instanceof Map ? p.weather as Map : null, timezone, errors)
+        MessagingConfig messaging = parseMessaging(
+            p.messaging instanceof Map ? p.messaging as Map : null, timezone, errors)
 
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
@@ -185,6 +189,7 @@ final class PlannerConfig {
             .batching(batching)
             .taskContexts(taskContexts)
             .weather(weather)
+            .messaging(messaging)
             .build()
     }
 
@@ -286,6 +291,11 @@ final class PlannerConfig {
             errors << 'planner.weather is required'
         } else {
             errors.addAll(collectWeatherErrors(b.weather))
+        }
+        if (b.messaging == null) {
+            errors << 'planner.messaging is required'
+        } else {
+            errors.addAll(collectMessagingErrors(b.messaging))
         }
         return errors
     }
@@ -856,6 +866,423 @@ final class PlannerConfig {
         return Boolean.valueOf(value.toString())
     }
 
+    /**
+     * Optional messaging section. Disabled by default; absent provider must not affect planning.
+     * Secrets referenced by env var name only (never inline tokens).
+     */
+    private static MessagingConfig parseMessaging(Map raw, ZoneId plannerTimezone, List errors) {
+        if (raw == null || raw.isEmpty()) {
+            return MessagingConfig.disabled()
+        }
+        boolean enabled = raw.enabled != null ? Boolean.valueOf(raw.enabled.toString()) : false
+        boolean hasExtra = raw.keySet().any { k ->
+            String key = k?.toString()?.toLowerCase(Locale.ROOT)
+            key && key != 'enabled'
+        }
+        if (!enabled && !hasExtra) {
+            return MessagingConfig.disabled()
+        }
+        String provider = (raw.provider ?: (enabled ? 'slack' : 'none')).toString().toLowerCase(Locale.ROOT)
+        String destination = (raw.destination ?: raw.channel ?: raw.channel_id ?: raw.channelId)?.toString()
+        String secretEnv = (raw.secret_env ?: raw.secretEnv ?: raw.webhook_url_env ?: raw.webhookUrlEnv ?:
+            raw.bot_token_env ?: raw.botTokenEnv)?.toString()
+        String webhookUrlEnv = (raw.webhook_url_env ?: raw.webhookUrlEnv)?.toString()
+        String botTokenEnv = (raw.bot_token_env ?: raw.botTokenEnv)?.toString()
+        String slackMode = (raw.slack_mode ?: raw.slackMode ?: raw.mode ?:
+            (botTokenEnv ? 'chat_api' : 'webhook')).toString().toLowerCase(Locale.ROOT)
+        ZoneId msgTz = plannerTimezone
+        def tzRaw = raw.timezone ?: raw.time_zone ?: raw.timeZone
+        if (tzRaw) {
+            try {
+                msgTz = ZoneId.of(tzRaw.toString())
+            } catch (Exception e) {
+                errors << "planner.messaging.timezone is invalid: ${tzRaw}"
+            }
+        }
+        boolean dailySummaryExplicit = messagingMapHasKey(raw, 'daily_summary', 'dailySummary')
+        boolean weeklySummaryExplicit = messagingMapHasKey(raw, 'weekly_summary', 'weeklySummary')
+        boolean mediumHorizonExplicit = messagingMapHasKey(raw, 'medium_horizon_summary', 'mediumHorizonSummary')
+        boolean capacityRiskExplicit = messagingMapHasKey(raw, 'capacity_risk_alerts', 'capacityRiskAlerts')
+        boolean proposalExplicit = messagingMapHasKey(raw, 'proposal_summary', 'proposalSummary')
+        // Do not use Elvis on booleans: false is a valid explicit value.
+        boolean dailySummary = parseBoolDefault(
+            firstMessagingValue(raw, 'daily_summary', 'dailySummary'), true)
+        boolean weeklySummary = parseBoolDefault(
+            firstMessagingValue(raw, 'weekly_summary', 'weeklySummary'), true)
+        boolean mediumHorizon = parseBoolDefault(
+            firstMessagingValue(raw, 'medium_horizon_summary', 'mediumHorizonSummary'), true)
+        boolean capacityRiskAlerts = parseBoolDefault(
+            firstMessagingValue(raw, 'capacity_risk_alerts', 'capacityRiskAlerts'), true)
+        boolean proposalSummary = parseBoolDefault(
+            firstMessagingValue(raw, 'proposal_summary', 'proposalSummary'), true)
+        Set<String> enabledKinds = new LinkedHashSet<>()
+        boolean kindAllowlistExplicit = messagingMapHasKey(raw, 'enabled_kinds', 'enabledKinds', 'message_kinds')
+        def kindsRaw = kindAllowlistExplicit
+            ? (raw.enabled_kinds != null ? raw.enabled_kinds
+                : (raw.enabledKinds != null ? raw.enabledKinds : raw.message_kinds))
+            : null
+        if (kindAllowlistExplicit) {
+            if (!(kindsRaw instanceof Collection)) {
+                errors << 'planner.messaging.enabled_kinds must be a list (empty list disables all kinds)'
+            } else {
+                enabledKinds.addAll(parseEnabledKindsAllowlist(kindsRaw as Collection, errors))
+            }
+            // Explicit allowlist wins for kind enablement; reject user-provided true
+            // booleans for kinds omitted from the allowlist (defaults do not conflict).
+            rejectEnabledKindsBooleanConflict(errors, enabledKinds, 'daily_summary',
+                dailySummary, dailySummaryExplicit, 'daily_summary')
+            rejectEnabledKindsBooleanConflict(errors, enabledKinds, 'weekly_summary',
+                weeklySummary, weeklySummaryExplicit, 'weekly_summary')
+            rejectEnabledKindsBooleanConflict(errors, enabledKinds, 'medium_horizon_summary',
+                mediumHorizon, mediumHorizonExplicit, 'medium_horizon_summary')
+            rejectEnabledKindsBooleanConflict(errors, enabledKinds, 'capacity_risk_alert',
+                capacityRiskAlerts, capacityRiskExplicit, 'capacity_risk_alerts')
+            rejectEnabledKindsBooleanConflict(errors, enabledKinds, 'proposal',
+                proposalSummary, proposalExplicit, 'proposal_summary')
+            // Align legacy boolean fields with exclusive allowlist so consumers of
+            // capacityRiskAlerts / dailySummary do not disagree with isKindEnabled.
+            dailySummary = enabledKinds.contains('daily_summary')
+            weeklySummary = enabledKinds.contains('weekly_summary')
+            mediumHorizon = enabledKinds.contains('medium_horizon_summary')
+            capacityRiskAlerts = enabledKinds.contains('capacity_risk_alert')
+            proposalSummary = enabledKinds.contains('proposal')
+        } else {
+            if (dailySummary) enabledKinds << 'daily_summary'
+            if (weeklySummary) enabledKinds << 'weekly_summary'
+            if (mediumHorizon) enabledKinds << 'medium_horizon_summary'
+            if (capacityRiskAlerts) enabledKinds << 'capacity_risk_alert'
+            if (proposalSummary) enabledKinds << 'proposal'
+        }
+        int riskDays = 5
+        def rd = raw.risk_deadline_days ?: raw.riskDeadlineDays
+        if (rd != null) {
+            try {
+                riskDays = rd as int
+                if (riskDays < 0) {
+                    errors << 'planner.messaging.risk_deadline_days must be non-negative'
+                    riskDays = 5
+                }
+            } catch (Exception e) {
+                errors << "planner.messaging.risk_deadline_days is invalid: ${rd}"
+            }
+        }
+        List<MessageSchedule> schedules = parseMessageSchedules(
+            raw.schedules ?: raw.delivery_schedules ?: raw.deliverySchedules, msgTz, errors)
+        // Default schedules when enabled and none provided
+        if (enabled && schedules.isEmpty()) {
+            if (enabledKinds.contains('daily_summary')) {
+                schedules << new MessageSchedule('daily', 'daily_summary', '06:00', Duration.ofDays(1), Duration.ofMinutes(30))
+            }
+            if (enabledKinds.contains('weekly_summary')) {
+                schedules << new MessageSchedule('weekly', 'weekly_summary', 'mon 09:00', Duration.ofDays(7), Duration.ofMinutes(30))
+            }
+            if (enabledKinds.contains('medium_horizon_summary')) {
+                schedules << new MessageSchedule('medium', 'medium_horizon_summary', 'mon 09:30', Duration.ofDays(14), Duration.ofMinutes(30))
+            }
+        }
+        if (enabled && !provider) {
+            errors << 'planner.messaging.provider is required when messaging is enabled'
+        }
+        if (enabled && provider == 'slack') {
+            if (!destination) {
+                errors << 'planner.messaging.destination (channel) is required when slack messaging is enabled'
+            }
+            if (!webhookUrlEnv && !botTokenEnv && !secretEnv) {
+                errors << 'planner.messaging requires webhook_url_env or bot_token_env (secret name, not value)'
+            }
+            if (!(slackMode in ['webhook', 'chat_api'] as Set)) {
+                errors << "planner.messaging.slack_mode must be webhook or chat_api, got: ${slackMode}"
+            }
+        }
+        if (enabled && provider && !(provider in ['slack', 'none', 'disabled', 'fixture', 'in_memory'] as Set)) {
+            errors << "planner.messaging.provider unsupported: ${provider}"
+        }
+        // Reject obvious inline secrets
+        raw.each { k, v ->
+            String key = k?.toString()?.toLowerCase(Locale.ROOT) ?: ''
+            if (key in ['token', 'bot_token', 'webhook_url', 'api_key', 'secret', 'password'] as Set) {
+                errors << "planner.messaging.${k} must not store raw secrets; use *_env name references"
+            }
+        }
+        MessagingConfig cfg = new MessagingConfig(enabled, provider, destination, secretEnv,
+            webhookUrlEnv, botTokenEnv, slackMode, msgTz, dailySummary, weeklySummary, mediumHorizon,
+            capacityRiskAlerts, proposalSummary, enabledKinds, kindAllowlistExplicit, riskDays, schedules)
+        errors.addAll(collectMessagingErrors(cfg))
+        return cfg
+    }
+
+    private static boolean messagingMapHasKey(Map raw, String... names) {
+        if (raw == null || names == null) {
+            return false
+        }
+        Set<String> wanted = names.collect { it?.toLowerCase(Locale.ROOT) }.findAll { it } as Set
+        raw.keySet().any { k ->
+            String key = k?.toString()?.toLowerCase(Locale.ROOT)
+            key && wanted.contains(key)
+        }
+    }
+
+    /** First present map value among aliases; preserves explicit false (unlike Elvis). */
+    private static Object firstMessagingValue(Map raw, String... names) {
+        if (raw == null || names == null) {
+            return null
+        }
+        for (String name : names) {
+            if (name == null) {
+                continue
+            }
+            String want = name.toLowerCase(Locale.ROOT)
+            for (Object k : raw.keySet()) {
+                String key = k?.toString()?.toLowerCase(Locale.ROOT)
+                if (key && key == want) {
+                    return raw.get(k)
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Canonical message kinds accepted in {@code enabled_kinds} / schedules.
+     * Aliases normalize case-insensitively (hyphen/underscore) to these values.
+     */
+    static final Set<String> CANONICAL_MESSAGE_KINDS = [
+        'daily_summary', 'weekly_summary', 'medium_horizon_summary',
+        'capacity_risk_alert', 'proposal'
+    ] as Set
+
+    private static final Map<String, String> MESSAGE_KIND_ALIASES
+
+    static {
+        Map<String, String> aliases = new LinkedHashMap<>()
+        // daily
+        ['daily_summary', 'daily-summary', 'daily', 'dailysummary', 'summary_daily'].each {
+            aliases[it] = 'daily_summary'
+        }
+        // weekly
+        ['weekly_summary', 'weekly-summary', 'weekly', 'weeklysummary', 'summary_weekly'].each {
+            aliases[it] = 'weekly_summary'
+        }
+        // medium
+        ['medium_horizon_summary', 'medium-horizon-summary', 'medium_horizon', 'medium-horizon',
+         'medium', 'mediumhorizon', 'medium_horizon_summaries'].each {
+            aliases[it] = 'medium_horizon_summary'
+        }
+        // risk
+        ['capacity_risk_alert', 'capacity-risk-alert', 'capacity_risk_alerts', 'capacity-risk-alerts',
+         'risk', 'risk_alert', 'risk-alert', 'capacity_risk', 'capacity-risk'].each {
+            aliases[it] = 'capacity_risk_alert'
+        }
+        // proposal
+        ['proposal', 'proposal_summary', 'proposal-summary', 'proposals'].each {
+            aliases[it] = 'proposal'
+        }
+        MESSAGE_KIND_ALIASES = Collections.unmodifiableMap(aliases)
+    }
+
+    /**
+     * Normalize a configured kind token to a canonical kind, or null if unknown/blank.
+     */
+    static String normalizeMessageKind(String raw) {
+        if (raw == null) {
+            return null
+        }
+        String s = raw.toString().trim()
+        if (!s) {
+            return null
+        }
+        String key = s.toLowerCase(Locale.ROOT).replace('-', '_')
+        // also collapse internal spaces
+        key = key.replaceAll(/\s+/, '_')
+        if (MESSAGE_KIND_ALIASES.containsKey(key)) {
+            return MESSAGE_KIND_ALIASES[key]
+        }
+        // try without underscores for compact forms already covered; reject otherwise
+        String compact = key.replace('_', '')
+        String found = MESSAGE_KIND_ALIASES.find { k, v -> k.replace('_', '') == compact }?.value
+        return found
+    }
+
+    private static Set<String> parseEnabledKindsAllowlist(Collection kindsRaw, List errors) {
+        Set<String> out = new LinkedHashSet<>()
+        kindsRaw.eachWithIndex { entry, idx ->
+            if (entry == null || entry.toString().trim().isEmpty()) {
+                errors << "planner.messaging.enabled_kinds[${idx}] is blank; use canonical kinds ${CANONICAL_MESSAGE_KINDS}"
+                return
+            }
+            String canonical = normalizeMessageKind(entry.toString())
+            if (!canonical) {
+                errors << "planner.messaging.enabled_kinds[${idx}] unknown kind '${entry}'; " +
+                    "allowed: ${CANONICAL_MESSAGE_KINDS} (aliases normalized case-insensitively)"
+                return
+            }
+            if (out.contains(canonical)) {
+                errors << "planner.messaging.enabled_kinds contains duplicate kind '${canonical}' " +
+                    "after normalization (entry[${idx}]='${entry}')"
+                return
+            }
+            out << canonical
+        }
+        return out
+    }
+
+    private static void rejectEnabledKindsBooleanConflict(List errors, Set<String> allowlist,
+                                                          String canonicalKind, boolean flagValue,
+                                                          boolean flagExplicit, String flagName) {
+        if (!flagExplicit || !flagValue) {
+            return
+        }
+        if (!allowlist.contains(canonicalKind)) {
+            errors << "planner.messaging.${flagName}=true conflicts with explicit enabled_kinds " +
+                "allowlist that omits '${canonicalKind}'; remove the boolean or add the kind to enabled_kinds"
+        }
+    }
+
+    private static boolean parseBoolDefault(def value, boolean defaultValue) {
+        if (value == null) {
+            return defaultValue
+        }
+        return Boolean.valueOf(value.toString())
+    }
+
+    private static List<MessageSchedule> parseMessageSchedules(def raw, ZoneId zone, List errors) {
+        List<MessageSchedule> result = []
+        if (raw == null) {
+            return result
+        }
+        if (!(raw instanceof Collection)) {
+            errors << 'planner.messaging.schedules must be a list'
+            return result
+        }
+        // Track canonical delivery identity after kind normalization to reject duplicates.
+        Set<String> seenDeliveryKeys = new LinkedHashSet<>()
+        raw.eachWithIndex { entry, idx ->
+            if (!(entry instanceof Map)) {
+                errors << "planner.messaging.schedules[${idx}] must be a map"
+                return
+            }
+            Map m = entry as Map
+            String name = (m.name ?: m.id ?: "schedule-${idx}").toString()
+            def kindRaw = m.containsKey('kind') ? m.kind
+                : (m.containsKey('message_kind') ? m.message_kind
+                    : (m.containsKey('messageKind') ? m.messageKind : null))
+            String kind
+            if (kindRaw == null || kindRaw.toString().trim().isEmpty()) {
+                // Missing kind defaults to daily_summary only when the key is entirely absent.
+                if (kindRaw == null && !m.containsKey('kind') && !m.containsKey('message_kind')
+                    && !m.containsKey('messageKind')) {
+                    kind = 'daily_summary'
+                } else {
+                    errors << "planner.messaging.schedules[${idx}].kind is blank or null" +
+                        (kindRaw != null ? " (value='${kindRaw}')" : '') +
+                        "; use canonical kinds ${CANONICAL_MESSAGE_KINDS}"
+                    return
+                }
+            } else {
+                kind = normalizeMessageKind(kindRaw.toString())
+                if (!kind) {
+                    errors << "planner.messaging.schedules[${idx}].kind unknown kind '${kindRaw}'; " +
+                        "allowed: ${CANONICAL_MESSAGE_KINDS} (aliases normalized case-insensitively)"
+                    return
+                }
+            }
+            String schedule = (m.schedule ?: m.at ?: m.cron)?.toString()
+            if (!schedule) {
+                errors << "planner.messaging.schedules[${idx}].schedule is required"
+                return
+            }
+            Duration horizonDefault
+            if (kind == 'weekly_summary') {
+                horizonDefault = Duration.ofDays(7)
+            } else if (kind == 'medium_horizon_summary') {
+                horizonDefault = Duration.ofDays(14)
+            } else if (kind == 'capacity_risk_alert') {
+                horizonDefault = Duration.ofDays(5)
+            } else {
+                horizonDefault = Duration.ofDays(1)
+            }
+            Duration horizon = parseDurationValue(
+                m.horizon ?: m.horizon_duration, horizonDefault,
+                "planner.messaging.schedules[${idx}].horizon", errors)
+            Duration window = parseDurationValue(
+                m.window ?: m.due_window, Duration.ofMinutes(30),
+                "planner.messaging.schedules[${idx}].window", errors)
+            // Validate schedule expression shape lightly
+            if (!isValidScheduleExpression(schedule)) {
+                errors << "planner.messaging.schedules[${idx}].schedule unsupported expression: ${schedule}"
+            }
+            String destKey = (m.destination ?: m.channel ?: '').toString().trim()
+            String deliveryKey = [
+                kind,
+                schedule?.trim()?.toLowerCase(Locale.ROOT),
+                horizon?.toString() ?: '',
+                window?.toString() ?: '',
+                destKey
+            ].join('|')
+            if (seenDeliveryKeys.contains(deliveryKey)) {
+                errors << "planner.messaging.schedules[${idx}] duplicates delivery after kind normalization " +
+                    "(canonical kind='${kind}', schedule='${schedule}', horizon=${horizon}, window=${window}" +
+                    (destKey ? ", destination='${destKey}'" : '') +
+                    "); remove the duplicate schedule entry"
+                return
+            }
+            seenDeliveryKeys << deliveryKey
+            result << new MessageSchedule(name, kind, schedule, horizon, window)
+        }
+        return result
+    }
+
+    static boolean isValidScheduleExpression(String expr) {
+        if (!expr) {
+            return false
+        }
+        String s = expr.trim()
+        if (s ==~ /^\d{1,2}:\d{2}$/) {
+            return true
+        }
+        if (s ==~ /^(?i)(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+\d{1,2}:\d{2}$/) {
+            return true
+        }
+        if (s ==~ /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+(\*|\d|mon|tue|wed|thu|fri|sat|sun)$/) {
+            return true
+        }
+        // classic cron daily "0 6 * * *"
+        if (s ==~ /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+\*$/) {
+            return true
+        }
+        return false
+    }
+
+    static List<String> collectMessagingErrors(MessagingConfig m) {
+        List<String> errors = []
+        if (m == null) {
+            errors << 'planner.messaging is required'
+            return errors
+        }
+        if (m.riskDeadlineDays < 0) {
+            errors << 'planner.messaging.risk_deadline_days must be non-negative'
+        }
+        m.schedules?.eachWithIndex { MessageSchedule s, int idx ->
+            if (!s.name) {
+                errors << "planner.messaging.schedules[${idx}].name is required"
+            }
+            if (!s.kind) {
+                errors << "planner.messaging.schedules[${idx}].kind is required"
+            } else if (!CANONICAL_MESSAGE_KINDS.contains(s.kind)) {
+                // Stored kind must already be canonical (parseMessageSchedules normalizes).
+                errors << "planner.messaging.schedules[${idx}].kind must be canonical " +
+                    "${CANONICAL_MESSAGE_KINDS}; got '${s.kind}'"
+            }
+            if (!s.schedule || !isValidScheduleExpression(s.schedule)) {
+                errors << "planner.messaging.schedules[${idx}].schedule invalid: ${s.schedule}"
+            }
+            if (s.window != null && (s.window.isNegative() || s.window.isZero())) {
+                errors << "planner.messaging.schedules[${idx}].window must be positive"
+            }
+        }
+        return errors
+    }
+
     private static int parsePositiveInt(def value, int defaultValue, String path, List errors) {
         if (value == null) {
             return defaultValue
@@ -920,6 +1347,122 @@ final class PlannerConfig {
 
         static BatchingConfig defaults() {
             new BatchingConfig(true, 25, 90, 30, 15)
+        }
+    }
+
+    /**
+     * Optional Slack/messaging controls. Disabled by default; when disabled
+     * planning is unaffected and no delivery occurs.
+     *
+     * Kind enablement and schedule kinds share {@link PlannerConfig#normalizeMessageKind}:
+     * <ul>
+     *   <li>If {@code enabled_kinds} is explicitly present, it is the exclusive allowlist
+     *       of message kinds (after alias/case normalization). Empty list = disable all kinds.
+     *       Per-kind boolean defaults do not re-enable omitted kinds; an explicit
+     *       {@code true} boolean for an omitted kind is a config error.</li>
+     *   <li>If {@code enabled_kinds} is absent, legacy per-kind booleans
+     *       ({@code daily_summary}, {@code weekly_summary}, {@code medium_horizon_summary},
+     *       {@code capacity_risk_alerts}, {@code proposal_summary}) apply with default true.</li>
+     *   <li>{@code schedules[].kind} is normalized at load to a canonical kind
+     *       ({@code daily_summary}, {@code weekly_summary}, {@code medium_horizon_summary},
+     *       {@code capacity_risk_alert}, {@code proposal}). Unknown, blank, and null kinds
+     *       fail validation with index and value. Duplicate delivery identity after
+     *       normalization (same canonical kind+schedule+horizon+window+destination) is rejected.</li>
+     * </ul>
+     */
+    static final class MessagingConfig {
+        final boolean enabled
+        final String provider
+        final String destination
+        /** Generic secret env name (legacy/single-field). */
+        final String secretEnv
+        final String webhookUrlEnv
+        final String botTokenEnv
+        final String slackMode
+        final ZoneId timezone
+        final boolean dailySummary
+        final boolean weeklySummary
+        final boolean mediumHorizonSummary
+        final boolean capacityRiskAlerts
+        final boolean proposalSummary
+        final Set<String> enabledKinds
+        /** True when config explicitly set {@code enabled_kinds} (including empty list). */
+        final boolean kindAllowlistExplicit
+        final int riskDeadlineDays
+        final List<MessageSchedule> schedules
+
+        MessagingConfig(boolean enabled, String provider, String destination, String secretEnv,
+                        String webhookUrlEnv, String botTokenEnv, String slackMode, ZoneId timezone,
+                        boolean dailySummary, boolean weeklySummary, boolean mediumHorizonSummary,
+                        boolean capacityRiskAlerts, boolean proposalSummary,
+                        Set<String> enabledKinds, boolean kindAllowlistExplicit, int riskDeadlineDays,
+                        List<MessageSchedule> schedules) {
+            this.enabled = enabled
+            this.provider = provider
+            this.destination = destination
+            this.secretEnv = secretEnv
+            this.webhookUrlEnv = webhookUrlEnv
+            this.botTokenEnv = botTokenEnv
+            this.slackMode = slackMode ?: 'webhook'
+            this.timezone = timezone
+            this.dailySummary = dailySummary
+            this.weeklySummary = weeklySummary
+            this.mediumHorizonSummary = mediumHorizonSummary
+            this.capacityRiskAlerts = capacityRiskAlerts
+            this.proposalSummary = proposalSummary
+            this.enabledKinds = Collections.unmodifiableSet(new LinkedHashSet<>(enabledKinds ?: []))
+            this.kindAllowlistExplicit = kindAllowlistExplicit
+            this.riskDeadlineDays = riskDeadlineDays
+            this.schedules = Collections.unmodifiableList(new ArrayList<>(schedules ?: []))
+        }
+
+        /**
+         * Whether {@code kind} may be delivered. When messaging is disabled, always false.
+         * Kind tokens are normalized (aliases/case) before allowlist/boolean checks.
+         * With an explicit {@code enabled_kinds} allowlist, only listed canonical kinds
+         * return true — omitted kinds are false even if legacy boolean fields default true.
+         */
+        boolean isKindEnabled(String kind) {
+            if (!enabled) {
+                return false
+            }
+            if (!kind) {
+                return false
+            }
+            String canonical = normalizeMessageKind(kind) ?: kind
+            if (kindAllowlistExplicit) {
+                return enabledKinds.contains(canonical)
+            }
+            if (enabledKinds.contains(canonical)) {
+                return true
+            }
+            if (canonical == 'daily_summary') return dailySummary
+            if (canonical == 'weekly_summary') return weeklySummary
+            if (canonical == 'medium_horizon_summary') return mediumHorizonSummary
+            if (canonical == 'capacity_risk_alert') return capacityRiskAlerts
+            if (canonical == 'proposal') return proposalSummary
+            return false
+        }
+
+        static MessagingConfig disabled() {
+            new MessagingConfig(false, 'none', null, null, null, null, 'webhook', null,
+                true, true, true, true, true, [] as Set, false, 5, [])
+        }
+    }
+
+    static final class MessageSchedule {
+        final String name
+        final String kind
+        final String schedule
+        final Duration horizon
+        final Duration window
+
+        MessageSchedule(String name, String kind, String schedule, Duration horizon, Duration window) {
+            this.name = name
+            this.kind = kind
+            this.schedule = schedule
+            this.horizon = horizon
+            this.window = window
         }
     }
 
@@ -1169,6 +1712,7 @@ final class PlannerConfig {
         private BatchingConfig batching = BatchingConfig.defaults()
         private List<TaskContext> taskContexts = []
         private WeatherConfig weather = WeatherConfig.disabled()
+        private MessagingConfig messaging = MessagingConfig.disabled()
 
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
@@ -1185,6 +1729,7 @@ final class PlannerConfig {
         Builder batching(BatchingConfig v) { this.batching = v; this }
         Builder taskContexts(List<TaskContext> v) { this.taskContexts = v ?: []; this }
         Builder weather(WeatherConfig v) { this.weather = v ?: WeatherConfig.disabled(); this }
+        Builder messaging(MessagingConfig v) { this.messaging = v ?: MessagingConfig.disabled(); this }
 
         // package-private accessors for invariant validation
         String getMode() { mode }
@@ -1199,6 +1744,7 @@ final class PlannerConfig {
         BatchingConfig getBatching() { batching }
         List<TaskContext> getTaskContexts() { taskContexts }
         WeatherConfig getWeather() { weather }
+        MessagingConfig getMessaging() { messaging }
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)

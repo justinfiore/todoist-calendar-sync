@@ -42,6 +42,385 @@ class PlannerConfigSpec extends Specification {
         config.batching.maxFocusBlockMinutes == 90
         config.taskContexts.any { it.name == 'phone' }
         !config.weather.enabled
+        !config.messaging.enabled
+    }
+
+    def "parses enabled messaging section with schedules and env secret refs"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled             : true,
+                provider            : 'slack',
+                destination         : '#todoist-planner',
+                webhook_url_env     : 'SLACK_WEBHOOK_URL',
+                daily_summary       : true,
+                capacity_risk_alerts: true,
+                schedules           : [
+                    [name: 'daily', kind: 'daily_summary', schedule: '06:00', horizon: 'P1D'],
+                    [name: 'weekly', kind: 'weekly_summary', schedule: 'mon 09:00', horizon: 'P7D']
+                ]
+            ]
+        ])
+
+        then:
+        config.messaging.enabled
+        config.messaging.provider == 'slack'
+        config.messaging.destination == '#todoist-planner'
+        config.messaging.webhookUrlEnv == 'SLACK_WEBHOOK_URL'
+        config.messaging.schedules.size() == 2
+        config.messaging.isKindEnabled('daily_summary')
+        config.messaging.isKindEnabled('capacity_risk_alert')
+    }
+
+    def "explicit enabled_kinds is exclusive allowlist; omitted kinds false despite default booleans"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'UTC',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled        : true,
+                provider       : 'slack',
+                destination    : '#p',
+                webhook_url_env: 'SLACK_WEBHOOK_URL',
+                enabled_kinds  : ['daily_summary']
+            ]
+        ])
+
+        then:
+        config.messaging.isKindEnabled('daily_summary')
+        !config.messaging.isKindEnabled('weekly_summary')
+        !config.messaging.isKindEnabled('medium_horizon_summary')
+        !config.messaging.isKindEnabled('capacity_risk_alert')
+        !config.messaging.isKindEnabled('proposal')
+        config.messaging.enabledKinds == ['daily_summary'] as Set
+        config.messaging.kindAllowlistExplicit
+    }
+
+    def "explicit enabled_kinds risk only enables risk"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled        : true,
+                provider       : 'in_memory',
+                destination    : '#p',
+                webhook_url_env: 'X',
+                enabled_kinds  : ['capacity_risk_alert']
+            ]
+        ])
+
+        then:
+        config.messaging.isKindEnabled('capacity_risk_alert')
+        !config.messaging.isKindEnabled('daily_summary')
+        !config.messaging.isKindEnabled('weekly_summary')
+        !config.messaging.isKindEnabled('medium_horizon_summary')
+        !config.messaging.isKindEnabled('proposal')
+    }
+
+    def "absent enabled_kinds preserves per-kind boolean flags and defaults"() {
+        when:
+        def defaults = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled        : true,
+                provider       : 'in_memory',
+                destination    : '#p',
+                webhook_url_env: 'X'
+            ]
+        ])
+        def selective = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled                 : true,
+                provider                : 'in_memory',
+                destination             : '#p',
+                webhook_url_env         : 'X',
+                daily_summary           : true,
+                weekly_summary          : false,
+                medium_horizon_summary  : false,
+                capacity_risk_alerts    : false,
+                proposal_summary        : false
+            ]
+        ])
+
+        then:
+        !defaults.messaging.kindAllowlistExplicit
+        defaults.messaging.isKindEnabled('daily_summary')
+        defaults.messaging.isKindEnabled('weekly_summary')
+        defaults.messaging.isKindEnabled('medium_horizon_summary')
+        defaults.messaging.isKindEnabled('capacity_risk_alert')
+        defaults.messaging.isKindEnabled('proposal')
+
+        !selective.messaging.kindAllowlistExplicit
+        selective.messaging.isKindEnabled('daily_summary')
+        !selective.messaging.isKindEnabled('weekly_summary')
+        !selective.messaging.isKindEnabled('medium_horizon_summary')
+        !selective.messaging.isKindEnabled('capacity_risk_alert')
+        !selective.messaging.isKindEnabled('proposal')
+    }
+
+    def "explicit empty enabled_kinds disables all message kinds"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled        : true,
+                provider       : 'in_memory',
+                destination    : '#p',
+                webhook_url_env: 'X',
+                enabled_kinds  : []
+            ]
+        ])
+
+        then:
+        config.messaging.kindAllowlistExplicit
+        config.messaging.enabledKinds.isEmpty()
+        !config.messaging.isKindEnabled('daily_summary')
+        !config.messaging.isKindEnabled('weekly_summary')
+        !config.messaging.isKindEnabled('medium_horizon_summary')
+        !config.messaging.isKindEnabled('capacity_risk_alert')
+        !config.messaging.isKindEnabled('proposal')
+    }
+
+    def "enabled_kinds normalizes aliases and case to canonical kinds"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled        : true,
+                provider       : 'in_memory',
+                destination    : '#p',
+                webhook_url_env: 'X',
+                enabled_kinds  : ['Daily', 'WEEKLY_SUMMARY', 'medium-horizon', 'risk', 'Proposal_Summary']
+            ]
+        ])
+
+        then:
+        config.messaging.enabledKinds == [
+            'daily_summary', 'weekly_summary', 'medium_horizon_summary',
+            'capacity_risk_alert', 'proposal'
+        ] as Set
+        config.messaging.isKindEnabled('daily_summary')
+        config.messaging.isKindEnabled('DAILY')
+        config.messaging.isKindEnabled('capacity_risk_alert')
+        config.messaging.isKindEnabled('risk')
+    }
+
+    def "schedule kinds normalize aliases and case to canonical DeliverySchedule.kind"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled        : true,
+                provider       : 'in_memory',
+                destination    : '#p',
+                webhook_url_env: 'X',
+                enabled_kinds  : ['daily_summary', 'weekly_summary', 'medium_horizon_summary',
+                                  'capacity_risk_alert', 'proposal'],
+                schedules      : [
+                    [name: 'd', kind: 'Daily', schedule: '06:00', horizon: 'P1D'],
+                    [name: 'w', kind: 'WEEKLY', schedule: 'mon 09:00', horizon: 'P7D'],
+                    [name: 'm', kind: 'medium-horizon', schedule: 'mon 09:30', horizon: 'P14D'],
+                    [name: 'r', kind: '  risk  ', schedule: '06:15', horizon: 'P5D'],
+                    [name: 'p', kind: 'Proposal_Summary', schedule: '07:00', horizon: 'P1D']
+                ]
+            ]
+        ])
+
+        then:
+        config.messaging.schedules*.kind == [
+            'daily_summary', 'weekly_summary', 'medium_horizon_summary',
+            'capacity_risk_alert', 'proposal'
+        ]
+        config.messaging.schedules.every { PlannerConfig.CANONICAL_MESSAGE_KINDS.contains(it.kind) }
+    }
+
+    def "schedule kinds reject unknown blank and null with index and value"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                schedules: [
+                    [name: 'ok', kind: 'daily_summary', schedule: '06:00'],
+                    [name: 'bad', kind: 'not_a_kind', schedule: '07:00']
+                ]
+            ]
+        ])
+        then:
+        def unknown = thrown(IllegalArgumentException)
+        unknown.message.contains('schedules[1]')
+        unknown.message.contains('not_a_kind')
+        unknown.message.toLowerCase().contains('unknown') || unknown.message.toLowerCase().contains('kind')
+
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                schedules: [[name: 'blank', kind: '   ', schedule: '06:00']]
+            ]
+        ])
+        then:
+        def blank = thrown(IllegalArgumentException)
+        blank.message.contains('schedules[0]')
+        blank.message.toLowerCase().contains('blank') || blank.message.toLowerCase().contains('kind')
+
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                schedules: [[name: 'n', kind: null, schedule: '06:00']]
+            ]
+        ])
+        then:
+        def nul = thrown(IllegalArgumentException)
+        nul.message.contains('schedules[0]')
+        nul.message.toLowerCase().contains('kind')
+    }
+
+    def "duplicate schedules after kind normalization are rejected"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                schedules: [
+                    [name: 'a', kind: 'daily', schedule: '06:00', horizon: 'P1D', window: 'PT30M'],
+                    [name: 'b', kind: 'daily_summary', schedule: '06:00', horizon: 'P1D', window: 'PT30M']
+                ]
+            ]
+        ])
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('duplicate')
+        e.message.contains('daily_summary') || e.message.toLowerCase().contains('schedule')
+    }
+
+    def "normalizeMessageKind is shared single canonical normalizer"() {
+        expect:
+        PlannerConfig.normalizeMessageKind('daily') == 'daily_summary'
+        PlannerConfig.normalizeMessageKind('DAILY_SUMMARY') == 'daily_summary'
+        PlannerConfig.normalizeMessageKind('  risk  ') == 'capacity_risk_alert'
+        PlannerConfig.normalizeMessageKind('medium-horizon') == 'medium_horizon_summary'
+        PlannerConfig.normalizeMessageKind('weekly') == 'weekly_summary'
+        PlannerConfig.normalizeMessageKind('proposal') == 'proposal'
+        PlannerConfig.normalizeMessageKind('') == null
+        PlannerConfig.normalizeMessageKind(null) == null
+        PlannerConfig.normalizeMessageKind('nope') == null
+    }
+
+    def "enabled_kinds rejects unknown blank and duplicate-after-normalization entries"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                enabled_kinds: ['daily_summary', 'not_a_kind']
+            ]
+        ])
+        then:
+        def unknown = thrown(IllegalArgumentException)
+        unknown.message.toLowerCase().contains('enabled_kinds')
+        unknown.message.toLowerCase().contains('unknown') || unknown.message.contains('not_a_kind')
+
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                enabled_kinds: ['daily_summary', '  ']
+            ]
+        ])
+        then:
+        def blank = thrown(IllegalArgumentException)
+        blank.message.toLowerCase().contains('enabled_kinds')
+        blank.message.toLowerCase().contains('blank') || blank.message.toLowerCase().contains('empty')
+
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled: true, provider: 'in_memory', destination: '#p', webhook_url_env: 'X',
+                enabled_kinds: ['daily', 'daily_summary']
+            ]
+        ])
+        then:
+        def dup = thrown(IllegalArgumentException)
+        dup.message.toLowerCase().contains('enabled_kinds')
+        dup.message.toLowerCase().contains('duplicate')
+    }
+
+    def "rejects explicit per-kind true boolean conflicting with enabled_kinds allowlist"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled             : true,
+                provider            : 'in_memory',
+                destination         : '#p',
+                webhook_url_env     : 'X',
+                enabled_kinds       : ['daily_summary'],
+                capacity_risk_alerts: true
+            ]
+        ])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('enabled_kinds') || e.message.toLowerCase().contains('capacity_risk')
+        e.message.toLowerCase().contains('conflict') || e.message.toLowerCase().contains('omitted')
+    }
+
+    def "rejects raw messaging secrets in config"() {
+        when:
+        PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'UTC',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [
+                enabled    : true,
+                provider   : 'slack',
+                destination: '#x',
+                bot_token  : 'xoxb-inline-secret'
+            ]
+        ])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.toLowerCase().contains('secret') || e.message.contains('bot_token')
+    }
+
+    def "disabled messaging without extras does not affect planning config"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'UTC',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            messaging   : [enabled: false]
+        ])
+
+        then:
+        !config.messaging.enabled
+        config.mode == 'preview'
     }
 
     def "parses enabled weather section with task rules"() {

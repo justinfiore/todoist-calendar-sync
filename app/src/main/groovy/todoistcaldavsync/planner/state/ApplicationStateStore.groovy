@@ -252,10 +252,13 @@ class ApplicationStateStore {
                 if (root instanceof Map && root.entries instanceof Collection) {
                     (root.entries as Collection).each { e ->
                         if (e instanceof Map && e.id?.toString() == receiptId && e.file) {
-                            out << directory.resolve(e.file.toString())
+                            out << StorePaths.resolveContained(
+                                directory, e.file.toString(), 'receipt-index')
                         }
                     }
                 }
+            } catch (PlanStoreException e) {
+                throw e
             } catch (Exception ignored) {
             }
         }
