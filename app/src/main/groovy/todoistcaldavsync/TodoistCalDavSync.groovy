@@ -6,17 +6,11 @@ import org.apache.commons.lang3.*
 import java.text.ParseException;
 import org.apache.log4j.*
 import groovy.util.logging.*
-import groovyx.net.http.RESTClient
-import groovy.xml.StreamingMarkupBuilder
-import groovy.xml.XmlUtil
-import static groovyx.net.http.ContentType.*
-import groovy.json.JsonSlurper
 import groovy.yaml.YamlSlurper
 import groovy.yaml.YamlBuilder
 import groovy.json.JsonOutput
 import org.apache.commons.io.*
 import org.apache.commons.io.filefilter.*
-import org.apache.commons.lang.time.DurationFormatUtils
 import java.text.SimpleDateFormat
 import net.fortuna.ical4j.data.CalendarBuilder;
 import net.fortuna.ical4j.model.*;
@@ -353,7 +347,7 @@ class TodoistCalDavSync {
         log.info("labelsToInclude: $labelsToInclude")
         
 
-        def restClient = new RESTClient(todoistApiBaseUrl)
+        def todoistClient = new TodoistHttpClient(todoistApiBaseUrl, todoistAccessToken)
 		//ignoreSSLIssues(restClient)
 		def needsV1Migration = !state.v1Migrated
 		def syncToken = state.syncToken ?: '*'
@@ -369,22 +363,17 @@ class TodoistCalDavSync {
         def todoistEmail = ""
         try {
             log.info("Calling Todoist Sync API for items with params: $todoistParamsForItems")
-            def itemsResponse = restClient.post(path: todoistBasePath + "/sync", body: todoistParamsForItems, requestContentType: URLENC, headers: ["Authorization": "Bearer $todoistAccessToken"])
-            if(itemsResponse.status != 200) {
-                log.error("API call to Todoist to retrieve items failed with statusCode: ${itemsResponse.status} and body: ${itemsResponse.data.text}")
-                throw new RuntimeException("API Call to Todoist failed.")
-            }
-            def itemsResponseData = itemsResponse.data
+            def itemsResponseData = todoistClient.postForm(todoistBasePath + "/sync", todoistParamsForItems)
             syncToken = itemsResponseData.sync_token
             items = itemsResponseData.items
 			log.info("Items before filtering: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
             
             if(items.size() > 0) {
                 log.info("Calling Todoist Sync API for metadata with params: $todoistParams")
-                def metadataResponse = restClient.post(path: todoistBasePath + "/sync", body: todoistParams, requestContentType: URLENC, headers: ["Authorization": "Bearer $todoistAccessToken"])
-                if (metadataResponse.status == 200) {
-                    log.info("Got 200 from Todoist Sync API")
-                    todoistData = metadataResponse.data
+                def metadataResponseData = todoistClient.postForm(todoistBasePath + "/sync", todoistParams)
+                if (metadataResponseData) {
+                    log.info("Got successful response from Todoist Sync API")
+                    todoistData = metadataResponseData
                     todoistUserId = todoistData.user.id
                     todoistEmail = todoistData.user.email
 
@@ -420,14 +409,11 @@ class TodoistCalDavSync {
 					//log.info("Items after filtering for included labels: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
                     
                     if(needsV1Migration) {
-                        migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken)
+                        migrateCalendarEventsFromV9(items, todoistUserId, todoistClient, todoistBasePath)
                         state.v1Migrated = true
                         saveStateFile(state)
                     }
 
-                } else {
-                    log.error("API call to Todoist to retrieve metadata failed with statusCode: ${metadataResponse.status} and body: ${metadataResponse.data.text}")
-                    throw new RuntimeException("API Call to Todoist failed.")
                 }
             }
 			else {
@@ -527,7 +513,7 @@ class TodoistCalDavSync {
         deleteFromCalendars(urlsByCalendar.keySet(), uid);
     }
 
-    def migrateCalendarEventsFromV9(items, todoistUserId, restClient, todoistBasePath, todoistAccessToken) {
+    def migrateCalendarEventsFromV9(items, todoistUserId, todoistClient, todoistBasePath) {
         log.info("=== Starting migration from Todoist API v9 to v1 ===")
         log.info("Migrating calendar events for ${items.size()} items to new ID format")
 
@@ -545,12 +531,9 @@ class TodoistCalDavSync {
             batchIndex++
             def idsParam = batch.join(",")
             try {
-                def response = restClient.get(
-                    path: todoistBasePath + "/id_mappings/tasks/" + idsParam,
-                    headers: ["Authorization": "Bearer $todoistAccessToken"]
-                )
-                if(response.data) {
-                    response.data.each { mapping ->
+                def responseData = todoistClient.get(todoistBasePath + "/id_mappings/tasks/" + idsParam)
+                if(responseData) {
+                    responseData.each { mapping ->
                         def item = itemsByNewId[mapping.new_id]
                         def eventName = item?.content ?: "Unknown"
                         def dueDate = item?.due?.date ?: "No due date"
