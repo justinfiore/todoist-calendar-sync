@@ -112,8 +112,83 @@ planner:
     #       daylight: true
     #       forecast_confidence_min: 0.70
 
+  # Optional Slack delivery (Phase 5). Disabled by default — planning is unaffected.
+  # Secrets are env var *names* only; never put tokens in this file or persisted state.
+  #
+  # Library-only integration (Phase 5): MessagingService + FeedbackParser are library APIs.
+  # There is no CLI/daemon wiring in Phase 5 — host applications construct these services
+  # and drive deliverDue / handleFeedback / applyDecision explicitly.
+  #
+  # Authorization (required for production feedback):
+  # FeedbackParser is fail-closed. Default / null authorization predicates deny ALL actors
+  # (including help/status). Inject an explicit allowlist or policy, e.g.:
+  #   new FeedbackParser(decisionStore, FeedbackParser.allowlist(['alice', 'bob']), clock)
+  # Unknown, null, and blank actors are always denied. No command bypasses authorization.
+  #
+  # Semantics:
+  # - timezone: human 12h times + local day/risk/schedule boundaries (falls back to planner.timezone).
+  # - schedules[].horizon: drives summary range/aggregation (not hardcoded 1/7/14 when set).
+  # - schedules[].kind: normalized at load via the same canonical message-kind normalizer as
+  #   enabled_kinds (daily | weekly | medium | risk | proposal aliases → daily_summary |
+  #   weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal). Case/whitespace
+  #   normalized. Unknown, blank, and null kinds fail config validation with index and value
+  #   (never deferred to render). Duplicate delivery after normalization (same canonical
+  #   kind+schedule+horizon+window+destination) is a config error. Stored/due intents use
+  #   canonical kinds only so daily→risk behavior and renderKind never see aliases.
+  # - enabled_kinds: when explicitly present, exclusive allowlist of message kinds
+  #   (daily_summary | weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal).
+  #   Aliases/case normalize deterministically (e.g. daily, risk, WEEKLY_SUMMARY). Unknown, blank,
+  #   and duplicate-after-normalization entries are config errors. Explicit [] disables all kinds.
+  #   Omitted kinds are false even if legacy per-kind booleans default true. An explicit
+  #   per-kind true boolean for a kind omitted from enabled_kinds is a config conflict error.
+  #   When enabled_kinds is absent, legacy booleans below apply (default true each).
+  # - capacity_risk_alerts: when enabled_kinds is absent, enables the risk kind (default true).
+  #   Does NOT bypass schedules. Risk sends only when an explicit capacity_risk_alert schedule
+  #   is due, or when a due daily_summary intent triggers the documented daily-risk path and
+  #   risk is enabled via allowlist or capacity_risk_alerts. No due intent => zero risk sends.
+  # - risk_deadline_days: include unscheduled risk tasks whose deadline is overdue or within N
+  #   local days of now; tasks without deadline are excluded.
+  # - Delivery ledger atomically claims PENDING (tryClaimPending) before provider send under one
+  #   store lock; concurrent same-key callers yield exactly one provider send. UNKNOWN after
+  #   provider success + ledger failure (no blind resend). FAILED allows retry re-claim.
   messaging:
     enabled: false
+    provider: slack
+    # destination: "#todoist-planner"   # channel name or channel id (required when enabled)
+    # slack_mode: webhook               # webhook | chat_api
+    # webhook_url_env: SLACK_WEBHOOK_URL
+    # bot_token_env: SLACK_BOT_TOKEN
+    # Prefer exclusive allowlist when enabling a subset of kinds:
+    # enabled_kinds: [daily_summary]    # only daily; weekly/medium/risk/proposal off
+    # enabled_kinds: []                 # explicit disable-all kinds (messaging may still be enabled)
+    # enabled_kinds: [daily_summary, capacity_risk_alert]
+    # Legacy per-kind booleans (used only when enabled_kinds is absent; default true):
+    daily_summary: true
+    weekly_summary: true
+    medium_horizon_summary: true
+    capacity_risk_alerts: true
+    proposal_summary: true
+    risk_deadline_days: 5
+    # timezone: America/New_York        # defaults to planner.timezone
+    # schedules:
+    #   - name: daily
+    #     kind: daily_summary           # aliases ok: daily, Daily, daily-summary → stored canonical
+    #     schedule: "06:00"             # HH:mm | "mon 09:00" | cron "0 6 * * *"
+    #     horizon: P1D
+    #     window: PT30M
+    #   - name: weekly
+    #     kind: weekly_summary          # aliases: weekly, WEEKLY_SUMMARY
+    #     schedule: "mon 09:00"
+    #     horizon: P7D
+    #   - name: medium
+    #     kind: medium_horizon_summary  # aliases: medium, medium-horizon
+    #     schedule: "mon 09:30"
+    #     horizon: P14D
+    #   - name: risk
+    #     kind: capacity_risk_alert     # aliases: risk, risk_alert
+    #     schedule: "06:15"
+    #     horizon: P5D
+    #     window: PT30M
 
   ai:
     enabled: false

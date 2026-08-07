@@ -376,6 +376,142 @@ class PlanApplierSpec extends Specification {
         todoist.dueUpdates.size() == 1
     }
 
+    def "applySafeChanges on approval_required plan applies safe only; receipt effective mode; plan not mutated"() {
+        given:
+        config = baseConfig('approval_required')
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def safe = singleBlock('b-safe', 't1', start)
+        def frozen = ScheduledBlock.builder()
+            .id('b-frozen').start(start + Duration.ofHours(1)).end(start + Duration.ofHours(1) + Duration.ofMinutes(30))
+            .taskIds(['t2']).title('Frozen').frozen(true).reason('freeze').build()
+        def manual = ScheduledBlock.builder()
+            .id('b-manual').start(start + Duration.ofHours(2)).end(start + Duration.ofHours(2) + Duration.ofMinutes(30))
+            .taskIds(['t3']).title('Manual').manualOverride(true).reason('manual').build()
+        def plan = planWith([safe, frozen, manual], 'approval_required')
+        String hashBefore = PlanHash.compute(plan)
+
+        when: 'generic apply(plan,null) unchanged — refuses'
+        def generic = applier().apply(plan, null)
+
+        then:
+        generic.overallStatus == ApplyItemStatus.SKIPPED_UNAPPROVED
+        generic.mode == 'approval_required'
+        calendar.upserts.isEmpty()
+        todoist.dueUpdates.isEmpty()
+
+        when: 'applySafeChanges explicit entry'
+        def receipt = applier().applySafeChanges(plan)
+
+        then:
+        receipt.mode == 'apply_safe_changes'
+        receipt.metadata.effectiveMode == 'apply_safe_changes'
+        receipt.wroteAnything()
+        calendar.upserts.size() == 1
+        todoist.dueUpdates.size() == 1
+        todoist.dueUpdates[0].taskId == 't1'
+        receipt.items.find { it.taskId == 't1' }.calendarStatus == ApplyItemStatus.APPLIED
+        receipt.items.find { it.taskId == 't2' }.calendarStatus == ApplyItemStatus.SKIPPED_PROTECTED
+        receipt.items.find { it.taskId == 't3' }.calendarStatus == ApplyItemStatus.SKIPPED_PROTECTED
+        plan.mode == 'approval_required'
+        PlanHash.compute(plan) == hashBefore
+    }
+
+    def "applySafeChanges protected-only yields zero writes SKIPPED_PROTECTED overall"() {
+        given:
+        config = baseConfig('approval_required')
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def frozen = ScheduledBlock.builder()
+            .id('bf').start(start).end(start + Duration.ofMinutes(30))
+            .taskIds(['t1']).title('Frozen').frozen(true).reason('freeze').build()
+        def plan = planWith([frozen], 'approval_required')
+
+        when:
+        def receipt = applier().applySafeChanges(plan)
+
+        then:
+        receipt.mode == 'apply_safe_changes'
+        !receipt.wroteAnything()
+        calendar.upserts.isEmpty()
+        todoist.dueUpdates.isEmpty()
+        receipt.items.every { it.calendarStatus == ApplyItemStatus.SKIPPED_PROTECTED }
+    }
+
+    def "applySafeChanges empty plan is SKIPPED_NO_CHANGES"() {
+        given:
+        config = baseConfig('approval_required')
+        def plan = planWith([], 'approval_required')
+
+        when:
+        def receipt = applier().applySafeChanges(plan)
+
+        then:
+        receipt.mode == 'apply_safe_changes'
+        receipt.overallStatus == ApplyItemStatus.SKIPPED_NO_CHANGES
+        !receipt.wroteAnything()
+    }
+
+    def "applySafeChanges refuses plan fully_automated even when config nonauto; zero writes"() {
+        given:
+        config = baseConfig('approval_required')
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)], 'fully_automated')
+
+        when:
+        def receipt = applier().applySafeChanges(plan)
+
+        then:
+        receipt.mode == 'apply_safe_changes'
+        receipt.overallStatus == ApplyItemStatus.SKIPPED_UNAPPROVED
+        !receipt.wroteAnything()
+        calendar.upserts.isEmpty()
+        todoist.dueUpdates.isEmpty()
+        receipt.errors.any { it.toLowerCase().contains('fully_automated') }
+        receipt.metadata.refused == true
+        receipt.metadata.refusedReason == 'fully_automated'
+        receipt.metadata.planMode == 'fully_automated'
+        receipt.metadata.configMode == 'approval_required'
+        receipt.items.isEmpty()
+    }
+
+    def "applySafeChanges refuses config fully_automated even when plan approval_required; zero writes"() {
+        given:
+        config = baseConfig('fully_automated')
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)], 'approval_required')
+
+        when:
+        def receipt = applier().applySafeChanges(plan)
+
+        then:
+        receipt.mode == 'apply_safe_changes'
+        receipt.overallStatus == ApplyItemStatus.SKIPPED_UNAPPROVED
+        !receipt.wroteAnything()
+        calendar.upserts.isEmpty()
+        todoist.dueUpdates.isEmpty()
+        receipt.errors.any { it.toLowerCase().contains('fully_automated') }
+        receipt.metadata.refused == true
+        receipt.metadata.configMode == 'fully_automated'
+        receipt.metadata.planMode == 'approval_required'
+    }
+
+    def "applySafeChanges still applies safe from approval_required when neither mode fully_automated"() {
+        given:
+        config = baseConfig('approval_required')
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)], 'approval_required')
+
+        when:
+        def receipt = applier().applySafeChanges(plan)
+
+        then:
+        receipt.mode == 'apply_safe_changes'
+        receipt.overallStatus == ApplyItemStatus.APPLIED
+        receipt.wroteAnything()
+        calendar.upserts.size() == 1
+        todoist.dueUpdates.size() == 1
+        receipt.metadata.refused != true
+    }
+
     // -------------------------------------------------------------------------
     // apply_safe_changes approval binding (protected escalation)
     // -------------------------------------------------------------------------
@@ -1428,13 +1564,25 @@ class PlanApplierSpec extends Specification {
         def planB = planWith([singleBlock('bb', 't2', start2)], 'approval_required', [], 'plan-b', 1)
         def apprA = approvalFor(planA)
         def apprB = approvalFor(planB)
+        // Shared durable store under lock; per-thread gateways avoid in-memory gateway races
+        // so the test isolates ApplicationStateStore putMapping merge concurrency.
         def storeA = new ApplicationStateStore(dir)
         def storeB = new ApplicationStateStore(dir)
+        def calA = new InMemoryCalendarGateway(MANAGED_CAL, true)
+        def calB = new InMemoryCalendarGateway(MANAGED_CAL, true)
+        def todoA = new InMemoryTodoistGateway([
+            [id: 't1', content: 'Task One', priority: 2],
+            [id: 't2', content: 'Task Two', priority: 2]
+        ])
+        def todoB = new InMemoryTodoistGateway([
+            [id: 't1', content: 'Task One', priority: 2],
+            [id: 't2', content: 'Task Two', priority: 2]
+        ])
         def applierA = new PlanApplier(config,
-            new ManagedCalendarWriteGateway(calendar, MANAGED_CAL), calendar, todoist, todoist, storeA,
+            new ManagedCalendarWriteGateway(calA, MANAGED_CAL), calA, todoA, todoA, storeA,
             { clock.get() })
         def applierB = new PlanApplier(config,
-            new ManagedCalendarWriteGateway(calendar, MANAGED_CAL), calendar, todoist, todoist, storeB,
+            new ManagedCalendarWriteGateway(calB, MANAGED_CAL), calB, todoB, todoB, storeB,
             { clock.get() })
         def errors = Collections.synchronizedList([])
         def barrier = new java.util.concurrent.CyclicBarrier(2)
@@ -1468,8 +1616,8 @@ class PlanApplierSpec extends Specification {
         loaded['t2'].fullyApplied()
         loaded['t1'].slotStart == start1
         loaded['t2'].slotStart == start2
-        calendar.getByUid(ManagedEventIds.uidForBlock('ba')) != null
-        calendar.getByUid(ManagedEventIds.uidForBlock('bb')) != null
+        calA.getByUid(ManagedEventIds.uidForBlock('ba')) != null
+        calB.getByUid(ManagedEventIds.uidForBlock('bb')) != null
     }
 
     def "prior success then cleared Todoist due restores exact start without calendar duplicate"() {
