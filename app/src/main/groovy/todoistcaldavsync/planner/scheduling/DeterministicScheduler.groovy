@@ -9,6 +9,8 @@ import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.domain.TimeSlot
 import todoistcaldavsync.planner.domain.UnscheduledTask
+import todoistcaldavsync.planner.domain.WeatherEvaluation
+import todoistcaldavsync.planner.domain.WeatherForecast
 import todoistcaldavsync.planner.scheduling.ProjectBatcher.SchedulingUnit
 
 import java.nio.charset.StandardCharsets
@@ -24,7 +26,9 @@ import java.util.TreeSet
 
 /**
  * Preview-only deterministic greedy scheduler.
- * Pure: no HTTP, credentials, Slack, weather-provider, LLM, or remote I/O.
+ * Pure: no HTTP, credentials, Slack, weather-provider I/O, LLM, or remote writes.
+ * Optional {@link WeatherForecast} + {@link WeatherEvaluator} are injected by the caller;
+ * this class never fetches weather itself.
  *
  * Inter-block buffer: candidate acceptance rejects any placement that overlaps
  * an occupied interval expanded by {@code minimumBufferBetweenBlocksMinutes}
@@ -35,19 +39,41 @@ import java.util.TreeSet
  * approval/apply step — this scheduler never writes remote calendars. Moves of
  * a previously placed task whose previous start falls within that horizon from
  * {@code now} are tagged with {@code approvalRequired=true} on the PlanChange.
+ *
+ * Weather-invalid outdoor work is never silently dropped: it is rescheduled,
+ * moved with explanation, or left unscheduled with a structured weather reason.
+ * Prior frozen/manual placements that become weather-invalid are reported as
+ * proposed changes/exceptions rather than silently kept.
  */
 class DeterministicScheduler {
     private final PlannerConfig config
     private final PlanScorer scorer
     private final ProjectBatcher batcher
+    private final WeatherEvaluator weatherEvaluator
 
+    /**
+     * Pure proposal constructor: config only. No write gateways, PlanApplier,
+     * Todoist/Calendar write ports, or network clients are accepted.
+     */
     DeterministicScheduler(PlannerConfig config) {
+        this(config, new WeatherEvaluator(config))
+    }
+
+    /**
+     * Pure proposal constructor with injected evaluator (tests / composition root).
+     * Accepts only a pure {@link WeatherEvaluator}; write gateways are not part of the API.
+     */
+    DeterministicScheduler(PlannerConfig config, WeatherEvaluator weatherEvaluator) {
         if (config == null) {
             throw new IllegalArgumentException('PlannerConfig is required')
+        }
+        if (weatherEvaluator == null) {
+            throw new IllegalArgumentException('WeatherEvaluator is required')
         }
         this.config = config
         this.scorer = new PlanScorer(config)
         this.batcher = new ProjectBatcher(config)
+        this.weatherEvaluator = weatherEvaluator
     }
 
     /**
@@ -58,6 +84,7 @@ class DeterministicScheduler {
      * @param now planning "now" for freeze/churn (fixed for determinism)
      * @param previousPlan optional prior preview/applied plan for stability
      * @param manualOverrideTaskIds task ids the user manually moved (preserve by default)
+     * @param forecast optional provider-neutral forecast (ignored when weather disabled)
      */
     Plan schedule(List<Task> tasks,
                   List<TimeSlot> reportingSlots,
@@ -65,8 +92,10 @@ class DeterministicScheduler {
                   Instant rangeEnd,
                   Instant now = rangeStart,
                   Plan previousPlan = null,
-                  Set<String> manualOverrideTaskIds = [] as Set) {
-        return propose(tasks, reportingSlots, rangeStart, rangeEnd, now, previousPlan, manualOverrideTaskIds)
+                  Set<String> manualOverrideTaskIds = [] as Set,
+                  WeatherForecast forecast = null) {
+        return propose(tasks, reportingSlots, rangeStart, rangeEnd, now, previousPlan,
+            manualOverrideTaskIds, forecast)
     }
 
     /**
@@ -74,7 +103,8 @@ class DeterministicScheduler {
      */
     Plan propose(List<Task> tasks, List<TimeSlot> reportingSlots,
                  Instant rangeStart, Instant rangeEnd, Instant now = rangeStart,
-                 Plan previousPlan = null, Set<String> manualOverrideTaskIds = [] as Set) {
+                 Plan previousPlan = null, Set<String> manualOverrideTaskIds = [] as Set,
+                 WeatherForecast forecast = null) {
         if (rangeStart == null || rangeEnd == null || !rangeEnd.isAfter(rangeStart)) {
             throw new IllegalArgumentException('rangeStart/rangeEnd must form a positive interval')
         }
@@ -97,10 +127,15 @@ class DeterministicScheduler {
         List<PlanningExplanation> explanations = []
         List<UnscheduledTask> unscheduled = []
         Set<String> scheduledTaskIds = new LinkedHashSet<>()
+        // Weather conflict notes for prior placements that cannot be preserved
+        Map<String, WeatherEvaluation> weatherBreaks = new LinkedHashMap<>()
+        // Outdoor weather-sensitive tasks blocked from candidate slots (for indoor replacement linkage)
+        Map<String, List<WeatherRejectedSlot>> weatherRejectedSlots = new LinkedHashMap<>()
 
         int bufferMinutes = config.stability.minimumBufferBetweenBlocksMinutes
         Instant freezeUntil = clock + config.stability.freezeWithin
         Instant approvalHorizon = clock + config.stability.requireApprovalForMoveWithin
+        boolean weatherOn = weatherEvaluator.isEnabled()
 
         // Preserve multi-task frozen/manual focus blocks as whole units first
         Set<String> preservedFocusBlockIds = new HashSet<>()
@@ -130,6 +165,23 @@ class DeterministicScheduler {
             }
             if (!deadlinesOk) {
                 return
+            }
+            // Weather: any member hard-infeasible at prior slot → do not preserve (proposal path)
+            if (weatherOn) {
+                boolean weatherOk = true
+                prevBlock.taskIds.each { tid ->
+                    Task t = taskById[tid]
+                    def p = previousByTask[tid]
+                    WeatherEvaluation we = weatherEvaluator.evaluate(t, p.start, p.end, forecast, clock)
+                    if (we.hardInfeasible) {
+                        weatherOk = false
+                        weatherBreaks[tid] = we
+                        explanations << weatherExplanation(t, we, 'prior_focus_weather_conflict')
+                    }
+                }
+                if (!weatherOk) {
+                    return
+                }
             }
             if (!canOccupy(remaining, occupied, bStart, bEnd, bufferMinutes, rangeStart, rangeEnd)) {
                 return
@@ -194,6 +246,18 @@ class DeterministicScheduler {
                 ((isManual && config.stability.keepManualMoves) || inFreeze || prevFrozen)
 
             if (shouldPreserve) {
+                WeatherEvaluation priorWeather = null
+                if (weatherOn) {
+                    priorWeather = weatherEvaluator.evaluate(task, prev.start, prev.end, forecast, clock)
+                    if (priorWeather.hardInfeasible) {
+                        weatherBreaks[task.id] = priorWeather
+                        explanations << weatherExplanation(task, priorWeather,
+                            isManual ? 'manual_prior_weather_conflict' : 'frozen_prior_weather_conflict')
+                        // Do not silently keep weather-invalid prior placement — fall through to reschedule
+                        stillToSchedule << task
+                        return
+                    }
+                }
                 if (canOccupy(remaining, occupied, prev.start, prev.end, bufferMinutes, rangeStart, rangeEnd) &&
                     (task.deadline == null || !prev.end.isAfter(task.deadline))) {
                     occupy(remaining, occupied, prev.start, prev.end, bufferMinutes, rangeStart, rangeEnd)
@@ -211,6 +275,10 @@ class DeterministicScheduler {
                         stability = 'freeze'
                         reason = 'Preserved frozen near-term placement'
                     }
+                    Map meta = [source: 'previous', stability: stability]
+                    if (priorWeather != null && priorWeather.result != WeatherEvaluation.RESULT_NOT_APPLICABLE) {
+                        meta.weather = priorWeather.toExplanationDetails()
+                    }
                     def block = ScheduledBlock.builder()
                         .id("block-${task.id}")
                         .start(prev.start)
@@ -223,7 +291,7 @@ class DeterministicScheduler {
                         .frozen(frozen)
                         .manualOverride(isManual)
                         .reason(reason)
-                        .metadata([source: 'previous', stability: stability])
+                        .metadata(meta)
                         .build()
                     blocks << block
                     scheduledTaskIds.add(task.id)
@@ -236,6 +304,7 @@ class DeterministicScheduler {
                         .newStart(prev.start)
                         .newEnd(prev.end)
                         .reason(block.reason)
+                        .metadata(meta.findAll { k, v -> k == 'weather' })
                         .build()
                     return
                 }
@@ -277,7 +346,8 @@ class DeterministicScheduler {
 
             Placement best = findBestPlacement(
                 unit, remaining, occupied, reportingSlots ?: [], clock, rangeStart, rangeEnd,
-                lastProjectId, previousByTask, manualIds, bufferMinutes
+                lastProjectId, previousByTask, manualIds, bufferMinutes, forecast,
+                weatherRejectedSlots
             )
             if (best == null && unit.focusBlock && unit.tasks.size() > 1) {
                 def singles = unit.tasks.toSorted { a, b -> PlanScorer.compareTaskOrder(a, b) }
@@ -293,11 +363,37 @@ class DeterministicScheduler {
                     if (scheduledTaskIds.contains(task.id)) {
                         return
                     }
-                    String reason = unscheduledReason(task, remaining, rangeStart, rangeEnd)
-                    unscheduled << new UnscheduledTask(task, reason, reasonCode(task, remaining, rangeStart, rangeEnd))
+                    WeatherEvaluation weatherFail = weatherBreaks[task.id]
+                    if (weatherFail == null && weatherOn) {
+                        weatherFail = diagnoseWeatherUnscheduled(task, remaining, forecast, clock, rangeStart, rangeEnd)
+                    }
+                    String reason
+                    String code
+                    Map details = [requiredMinutes: task.effectiveDuration.toMinutes()]
+                    Map unscheduledMeta = [:]
+                    if (weatherFail != null && weatherFail.hardInfeasible) {
+                        reason = weatherFail.reason
+                        code = 'weather_infeasible'
+                        Map weatherDetails = weatherFail.toExplanationDetails()
+                        details.putAll(weatherDetails)
+                        unscheduledMeta.weather = weatherDetails
+                        PreviousPlacement prev = previousByTask[task.id]
+                        if (prev?.start != null) {
+                            details.previousStart = prev.start.toString()
+                            details.previousEnd = prev.end?.toString()
+                            details.priorWeatherConflict = true
+                            unscheduledMeta.previousStart = prev.start.toString()
+                            unscheduledMeta.previousEnd = prev.end?.toString()
+                            unscheduledMeta.priorWeatherConflict = true
+                        }
+                    } else {
+                        reason = unscheduledReason(task, remaining, rangeStart, rangeEnd)
+                        code = reasonCode(task, remaining, rangeStart, rangeEnd)
+                    }
+                    unscheduled << new UnscheduledTask(task, reason, code, unscheduledMeta)
                     explanations << PlanningExplanation.of(
-                        'unscheduled', reason, 'task', task.id,
-                        [requiredMinutes: task.effectiveDuration.toMinutes()]
+                        code == 'weather_infeasible' ? 'weather_unscheduled' : 'unscheduled',
+                        reason, 'task', task.id, details
                     )
                 }
                 continue
@@ -312,6 +408,12 @@ class DeterministicScheduler {
                 Instant me = best.memberEnds[tid] ?: best.end
                 new MemberInterval(tid, ms, me)
             }
+            Map blockMeta = [score: best.score, memberTaskIds: orderedTaskIds] as Map
+            if (best.weatherByTask) {
+                blockMeta.weatherByTask = best.weatherByTask.collectEntries { tid, we ->
+                    [(tid): we.toExplanationDetails()]
+                }
+            }
             def block = ScheduledBlock.builder()
                 .id(best.blockId)
                 .start(best.start)
@@ -323,7 +425,7 @@ class DeterministicScheduler {
                 .title(unit.title())
                 .focusBlock(isFocus)
                 .reason(best.reason)
-                .metadata([score: best.score, memberTaskIds: orderedTaskIds])
+                .metadata(blockMeta)
                 .build()
             blocks << block
             orderedTaskIds.each { tid ->
@@ -336,12 +438,28 @@ class DeterministicScheduler {
                     changeType = prev.start == taskStart ? 'keep' : 'move'
                 }
                 Map meta = isFocus ? [focusBlockId: block.id] : [:]
+                meta = new LinkedHashMap<>(meta)
+                WeatherEvaluation we = best.weatherByTask?.get(tid)
+                if (we != null && we.result != WeatherEvaluation.RESULT_NOT_APPLICABLE) {
+                    meta.weather = we.toExplanationDetails()
+                }
+                WeatherEvaluation broke = weatherBreaks[tid]
+                if (broke != null && changeType == 'move') {
+                    meta.weatherMove = true
+                    meta.priorWeather = broke.toExplanationDetails()
+                    if (!meta.weather) {
+                        meta.weather = broke.toExplanationDetails()
+                    }
+                }
                 if (changeType == 'move' && prev?.start != null &&
                     !prev.start.isAfter(approvalHorizon) && !prev.start.isBefore(rangeStart)) {
                     // Preview-only indicator for later apply/approval step — no remote writes.
-                    meta = new LinkedHashMap<>(meta)
                     meta.approvalRequired = true
                     meta.approvalReason = 'move_within_require_approval_horizon'
+                }
+                String changeReason = best.reason
+                if (broke != null && changeType == 'move') {
+                    changeReason = broke.reason
                 }
                 changes << PlanChange.builder()
                     .id("chg-${changeType}-${tid}")
@@ -351,17 +469,29 @@ class DeterministicScheduler {
                     .previousEnd(prev?.end)
                     .newStart(taskStart)
                     .newEnd(taskEnd)
-                    .reason(best.reason)
+                    .reason(changeReason)
                     .metadata(meta)
                     .build()
             }
+            Map explDetails = [taskIds: block.taskIds, start: block.start.toString(),
+                               end: block.end.toString(), score: best.score] as Map
+            if (best.weatherByTask) {
+                explDetails.weatherByTask = best.weatherByTask.collectEntries { tid, we ->
+                    [(tid): we.toExplanationDetails()]
+                }
+            }
             explanations << PlanningExplanation.of(
                 isFocus ? 'scheduled_focus_block' : 'scheduled',
-                best.reason, 'block', block.id,
-                [taskIds: block.taskIds, start: block.start.toString(), end: block.end.toString(), score: best.score]
+                best.reason, 'block', block.id, explDetails
             )
             lastProjectId = unit.projectId()
         }
+
+        // Deterministic indoor replacement linkage for weather-released capacity
+        applyIndoorReplacementLinkage(
+            changes, explanations, blocks, unscheduled, taskById,
+            weatherRejectedSlots, weatherBreaks, forecast, clock
+        )
 
         blocks = blocks.toSorted { a, b ->
             int c = a.start <=> b.start
@@ -390,7 +520,8 @@ class DeterministicScheduler {
                 scheduledTaskCount  : scheduledTaskIds.size() as long,
                 unscheduledTaskCount: unscheduled.size() as long,
                 scheduledBlockCount : blocks.size() as long,
-                bufferMinutes       : bufferMinutes as long
+                bufferMinutes       : bufferMinutes as long,
+                weatherEnabled      : weatherOn ? 1L : 0L
             ])
             .build()
         String diff = PlanDiffFormatter.toMarkdown(plan, config.timezone)
@@ -407,7 +538,9 @@ class DeterministicScheduler {
                                         Instant rangeStart, Instant rangeEnd,
                                         String previousProjectId,
                                         Map<String, PreviousPlacement> previousByTask,
-                                        Set<String> manualIds, int bufferMinutes) {
+                                        Set<String> manualIds, int bufferMinutes,
+                                        WeatherForecast forecast,
+                                        Map<String, List<WeatherRejectedSlot>> weatherRejectedSlots = null) {
         long need = unit.totalMinutes
         if (need <= 0) {
             return null
@@ -447,7 +580,7 @@ class DeterministicScheduler {
             }
 
             List<Instant> candidateStarts = candidateStartsForSlot(
-                unit, orderedMembers, usableStart, usableEnd, need, previousByTask
+                unit, orderedMembers, usableStart, usableEnd, need, previousByTask, forecast
             )
             // Usable fragment for scoring: clip to outer bound so fragmentation ignores capacity past it
             TimeSlot faux = TimeSlot.builder().start(usableStart).end(usableEnd).build()
@@ -483,12 +616,38 @@ class DeterministicScheduler {
                 }
 
                 boolean manual = manualIds.contains(primary.id)
+                // Weather feasibility per member (hard reject before scoring)
+                Map<String, WeatherEvaluation> weatherByTask = new LinkedHashMap<>()
+                boolean weatherOk = true
+                long weatherBonusPrimary = 0L
+                Map<String, Long> weatherBonusByMember = new LinkedHashMap<>()
+                orderedMembers.each { t ->
+                    WeatherEvaluation we = weatherEvaluator.evaluate(
+                        t, memberStarts[t.id], memberEnds[t.id], forecast, now)
+                    weatherByTask[t.id] = we
+                    if (we.hardInfeasible) {
+                        weatherOk = false
+                        if (weatherRejectedSlots != null && we.alternativesSignal) {
+                            weatherRejectedSlots
+                                .computeIfAbsent(t.id) { new ArrayList<>() }
+                                .add(new WeatherRejectedSlot(
+                                    memberStarts[t.id], memberEnds[t.id], we))
+                        }
+                    } else {
+                        weatherBonusByMember[t.id] = we.scoreDelta
+                    }
+                }
+                if (!weatherOk) {
+                    continue
+                }
+                weatherBonusPrimary = weatherBonusByMember[primary.id] ?: 0L
+
                 // Score primary on its own member interval (not full multi-task span)
                 Instant primaryEnd = memberEnds[primary.id] ?: end
                 Instant primaryStart = memberStarts[primary.id] ?: start
                 long primaryScore = scorer.scorePlacement(
                     primary, primaryStart, primaryEnd, faux, reportingSlots, now, rangeEnd,
-                    previousProjectId, prevPrimary?.start, manual, batched
+                    previousProjectId, prevPrimary?.start, manual, batched, weatherBonusPrimary
                 )
                 List<Long> memberScores = [primaryScore]
                 if (orderedMembers.size() > 1) {
@@ -498,7 +657,8 @@ class DeterministicScheduler {
                         }
                         long s = scorer.scorePlacement(
                             t, memberStarts[t.id], memberEnds[t.id], faux, reportingSlots, now, rangeEnd,
-                            unit.projectId(), previousByTask[t.id]?.start, manualIds.contains(t.id), true
+                            unit.projectId(), previousByTask[t.id]?.start, manualIds.contains(t.id), true,
+                            weatherBonusByMember[t.id] ?: 0L
                         )
                         memberScores << s
                     }
@@ -509,7 +669,14 @@ class DeterministicScheduler {
                 }
 
                 String reason
-                if (batched) {
+                WeatherEvaluation primaryWeather = weatherByTask[primary.id]
+                if (primaryWeather != null &&
+                    primaryWeather.result == WeatherEvaluation.RESULT_FEASIBLE &&
+                    primaryWeather.ruleName) {
+                    reason = "Weather-feasible under rule '${primaryWeather.ruleName}'" +
+                        (primaryWeather.forecastIssuedAt ? " (forecast ${primaryWeather.forecastIssuedAt})" : '') +
+                        "; score=${score}"
+                } else if (batched) {
                     reason = "Project batching for ${unit.projectName() ?: unit.projectId()}; score=${score}"
                 } else {
                     reason = "Best feasible slot for '${primary.content}' (P${5 - primary.priority}); score=${score}"
@@ -525,7 +692,7 @@ class DeterministicScheduler {
 
                 Placement candidate = new Placement(
                     start, end, score, reason, "block-${unit.primaryId()}-${start.toEpochMilli()}",
-                    orderedStarts, orderedEnds, orderedMembers*.id
+                    orderedStarts, orderedEnds, orderedMembers*.id, weatherByTask
                 )
                 if (best == null || candidate.score > best.score ||
                     (candidate.score == best.score && candidate.start.isBefore(best.start)) ||
@@ -537,17 +704,291 @@ class DeterministicScheduler {
         return best
     }
 
+    private WeatherEvaluation diagnoseWeatherUnscheduled(Task task, List<MutableSlot> remaining,
+                                                         WeatherForecast forecast, Instant now,
+                                                         Instant rangeStart, Instant rangeEnd) {
+        if (!weatherEvaluator.isEnabled() || weatherEvaluator.matchRule(task) == null) {
+            return null
+        }
+        // Probe only actual placeable capacity intervals. If none were large enough to
+        // weather-evaluate, binding reason stays capacity/no_slot/deadline — do not
+        // synthesize weather_infeasible at rangeStart.
+        long need = task.effectiveDuration.toMinutes()
+        WeatherEvaluation lastFail = null
+        boolean evaluatedAnyCandidate = false
+        for (MutableSlot slot : remaining) {
+            Instant usableStart = slot.start.isBefore(rangeStart) ? rangeStart : slot.start
+            Instant usableEnd = slot.end
+            if (task.deadline != null && usableEnd.isAfter(task.deadline)) {
+                usableEnd = task.deadline
+            }
+            if (!usableEnd.isAfter(usableStart)) {
+                continue
+            }
+            if (Duration.between(usableStart, usableEnd).toMinutes() < need) {
+                continue
+            }
+            Instant end = usableStart + Duration.ofMinutes(need)
+            evaluatedAnyCandidate = true
+            WeatherEvaluation we = weatherEvaluator.evaluate(task, usableStart, end, forecast, now)
+            if (!we.hardInfeasible) {
+                return null
+            }
+            lastFail = we
+        }
+        if (!evaluatedAnyCandidate) {
+            return null
+        }
+        return lastFail?.hardInfeasible ? lastFail : null
+    }
+
+    private static PlanningExplanation weatherExplanation(Task task, WeatherEvaluation we, String code) {
+        PlanningExplanation.of(code, we.reason, 'task', task.id, we.toExplanationDetails())
+    }
+
+    /**
+     * Link indoor (non-weather) placements that occupy capacity released because a
+     * weather-sensitive outdoor task was hard-rejected from that slot.
+     *
+     * Deterministic selection:
+     * - Candidate outdoor = weather-sensitive task with rejected slots (or prior weather break)
+     * - Candidate indoor = non-weather task whose scheduled interval overlaps a rejected outdoor slot
+     * - Only link when outdoor ranks earlier in scheduler order than indoor (outdoor would have
+     *   claimed the slot first without weather) and outdoor did not keep a placement that starts
+     *   at-or-before the indoor slot (i.e. outdoor was displaced later or left unscheduled)
+     * - One outdoor links to at most one indoor (earliest indoor start, then task id)
+     * - One indoor links to at most one outdoor (earliest outdoor order, then outdoor id)
+     */
+    private void applyIndoorReplacementLinkage(
+        List<PlanChange> changes,
+        List<PlanningExplanation> explanations,
+        List<ScheduledBlock> blocks,
+        List<UnscheduledTask> unscheduled,
+        Map<String, Task> taskById,
+        Map<String, List<WeatherRejectedSlot>> weatherRejectedSlots,
+        Map<String, WeatherEvaluation> weatherBreaks,
+        WeatherForecast forecast,
+        Instant clock
+    ) {
+        if (!weatherEvaluator.isEnabled()) {
+            return
+        }
+        // Merge prior weather breaks as rejected slots when prior interval is known
+        weatherBreaks?.each { tid, we ->
+            if (we == null || !we.hardInfeasible) {
+                return
+            }
+            PlanChange moveOrUnsched = changes.find {
+                it.taskId == tid && (it.type == 'move' || it.type == 'add')
+            }
+            // Prefer explicit previous interval from change metadata / previous placement on change
+            Instant pStart = moveOrUnsched?.previousStart
+            Instant pEnd = moveOrUnsched?.previousEnd
+            if (pStart != null && pEnd != null && pEnd.isAfter(pStart)) {
+                weatherRejectedSlots
+                    .computeIfAbsent(tid) { new ArrayList<>() }
+                    .add(new WeatherRejectedSlot(pStart, pEnd, we))
+            }
+        }
+
+        if (!weatherRejectedSlots) {
+            return
+        }
+
+        Map<String, PlanChange> changeByTask = new LinkedHashMap<>()
+        changes.each { c ->
+            if (c.taskId && (c.type == 'add' || c.type == 'move' || c.type == 'keep')) {
+                // Prefer non-keep if both exist; last write wins after sort later — take first scheduled
+                if (!changeByTask.containsKey(c.taskId) || c.type != 'keep') {
+                    changeByTask[c.taskId] = c
+                }
+            }
+        }
+
+        // Outdoor candidates: weather-matched tasks with rejected slots
+        List<String> outdoorIds = weatherRejectedSlots.keySet().toList().findAll { tid ->
+            Task t = taskById[tid]
+            t != null && weatherEvaluator.matchRule(t) != null
+        }.toSorted { a, b ->
+            PlanScorer.compareTaskOrder(taskById[a], taskById[b])
+        }
+
+        // Indoor candidates: scheduled, not weather-matched
+        List<PlanChange> indoorChanges = changes.findAll { c ->
+            if (!(c.type == 'add' || c.type == 'move' || c.type == 'keep')) {
+                return false
+            }
+            if (c.newStart == null || c.newEnd == null) {
+                return false
+            }
+            Task t = taskById[c.taskId]
+            if (t == null) {
+                return false
+            }
+            return weatherEvaluator.matchRule(t) == null
+        }.toSorted { a, b ->
+            int c = a.newStart <=> b.newStart
+            c != 0 ? c : (a.taskId <=> b.taskId)
+        }
+
+        Set<String> linkedIndoor = new HashSet<>()
+        Set<String> linkedOutdoor = new HashSet<>()
+
+        outdoorIds.each { outdoorId ->
+            if (linkedOutdoor.contains(outdoorId)) {
+                return
+            }
+            Task outdoor = taskById[outdoorId]
+            List<WeatherRejectedSlot> rejected = weatherRejectedSlots[outdoorId] ?: []
+            if (!rejected) {
+                return
+            }
+            // Deduplicate rejected intervals
+            rejected = rejected.toSorted { a, b -> a.start <=> b.start ?: a.end <=> b.end }
+            PlanChange outdoorChange = changeByTask[outdoorId]
+            Instant outdoorFinalStart = outdoorChange?.newStart
+            boolean outdoorUnscheduled = unscheduled.any { it.task.id == outdoorId }
+
+            indoorChanges.each { indoorChg ->
+                if (linkedIndoor.contains(indoorChg.taskId) || linkedOutdoor.contains(outdoorId)) {
+                    return
+                }
+                Task indoor = taskById[indoorChg.taskId]
+                // Outdoor must rank earlier so it would have taken the slot without weather
+                if (PlanScorer.compareTaskOrder(outdoor, indoor) > 0) {
+                    return
+                }
+                // Outdoor must not still occupy an equal-or-earlier start (kept its slot)
+                if (!outdoorUnscheduled && outdoorFinalStart != null &&
+                    !outdoorFinalStart.isAfter(indoorChg.newStart)) {
+                    // Outdoor stayed at or before indoor — indoor did not fill released capacity
+                    return
+                }
+                WeatherRejectedSlot match = rejected.find { slot ->
+                    intervalsOverlap(slot.start, slot.end, indoorChg.newStart, indoorChg.newEnd)
+                }
+                if (match == null) {
+                    return
+                }
+
+                // Link indoor → outdoor
+                Map indoorMeta = new LinkedHashMap<>(indoorChg.metadata ?: [:])
+                indoorMeta.replacesWeatherInvalidTaskId = outdoorId
+                indoorMeta.replacementReason = 'indoor_replacement_for_weather_invalid_slot'
+                if (match.evaluation != null) {
+                    indoorMeta.replacedTaskWeather = match.evaluation.toExplanationDetails()
+                }
+                replaceChangeMetadata(changes, indoorChg, indoorMeta)
+
+                // Reciprocal on outdoor change / unscheduled explanation
+                if (outdoorChange != null) {
+                    Map outdoorMeta = new LinkedHashMap<>(outdoorChange.metadata ?: [:])
+                    outdoorMeta.replacedByIndoorTaskId = indoorChg.taskId
+                    outdoorMeta.replacementReason = 'indoor_replacement_for_weather_invalid_slot'
+                    if (!outdoorMeta.weather && match.evaluation != null) {
+                        outdoorMeta.weather = match.evaluation.toExplanationDetails()
+                    }
+                    replaceChangeMetadata(changes, outdoorChange, outdoorMeta)
+                }
+
+                Map explDetails = [
+                    outdoorTaskId: outdoorId,
+                    indoorTaskId : indoorChg.taskId,
+                    slotStart    : match.start.toString(),
+                    slotEnd      : match.end.toString(),
+                    replacementReason: 'indoor_replacement_for_weather_invalid_slot'
+                ] as Map
+                if (match.evaluation != null) {
+                    explDetails.weather = match.evaluation.toExplanationDetails()
+                }
+                explanations << PlanningExplanation.of(
+                    'indoor_weather_replacement',
+                    "Indoor task '${indoorChg.taskId}' occupies capacity released when weather blocked '${outdoorId}'",
+                    'task', indoorChg.taskId, explDetails
+                )
+
+                linkedIndoor.add(indoorChg.taskId)
+                linkedOutdoor.add(outdoorId)
+            }
+        }
+
+        // Single immutable rebuild pass for linked indoor/outdoor block metadata
+        if (linkedIndoor || linkedOutdoor) {
+            for (int i = 0; i < blocks.size(); i++) {
+                ScheduledBlock b = blocks[i]
+                Map bm = new LinkedHashMap<>(b.metadata ?: [:])
+                boolean changed = false
+                b.taskIds.each { tid ->
+                    if (linkedIndoor.contains(tid)) {
+                        PlanChange ic = changes.find { it.taskId == tid && it.metadata?.replacesWeatherInvalidTaskId }
+                        if (ic?.metadata?.replacesWeatherInvalidTaskId) {
+                            bm.replacesWeatherInvalidTaskId = ic.metadata.replacesWeatherInvalidTaskId
+                            bm.replacementReason = ic.metadata.replacementReason
+                            changed = true
+                        }
+                    }
+                    if (linkedOutdoor.contains(tid)) {
+                        PlanChange oc = changes.find { it.taskId == tid && it.metadata?.replacedByIndoorTaskId }
+                        if (oc?.metadata?.replacedByIndoorTaskId) {
+                            bm.replacedByIndoorTaskId = oc.metadata.replacedByIndoorTaskId
+                            bm.replacementReason = oc.metadata.replacementReason
+                            changed = true
+                        }
+                    }
+                }
+                if (changed) {
+                    blocks[i] = ScheduledBlock.builder()
+                        .id(b.id).start(b.start).end(b.end).taskIds(b.taskIds)
+                        .memberIntervals(b.memberIntervals)
+                        .projectId(b.projectId).projectName(b.projectName)
+                        .title(b.title).focusBlock(b.focusBlock)
+                        .frozen(b.frozen).manualOverride(b.manualOverride)
+                        .reason(b.reason).metadata(bm)
+                        .build()
+                }
+            }
+        }
+    }
+
+    private static void replaceChangeMetadata(List<PlanChange> changes, PlanChange original, Map newMeta) {
+        int idx = changes.indexOf(original)
+        if (idx < 0) {
+            // fallback: match by id
+            idx = changes.findIndexOf { it.id == original.id }
+        }
+        if (idx < 0) {
+            return
+        }
+        PlanChange c = changes[idx]
+        changes[idx] = PlanChange.builder()
+            .id(c.id).type(c.type).taskId(c.taskId)
+            .previousStart(c.previousStart).previousEnd(c.previousEnd)
+            .newStart(c.newStart).newEnd(c.newEnd)
+            .reason(c.reason).metadata(newMeta)
+            .build()
+    }
+
+    private static boolean intervalsOverlap(Instant aStart, Instant aEnd, Instant bStart, Instant bEnd) {
+        if (aStart == null || aEnd == null || bStart == null || bEnd == null) {
+            return false
+        }
+        return aStart.isBefore(bEnd) && bStart.isBefore(aEnd)
+    }
+
     /**
      * Deterministic placement candidate starts within a placeable fragment.
-     * Includes slot start, interior preferred-context window starts, and prior
-     * frozen/manual placement starts when they lie inside the fragment.
+     * Includes slot start, interior preferred-context window starts, prior
+     * frozen/manual placement starts, and (when weather is enabled) forecast
+     * interval starts that can align any weather-sensitive member to a
+     * forecast transition inside the fragment.
      * Does not enumerate minute-by-minute.
      */
     private List<Instant> candidateStartsForSlot(SchedulingUnit unit,
                                                  List<Task> orderedMembers,
                                                  Instant usableStart, Instant usableEnd,
                                                  long needMinutes,
-                                                 Map<String, PreviousPlacement> previousByTask) {
+                                                 Map<String, PreviousPlacement> previousByTask,
+                                                 WeatherForecast forecast = null) {
         NavigableSet<Instant> starts = new TreeSet<>()
         starts.add(usableStart)
 
@@ -565,6 +1006,31 @@ class DeterministicScheduler {
             if (prev?.start != null &&
                 !prev.start.isBefore(usableStart) && prev.start.isBefore(usableEnd)) {
                 starts.add(prev.start)
+            }
+        }
+
+        // Forecast-boundary candidates: align weather-sensitive members to interval starts
+        if (weatherEvaluator.isEnabled() && forecast?.intervals) {
+            long prefixMinutes = 0L
+            members.each { task ->
+                boolean weatherSensitive = weatherEvaluator.matchRule(task) != null
+                if (weatherSensitive) {
+                    // Block start S places this member at S + prefix; to land member at
+                    // forecast interval start F, candidate block start is F - prefix.
+                    forecast.intervals.each { iv ->
+                        if (iv?.start == null) {
+                            return
+                        }
+                        Instant candidate = iv.start
+                        if (prefixMinutes > 0L) {
+                            candidate = iv.start - Duration.ofMinutes(prefixMinutes)
+                        }
+                        if (!candidate.isBefore(usableStart) && candidate.isBefore(usableEnd)) {
+                            starts.add(candidate)
+                        }
+                    }
+                }
+                prefixMinutes += task.effectiveDuration?.toMinutes() ?: 0L
             }
         }
 
@@ -925,10 +1391,12 @@ class DeterministicScheduler {
         final Map<String, Instant> memberStarts
         final Map<String, Instant> memberEnds
         final List<String> orderedTaskIds
+        final Map<String, WeatherEvaluation> weatherByTask
 
         Placement(Instant start, Instant end, long score, String reason, String blockId,
                   Map<String, Instant> memberStarts, Map<String, Instant> memberEnds,
-                  List<String> orderedTaskIds = null) {
+                  List<String> orderedTaskIds = null,
+                  Map<String, WeatherEvaluation> weatherByTask = null) {
             this.start = start
             this.end = end
             this.score = score
@@ -939,6 +1407,21 @@ class DeterministicScheduler {
             this.orderedTaskIds = orderedTaskIds != null
                 ? Collections.unmodifiableList(new ArrayList<>(orderedTaskIds))
                 : null
+            this.weatherByTask = weatherByTask != null
+                ? Collections.unmodifiableMap(new LinkedHashMap<>(weatherByTask))
+                : null
+        }
+    }
+
+    static final class WeatherRejectedSlot {
+        final Instant start
+        final Instant end
+        final WeatherEvaluation evaluation
+
+        WeatherRejectedSlot(Instant start, Instant end, WeatherEvaluation evaluation) {
+            this.start = start
+            this.end = end
+            this.evaluation = evaluation
         }
     }
 }

@@ -57,11 +57,21 @@ class PlanDiffFormatter {
             sb << '\n'
         }
 
+        // Track weather fingerprints already rendered under changes/unscheduled so
+        // explanations do not repeat the same rule/timestamps noisily.
+        Set<String> renderedWeatherKeys = new LinkedHashSet<>()
+
         if (moved) {
             sb << '## Moved\n\n'
             moved.each { PlanChange c ->
                 sb << "- ${c.taskId}: ${fmtHuman(c.previousStart, z)} → ${fmtHuman(c.newStart, z)}\n"
                 sb << "  Reason: ${c.reason}\n"
+                Map weather = extractWeatherMap(c.metadata)
+                if (weather) {
+                    appendWeatherMeta(sb, weather, z)
+                    renderedWeatherKeys << weatherFingerprint(weather, c.taskId)
+                }
+                appendReplacementMeta(sb, c.metadata)
                 if (c.metadata?.approvalRequired == true || c.metadata?.approvalRequired == 'true') {
                     String approvalReason = c.metadata.approvalReason?.toString()
                     if (approvalReason) {
@@ -91,6 +101,12 @@ class PlanDiffFormatter {
                     sb << " – ${fmtHuman(c.newEnd, z)}"
                 }
                 sb << "\n  Reason: ${c.reason}\n"
+                Map weather = extractWeatherMap(c.metadata)
+                if (weather) {
+                    appendWeatherMeta(sb, weather, z)
+                    renderedWeatherKeys << weatherFingerprint(weather, c.taskId)
+                }
+                appendReplacementMeta(sb, c.metadata)
             }
             sb << '\n'
         }
@@ -102,6 +118,14 @@ class PlanDiffFormatter {
             plan.unscheduled.each { UnscheduledTask u ->
                 sb << "- **${u.task.content}**\n"
                 sb << "  Reason: ${u.reason}\n"
+                if (u.code == 'weather_infeasible') {
+                    sb << "  Code: weather_infeasible\n"
+                }
+                Map weather = extractWeatherMap(u.metadata)
+                if (weather) {
+                    appendWeatherMeta(sb, weather, z)
+                    renderedWeatherKeys << weatherFingerprint(weather, u.task?.id)
+                }
             }
             sb << '\n'
         }
@@ -110,6 +134,14 @@ class PlanDiffFormatter {
             sb << '## Explanations\n\n'
             plan.explanations.each { ex ->
                 sb << "- `[${ex.code}]` ${ex.message}\n"
+                Map weather = extractWeatherMap(ex.details)
+                if (weather) {
+                    String key = weatherFingerprint(weather, ex.subjectId)
+                    if (!renderedWeatherKeys.contains(key)) {
+                        appendWeatherMeta(sb, weather, z, '  ')
+                        renderedWeatherKeys << key
+                    }
+                }
             }
             sb << '\n'
         }
@@ -132,6 +164,104 @@ class PlanDiffFormatter {
                 return 'move within require-approval horizon'
             default:
                 return code.replace('_', ' ')
+        }
+    }
+
+    /**
+     * Prefer nested weather maps; fall back to flat explanation-detail shape.
+     */
+    private static Map extractWeatherMap(Map metadata) {
+        if (!(metadata instanceof Map) || metadata.isEmpty()) {
+            return null
+        }
+        if (metadata.weather instanceof Map) {
+            return metadata.weather as Map
+        }
+        if (metadata.priorWeather instanceof Map) {
+            return metadata.priorWeather as Map
+        }
+        if (metadata.replacedTaskWeather instanceof Map) {
+            return metadata.replacedTaskWeather as Map
+        }
+        // Flat weather evaluation details (unscheduled explanation / metadata)
+        if (metadata.ruleName || metadata.ruleId || metadata.forecastIssuedAt || metadata.result) {
+            return metadata
+        }
+        return null
+    }
+
+    private static String weatherFingerprint(Map weather, String subjectId) {
+        if (!(weather instanceof Map)) {
+            return ''
+        }
+        return [
+            subjectId ?: '',
+            weather.ruleId ?: '',
+            weather.ruleName ?: '',
+            weather.result ?: '',
+            weather.forecastIssuedAt?.toString() ?: '',
+            weather.forecastRetrievedAt?.toString() ?: '',
+            weather.observedField ?: '',
+            weather.observedValue?.toString() ?: ''
+        ].join('|')
+    }
+
+    /**
+     * Append forecast timestamp + applied rule for weather-driven changes (12-hour local).
+     * Deterministic field order: rule, evaluation, issued, retrieved, provider, location, observed.
+     */
+    private static void appendWeatherMeta(StringBuilder sb, Map weather, ZoneId zone, String indent = '  ') {
+        if (!(weather instanceof Map) || weather.isEmpty()) {
+            return
+        }
+        if (weather.ruleName || weather.ruleId) {
+            sb << "${indent}Weather rule: ${weather.ruleName ?: weather.ruleId}\n"
+        }
+        if (weather.result) {
+            sb << "${indent}Weather evaluation: ${weather.result}\n"
+        }
+        if (weather.forecastIssuedAt) {
+            try {
+                Instant issued = Instant.parse(weather.forecastIssuedAt.toString())
+                sb << "${indent}Forecast issued: ${fmtHuman(issued, zone)}\n"
+            } catch (Exception e) {
+                sb << "${indent}Forecast issued: ${weather.forecastIssuedAt}\n"
+            }
+        }
+        if (weather.forecastRetrievedAt) {
+            try {
+                Instant retrieved = Instant.parse(weather.forecastRetrievedAt.toString())
+                sb << "${indent}Forecast retrieved: ${fmtHuman(retrieved, zone)}\n"
+            } catch (Exception e) {
+                sb << "${indent}Forecast retrieved: ${weather.forecastRetrievedAt}\n"
+            }
+        }
+        if (weather.provider) {
+            sb << "${indent}Weather provider: ${weather.provider}\n"
+        }
+        if (weather.latitude != null || weather.longitude != null) {
+            String lat = weather.latitude != null ? weather.latitude.toString() : '?'
+            String lon = weather.longitude != null ? weather.longitude.toString() : '?'
+            sb << "${indent}Weather location: ${lat}, ${lon}\n"
+        }
+        if (weather.observedField) {
+            sb << "${indent}Observed ${weather.observedField}: ${weather.observedValue}"
+            if (weather.threshold != null) {
+                sb << " (threshold ${weather.threshold})"
+            }
+            sb << '\n'
+        }
+    }
+
+    private static void appendReplacementMeta(StringBuilder sb, Map metadata) {
+        if (!(metadata instanceof Map)) {
+            return
+        }
+        if (metadata.replacesWeatherInvalidTaskId) {
+            sb << "  Indoor replacement for: ${metadata.replacesWeatherInvalidTaskId}\n"
+        }
+        if (metadata.replacedByIndoorTaskId) {
+            sb << "  Replaced by indoor task: ${metadata.replacedByIndoorTaskId}\n"
         }
     }
 

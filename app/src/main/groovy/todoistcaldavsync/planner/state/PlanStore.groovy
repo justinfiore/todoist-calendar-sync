@@ -218,11 +218,15 @@ class PlanStore {
             slots          : plan.slots.collect { slotToMap(it) },
             scheduledBlocks: plan.scheduledBlocks.collect { blockToMap(it) },
             unscheduled    : plan.unscheduled.collect {
-                [
+                Map row = [
                     task  : taskToMap(it.task),
                     reason: it.reason,
                     code  : it.code
                 ]
+                if (it.metadata) {
+                    row.metadata = it.metadata
+                }
+                row
             },
             changes        : plan.changes.collect { changeToMap(it) },
             explanations   : plan.explanations.collect {
@@ -260,7 +264,8 @@ class PlanStore {
                 if (t == null) {
                     throw new PlanStoreException("Unscheduled task missing for ${um}", path, 'parse')
                 }
-                new UnscheduledTask(t, um.reason?.toString() ?: 'unscheduled', um.code?.toString())
+                Map meta = um.metadata instanceof Map ? new LinkedHashMap<>(um.metadata as Map) : [:]
+                new UnscheduledTask(t, um.reason?.toString() ?: 'unscheduled', um.code?.toString(), meta)
             }
             return Plan.builder()
                 .id(root.id.toString())
