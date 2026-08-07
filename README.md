@@ -2,6 +2,11 @@
 
 # todoist-calendar-sync
 
+Phase 6 includes optional, disabled-by-default AI enrichment with strict structured schemas,
+pre-transport redaction, zero mutation authority, and an explicit confirmation boundary. See
+[the Phase 6 AI assistance guide](docs/PHASE_6_AI_ASSISTANCE.md). No live model trial or secret
+provisioning is included.
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/justinfiore/todoist-calendar-sync)
 
 Sync Todoist tasks into one or more CalDAV calendars.

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "task_suggestions_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suggestionType", "correlationId", "suggestions"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "suggestionType": {"const": "task_suggestions"},
+    "correlationId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "suggestions": {
+      "type": "array", "maxItems": 100, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["suggestionId", "taskId", "kind", "proposedValue", "confidence", "rationale", "evidenceIds"],
+        "properties": {
+          "suggestionId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+          "taskId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+          "kind": {"enum": ["duration", "context", "batch", "schedule_rationale"]},
+          "proposedValue": {},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "rationale": {"type": "string", "minLength": 1, "maxLength": 500},
+          "evidenceIds": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"}}
+        },
+        "allOf": [
+          {"if": {"properties": {"kind": {"const": "duration"}}}, "then": {"properties": {"proposedValue": {"type": "integer", "minimum": 5, "maximum": 480}}}},
+          {"if": {"properties": {"kind": {"enum": ["context", "batch"]}}}, "then": {"properties": {"proposedValue": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}}}},
+          {"if": {"properties": {"kind": {"const": "schedule_rationale"}}}, "then": {"properties": {"proposedValue": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,'():_-]{0,199}$"}}}}
+        ]
+      }
+    }
+  }
+}

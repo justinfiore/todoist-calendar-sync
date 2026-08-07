@@ -19,6 +19,7 @@ dependencies {
     implementation 'org.apache.groovy:groovy-json:5.0.6'
     implementation 'org.apache.groovy:groovy-xml:5.0.6'
     implementation 'org.apache.groovy:groovy-yaml:5.0.6'
+    implementation 'com.networknt:json-schema-validator:1.0.86'
 
     implementation 'ch.qos.reload4j:reload4j:1.2.26'
     implementation 'org.slf4j:slf4j-reload4j:2.0.12'

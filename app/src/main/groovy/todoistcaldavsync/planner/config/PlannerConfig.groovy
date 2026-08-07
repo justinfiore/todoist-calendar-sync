@@ -2,6 +2,7 @@ package todoistcaldavsync.planner.config
 
 import todoistcaldavsync.planner.domain.EventRole
 import todoistcaldavsync.planner.domain.Task
+import todoistcaldavsync.planner.ai.AiRedactor
 
 import groovy.yaml.YamlSlurper
 
@@ -9,6 +10,7 @@ import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalTime
 import java.time.ZoneId
+import java.net.URI
 import java.util.Collections
 import java.util.Locale
 import java.util.regex.Pattern
@@ -34,6 +36,7 @@ final class PlannerConfig {
     final List<TaskContext> taskContexts
     final WeatherConfig weather
     final MessagingConfig messaging
+    final AiConfig ai
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
 
@@ -55,6 +58,7 @@ final class PlannerConfig {
         this.taskContexts = Collections.unmodifiableList(new ArrayList<>(b.taskContexts ?: []))
         this.weather = b.weather ?: WeatherConfig.disabled()
         this.messaging = b.messaging ?: MessagingConfig.disabled()
+        this.ai = b.ai ?: AiConfig.disabled()
     }
 
     static Builder builder() {
@@ -168,6 +172,7 @@ final class PlannerConfig {
         WeatherConfig weather = parseWeather(p.weather instanceof Map ? p.weather as Map : null, timezone, errors)
         MessagingConfig messaging = parseMessaging(
             p.messaging instanceof Map ? p.messaging as Map : null, timezone, errors)
+        AiConfig ai = parseAi(p.ai instanceof Map ? p.ai as Map : null, errors)
 
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
@@ -190,6 +195,7 @@ final class PlannerConfig {
             .taskContexts(taskContexts)
             .weather(weather)
             .messaging(messaging)
+            .ai(ai)
             .build()
     }
 
@@ -297,6 +303,199 @@ final class PlannerConfig {
         } else {
             errors.addAll(collectMessagingErrors(b.messaging))
         }
+        if (b.ai == null) {
+            errors << 'planner.ai is required'
+        } else {
+            errors.addAll(collectAiErrors(b.ai))
+        }
+        return errors
+    }
+
+    static final Set<String> AI_SUGGESTION_TYPES = [
+        'task_suggestions', 'event_classification_suggestions',
+        'temporary_planning_overrides', 'conversational_feedback_interpretation'
+    ] as Set
+
+    private static AiConfig parseAi(Map raw, List errors) {
+        if (raw == null) return AiConfig.disabled()
+        validateAiShape(raw, errors)
+        Map normalized = [:]
+        raw.each { key, value -> normalized[normalizeConfigKey(key)] = value }
+        boolean enabled = parseBoolDefault(normalized.enabled, false)
+        String provider = (normalized.provider ?: (enabled ? 'openai_compatible' : 'none')).toString()
+            .trim().toLowerCase(Locale.ROOT).replace('-', '_')
+        String endpoint = (normalized.endpoint ?: 'https://api.openai.com/v1/chat/completions').toString().trim()
+        String model = normalized.model?.toString()?.trim()
+        String secretEnv = normalized.secretenv?.toString()?.trim()
+        Duration connectTimeout = parseDurationValue(normalized.connecttimeout,
+            Duration.ofSeconds(5), 'planner.ai.connect_timeout', errors)
+        Duration requestTimeout = parseDurationValue(normalized.requesttimeout ?: normalized.timeout,
+            Duration.ofSeconds(30), 'planner.ai.request_timeout', errors)
+        int maxRequestBytes = parsePositiveInt(normalized.maxrequestbytes, 65536,
+            'planner.ai.max_request_bytes', errors)
+        int maxResponseBytes = parsePositiveInt(normalized.maxresponsebytes, 65536,
+            'planner.ai.max_response_bytes', errors)
+        int maxItems = parsePositiveInt(normalized.maxitems, 100,
+            'planner.ai.max_items', errors)
+        int maxStringChars = parsePositiveInt(normalized.maxstringchars, 500,
+            'planner.ai.max_string_chars', errors)
+        int maxTokens = parsePositiveInt(normalized.maxtokens, 1200,
+            'planner.ai.max_tokens', errors)
+        def allowedRaw = normalized.containsKey('allowedsuggestiontypes') ? normalized.allowedsuggestiontypes : AI_SUGGESTION_TYPES
+        Set<String> allowed = new LinkedHashSet<>()
+        if (!(allowedRaw instanceof Collection)) {
+            errors << 'planner.ai.allowed_suggestion_types must be a list'
+        } else {
+            allowedRaw.eachWithIndex { value, idx ->
+                String type = value?.toString()?.trim()
+                if (!(type in AI_SUGGESTION_TYPES)) {
+                    errors << "planner.ai.allowed_suggestion_types[${idx}] contains an unsupported type"
+                } else if (!allowed.add(type)) {
+                    errors << "planner.ai.allowed_suggestion_types[${idx}] duplicates an earlier type"
+                }
+            }
+        }
+        def hostsRaw = normalized.containsKey('allowedhosts') ? normalized.allowedhosts : ['api.openai.com']
+        Set<String> allowedHosts = new LinkedHashSet<>()
+        if (!(hostsRaw instanceof Collection)) {
+            errors << 'planner.ai.allowed_hosts must be a list'
+        } else {
+            hostsRaw.each { h -> if (h != null && h.toString().trim()) allowedHosts << h.toString().trim().toLowerCase(Locale.ROOT) }
+        }
+        Map safety = normalized.safety instanceof Map ? normalized.safety as Map : [:]
+        Map normalizedSafety=[:];safety.each{key,value->normalizedSafety[normalizeConfigKey(key)]=value}
+        def confirmationRaw = normalized.containsKey('requireconfirmation') ? normalized.requireconfirmation
+            : normalizedSafety.requireconfirmationforpolicychanges
+        boolean requireConfirmation = parseBoolDefault(confirmationRaw, true)
+        def redactionRaw = normalized.redactionenabled
+        boolean redact = parseBoolDefault(redactionRaw, true)
+        ['never_apply_changes_directly','require_structured_output','send_minimum_necessary_data'].each { key ->
+            String normalizedKey=normalizeConfigKey(key)
+            if (normalizedSafety.containsKey(normalizedKey) && !parseBoolDefault(normalizedSafety[normalizedKey], false)) {
+                errors << "planner.ai.safety.${key} must remain true"
+            }
+        }
+        AiConfig cfg = new AiConfig(enabled, provider, endpoint, model, secretEnv,
+            connectTimeout, requestTimeout, maxRequestBytes, maxResponseBytes, maxItems,
+            maxStringChars, maxTokens, allowed, allowedHosts, redact, requireConfirmation)
+        errors.addAll(collectAiErrors(cfg))
+        return cfg
+    }
+
+    private static void validateAiShape(Map raw, List errors) {
+        Map<String,String> known = [
+            enabled:'enabled', provider:'provider', endpoint:'endpoint', model:'model', secretenv:'secret_env',
+            connecttimeout:'connect_timeout', requesttimeout:'request_timeout', timeout:'request_timeout',
+            maxrequestbytes:'max_request_bytes', maxresponsebytes:'max_response_bytes', maxitems:'max_items',
+            maxstringchars:'max_string_chars', maxtokens:'max_tokens', allowedsuggestiontypes:'allowed_suggestion_types',
+            allowedhosts:'allowed_hosts', requireconfirmation:'require_confirmation', redactionenabled:'redaction_enabled',
+            safety:'safety'
+        ]
+        Set<String> seen = [] as Set
+        raw.each { key, value ->
+            String normalized = normalizeConfigKey(key)
+            String safePath = known.containsKey(normalized) ? "planner.ai.${known[normalized]}" : 'planner.ai.field'
+            if (known.containsKey(normalized)) {
+                if (!seen.add(known[normalized])) errors << "${safePath} duplicates an earlier alias"
+            } else if (isSecretAlias(normalized)) {
+                errors << 'planner.ai contains a forbidden secret field; use secret_env'
+            } else {
+                errors << 'planner.ai contains an unknown field'
+            }
+            if (value instanceof Map && normalized != 'safety') {
+                errors << "${safePath} must not contain nested map data"
+            }
+            if (value instanceof Collection && !(normalized in ['allowedsuggestiontypes','allowedhosts'] as Set)) {
+                errors << "${safePath} must not contain nested list data"
+            }
+            scanAiValue(value, safePath, normalized in ['endpoint','secretenv'] as Set, errors)
+        }
+        if (raw.safety != null && !(raw.safety instanceof Map)) {
+            errors << 'planner.ai.safety must be an object'
+        }
+        if (raw.safety instanceof Map) {
+            Set allowedSafety = ['neverapplychangesdirectly','requirestructuredoutput',
+                'requireconfirmationforpolicychanges','sendminimumnecessarydata'] as Set
+            (raw.safety as Map).each { key, value ->
+                String normalized = normalizeConfigKey(key)
+                String safePath=allowedSafety.contains(normalized) ? 'planner.ai.safety.control' : 'planner.ai.safety.field'
+                if (isSecretAlias(normalized)) errors << 'planner.ai.safety contains a forbidden secret field'
+                else if (!allowedSafety.contains(normalized)) errors << 'planner.ai.safety contains an unknown field'
+                scanAiValue(value, safePath, false, errors)
+            }
+        }
+    }
+
+    private static void scanAiValue(Object value, String path, boolean allowedSpecial, List errors) {
+        if (value instanceof Map) {
+            (value as Map).each { key, child ->
+                String normalized = normalizeConfigKey(key)
+                if (isSecretAlias(normalized)) errors << "${path} contains a forbidden secret field"
+                scanAiValue(child, "${path}.field", false, errors)
+            }
+        } else if (value instanceof Collection) {
+            (value as Collection).eachWithIndex { child, index -> scanAiValue(child, "${path}[${index}]", false, errors) }
+        } else if (!allowedSpecial && value instanceof CharSequence) {
+            String text = value.toString()
+            if (text ==~ /(?is).*\bBearer\s+\S+.*/ || text ==~ /(?is).*\b(?:sk|xox[baprs]|gh[pousr])[-_A-Za-z0-9]{8,}.*/ ||
+                text ==~ /(?is).*https?:\/\/hooks\.slack\.com\/services\/\S+.*/ || text ==~ /(?is).*https?:\/\/\S+.*/ ||
+                AiRedactor.redactText(text, Math.max(1,text.length())).redactionCount > 0) {
+                errors << "${path} contains forbidden sensitive text"
+            }
+        }
+    }
+
+    private static String normalizeConfigKey(Object key) {
+        key?.toString()?.toLowerCase(Locale.ROOT)?.replaceAll(/[^a-z0-9]/, '') ?: ''
+    }
+
+    private static boolean isSecretAlias(String normalized) {
+        normalized ==~ /.*(?:apikey|token|bearer|secret|password|credential|webhook|authorization).*/
+    }
+
+    static List<String> collectAiErrors(AiConfig a) {
+        List<String> errors = []
+        if (a == null) return ['planner.ai is required']
+        if (!(a.provider in ['none', 'disabled', 'fixture', 'openai_compatible'] as Set)) {
+            errors << 'planner.ai.provider is unsupported'
+        }
+        if (a.enabled && (a.provider in ['none', 'disabled'])) {
+            errors << 'planner.ai.provider must select an implemented provider when AI is enabled'
+        }
+        URI endpoint = null
+        try { endpoint = URI.create(a.endpoint ?: '') } catch (Exception ignored) {}
+        if (endpoint == null || endpoint.scheme?.toLowerCase(Locale.ROOT) != 'https' || !endpoint.host ||
+            endpoint.userInfo || endpoint.fragment || !(endpoint.port in [-1, 443])) {
+            errors << 'planner.ai.endpoint must be an absolute HTTPS URL on port 443 without credentials or fragment'
+        } else if (!a.allowedHosts.contains(endpoint.host.toLowerCase(Locale.ROOT))) {
+            errors << 'planner.ai.endpoint host is not in allowed_hosts'
+        }
+        if (a.enabled && !a.model) {
+            errors << 'planner.ai.model is required when AI is enabled'
+        }
+        if (a.model && !(a.model ==~ /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/)) {
+            errors << 'planner.ai.model must be a bounded model identifier'
+        }
+        if (a.enabled && a.provider == 'openai_compatible' && !a.secretEnv) {
+            errors << 'planner.ai.secret_env is required when AI is enabled'
+        }
+        if (a.secretEnv && !(a.secretEnv ==~ /^[A-Za-z_][A-Za-z0-9_]*$/)) {
+            errors << 'planner.ai.secret_env must be an environment variable name'
+        }
+        if (!a.allowedHosts || !a.allowedHosts.every { it ==~ /(?i)^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/ }) {
+            errors << 'planner.ai.allowed_hosts must contain valid host names'
+        }
+        if (!a.connectTimeout || a.connectTimeout.isNegative() || a.connectTimeout.isZero() ||
+            a.connectTimeout > Duration.ofSeconds(30)) errors << 'planner.ai.connect_timeout must be > 0 and <= PT30S'
+        if (!a.requestTimeout || a.requestTimeout.isNegative() || a.requestTimeout.isZero() ||
+            a.requestTimeout > Duration.ofMinutes(2)) errors << 'planner.ai.request_timeout must be > 0 and <= PT2M'
+        if (a.maxRequestBytes < 1024 || a.maxRequestBytes > 1_048_576) errors << 'planner.ai.max_request_bytes must be 1024..1048576'
+        if (a.maxResponseBytes < 1024 || a.maxResponseBytes > 1_048_576) errors << 'planner.ai.max_response_bytes must be 1024..1048576'
+        if (a.maxItems < 1 || a.maxItems > 500) errors << 'planner.ai.max_items must be 1..500'
+        if (a.maxStringChars < 32 || a.maxStringChars > 4000) errors << 'planner.ai.max_string_chars must be 32..4000'
+        if (a.maxTokens < 64 || a.maxTokens > 4096) errors << 'planner.ai.max_tokens must be 64..4096'
+        if (a.enabled && !a.requireConfirmation) errors << 'planner.ai.require_confirmation must remain true'
+        if (a.enabled && !a.redactionEnabled) errors << 'planner.ai.redaction_enabled must remain true'
         return errors
     }
 
@@ -709,7 +908,7 @@ final class PlannerConfig {
             }
             return d
         } catch (Exception e) {
-            errors << "${path} is invalid ISO-8601 duration: ${value}"
+            errors << "${path} is an invalid ISO-8601 duration"
             return defaultValue
         }
     }
@@ -854,7 +1053,7 @@ final class PlannerConfig {
             }
             return d
         } catch (Exception e) {
-            errors << "${path} is invalid: ${value}"
+            errors << "${path} is invalid"
             return null
         }
     }
@@ -1295,7 +1494,7 @@ final class PlannerConfig {
             }
             return v
         } catch (Exception e) {
-            errors << "${path} is invalid: ${value}"
+            errors << "${path} is invalid"
             return defaultValue
         }
     }
@@ -1448,6 +1647,62 @@ final class PlannerConfig {
             new MessagingConfig(false, 'none', null, null, null, null, 'webhook', null,
                 true, true, true, true, true, [] as Set, false, 5, [])
         }
+    }
+
+    /**
+     * Optional, provider-neutral AI side-service configuration. It is disabled by
+     * default and is deliberately not consumed by the deterministic scheduler.
+     * Secrets are environment-variable names, never values.
+     */
+    static final class AiConfig {
+        final boolean enabled
+        final String provider
+        final String endpoint
+        final String model
+        final String secretEnv
+        final Duration connectTimeout
+        final Duration requestTimeout
+        final int maxRequestBytes
+        final int maxResponseBytes
+        final int maxItems
+        final int maxStringChars
+        final int maxTokens
+        final Set<String> allowedSuggestionTypes
+        final Set<String> allowedHosts
+        final boolean redactionEnabled
+        final boolean requireConfirmation
+
+        AiConfig(boolean enabled, String provider, String endpoint, String model, String secretEnv,
+                 Duration connectTimeout, Duration requestTimeout, int maxRequestBytes,
+                 int maxResponseBytes, int maxItems, int maxStringChars, int maxTokens,
+                 Set<String> allowedSuggestionTypes, Set<String> allowedHosts,
+                 boolean redactionEnabled, boolean requireConfirmation) {
+            this.enabled = enabled
+            this.provider = provider ?: 'none'
+            this.endpoint = endpoint ?: 'https://api.openai.com/v1/chat/completions'
+            this.model = model
+            this.secretEnv = secretEnv
+            this.connectTimeout = connectTimeout
+            this.requestTimeout = requestTimeout
+            this.maxRequestBytes = maxRequestBytes
+            this.maxResponseBytes = maxResponseBytes
+            this.maxItems = maxItems
+            this.maxStringChars = maxStringChars
+            this.maxTokens = maxTokens
+            this.allowedSuggestionTypes = Collections.unmodifiableSet(
+                new LinkedHashSet<>(allowedSuggestionTypes ?: []))
+            this.allowedHosts = Collections.unmodifiableSet(new LinkedHashSet<>(allowedHosts ?: []))
+            this.redactionEnabled = redactionEnabled
+            this.requireConfirmation = requireConfirmation
+        }
+
+        static AiConfig disabled() {
+            new AiConfig(false, 'none', 'https://api.openai.com/v1/chat/completions', null, null,
+                Duration.ofSeconds(5), Duration.ofSeconds(30), 65536, 65536, 100, 500, 1200,
+                AI_SUGGESTION_TYPES, ['api.openai.com'] as Set, true, true)
+        }
+
+        boolean allows(String type) { enabled && allowedSuggestionTypes.contains(type) }
     }
 
     static final class MessageSchedule {
@@ -1713,6 +1968,7 @@ final class PlannerConfig {
         private List<TaskContext> taskContexts = []
         private WeatherConfig weather = WeatherConfig.disabled()
         private MessagingConfig messaging = MessagingConfig.disabled()
+        private AiConfig ai = AiConfig.disabled()
 
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
@@ -1730,6 +1986,7 @@ final class PlannerConfig {
         Builder taskContexts(List<TaskContext> v) { this.taskContexts = v ?: []; this }
         Builder weather(WeatherConfig v) { this.weather = v ?: WeatherConfig.disabled(); this }
         Builder messaging(MessagingConfig v) { this.messaging = v ?: MessagingConfig.disabled(); this }
+        Builder ai(AiConfig v) { this.ai = v ?: AiConfig.disabled(); this }
 
         // package-private accessors for invariant validation
         String getMode() { mode }
@@ -1745,6 +2002,7 @@ final class PlannerConfig {
         List<TaskContext> getTaskContexts() { taskContexts }
         WeatherConfig getWeather() { weather }
         MessagingConfig getMessaging() { messaging }
+        AiConfig getAi() { ai }
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)
