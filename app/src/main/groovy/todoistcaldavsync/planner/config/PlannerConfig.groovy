@@ -6,9 +6,11 @@ import todoistcaldavsync.planner.domain.Task
 import groovy.yaml.YamlSlurper
 
 import java.time.DayOfWeek
+import java.time.Duration
 import java.time.LocalTime
 import java.time.ZoneId
 import java.util.Collections
+import java.util.Locale
 import java.util.regex.Pattern
 
 /**
@@ -27,6 +29,9 @@ final class PlannerConfig {
     final int defaultDurationMinutes
     final Map<String, Integer> durationLabels
     final Task.DurationResolver durationResolver
+    final StabilityConfig stability
+    final BatchingConfig batching
+    final List<TaskContext> taskContexts
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
 
@@ -43,6 +48,9 @@ final class PlannerConfig {
         this.defaultDurationMinutes = b.defaultDurationMinutes
         this.durationLabels = Collections.unmodifiableMap(new LinkedHashMap<>(b.durationLabels))
         this.durationResolver = new Task.DurationResolver(b.defaultDurationMinutes, b.durationLabels)
+        this.stability = b.stability ?: StabilityConfig.defaults()
+        this.batching = b.batching ?: BatchingConfig.defaults()
+        this.taskContexts = Collections.unmodifiableList(new ArrayList<>(b.taskContexts ?: []))
     }
 
     static Builder builder() {
@@ -150,6 +158,10 @@ final class PlannerConfig {
             errors << 'planner.availability.working_windows must define at least one window'
         }
 
+        StabilityConfig stability = parseStability(p.stability instanceof Map ? p.stability as Map : [:], errors)
+        BatchingConfig batching = parseBatching(p.batching instanceof Map ? p.batching as Map : [:], errors)
+        List<TaskContext> taskContexts = parseTaskContexts(tasks.contexts, errors)
+
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
         }
@@ -166,6 +178,9 @@ final class PlannerConfig {
             .schedulingEligibleLabels(eligibleLabels)
             .defaultDurationMinutes(defaultDurationMinutes)
             .durationLabels(durationLabels)
+            .stability(stability)
+            .batching(batching)
+            .taskContexts(taskContexts)
             .build()
     }
 
@@ -206,6 +221,38 @@ final class PlannerConfig {
         }
         if (b.unknownCalendarFallback == null) {
             errors << 'planner.availability.unknown_calendar_fallback is required'
+        }
+        if (b.stability == null) {
+            errors << 'planner.stability is required'
+        } else {
+            if (b.stability.freezeWithin == null || b.stability.freezeWithin.isNegative()) {
+                errors << 'planner.stability.freeze_within must be a non-negative duration'
+            }
+            if (b.stability.minimumBufferBetweenBlocksMinutes < 0) {
+                errors << 'planner.stability.minimum_buffer_between_blocks_minutes must be non-negative'
+            }
+            if (b.stability.churnPenalty < 0) {
+                errors << 'planner.stability.churn_penalty must be non-negative'
+            }
+        }
+        if (b.batching == null) {
+            errors << 'planner.batching is required'
+        } else {
+            if (b.batching.projectBatchBonus < 0) {
+                errors << 'planner.batching.project_batch_bonus must be non-negative'
+            }
+            if (b.batching.maxFocusBlockMinutes <= 0) {
+                errors << 'planner.batching.max_focus_block_minutes must be positive'
+            }
+            if (b.batching.minimumFocusBlockMinutes <= 0) {
+                errors << 'planner.batching.minimum_focus_block_minutes must be positive'
+            }
+            if (b.batching.minimumFocusBlockMinutes > b.batching.maxFocusBlockMinutes) {
+                errors << 'planner.batching.minimum_focus_block_minutes must be <= max_focus_block_minutes'
+            }
+            if (b.batching.contextSwitchPenalty < 0) {
+                errors << 'planner.batching.context_switch_penalty must be non-negative'
+            }
         }
         if (b.eventRules) {
             b.eventRules.eachWithIndex { EventRule rule, int idx ->
@@ -446,6 +493,273 @@ final class PlannerConfig {
         calendarDefaults.find { it.calendarName.equalsIgnoreCase(calendarName) }
     }
 
+    /**
+     * Contexts whose match_labels intersect the task labels (case-insensitive).
+     */
+    List<TaskContext> contextsFor(Task task) {
+        if (task == null || !task.labels || !taskContexts) {
+            return []
+        }
+        Set<String> labels = task.labels.collect { it.toLowerCase(Locale.ROOT) } as Set
+        return taskContexts.findAll { ctx ->
+            ctx.matchLabels.any { labels.contains(it.toLowerCase(Locale.ROOT)) }
+        }
+    }
+
+    private static StabilityConfig parseStability(Map raw, List errors) {
+        Duration freezeWithin = parseDurationValue(
+            raw.freeze_within ?: raw.freezeWithin, Duration.ofHours(48), 'planner.stability.freeze_within', errors)
+        boolean keepManualMoves = raw.keep_manual_moves != null
+            ? Boolean.valueOf(raw.keep_manual_moves.toString())
+            : (raw.keepManualMoves != null ? Boolean.valueOf(raw.keepManualMoves.toString()) : true)
+        Duration requireApprovalForMoveWithin = parseDurationValue(
+            raw.require_approval_for_move_within ?: raw.requireApprovalForMoveWithin,
+            Duration.ofDays(7), 'planner.stability.require_approval_for_move_within', errors)
+        int minBuffer = parseNonNegInt(
+            raw.minimum_buffer_between_blocks_minutes ?: raw.minimumBufferBetweenBlocksMinutes,
+            10, 'planner.stability.minimum_buffer_between_blocks_minutes', errors)
+        int churnPenalty = parseNonNegInt(
+            raw.churn_penalty ?: raw.churnPenalty, 40, 'planner.stability.churn_penalty', errors)
+        return new StabilityConfig(freezeWithin, keepManualMoves, requireApprovalForMoveWithin, minBuffer, churnPenalty)
+    }
+
+    private static BatchingConfig parseBatching(Map raw, List errors) {
+        boolean enabled = raw.enabled != null ? Boolean.valueOf(raw.enabled.toString()) : true
+        int bonus = parseNonNegInt(raw.project_batch_bonus ?: raw.projectBatchBonus, 25,
+            'planner.batching.project_batch_bonus', errors)
+        int maxFocus = parsePositiveInt(raw.max_focus_block_minutes ?: raw.maxFocusBlockMinutes, 90,
+            'planner.batching.max_focus_block_minutes', errors)
+        int minFocus = parsePositiveInt(raw.minimum_focus_block_minutes ?: raw.minimumFocusBlockMinutes, 30,
+            'planner.batching.minimum_focus_block_minutes', errors)
+        int switchPenalty = parseNonNegInt(raw.context_switch_penalty ?: raw.contextSwitchPenalty, 15,
+            'planner.batching.context_switch_penalty', errors)
+        if (minFocus > maxFocus) {
+            errors << 'planner.batching.minimum_focus_block_minutes must be <= max_focus_block_minutes'
+        }
+        return new BatchingConfig(enabled, bonus, maxFocus, minFocus, switchPenalty)
+    }
+
+    private static List<TaskContext> parseTaskContexts(def raw, List errors) {
+        List<TaskContext> result = []
+        if (raw == null) {
+            return result
+        }
+        if (!(raw instanceof Map)) {
+            errors << 'planner.tasks.contexts must be a map of context name to settings'
+            return result
+        }
+        raw.each { name, entry ->
+            if (!(entry instanceof Map)) {
+                errors << "planner.tasks.contexts.${name} must be a map"
+                return
+            }
+            def matchRaw = entry.match_labels ?: entry.matchLabels ?: []
+            List<String> matchLabels = []
+            if (matchRaw instanceof Collection) {
+                matchLabels = matchRaw.collect { it.toString() }.findAll { it }
+            } else if (matchRaw != null) {
+                errors << "planner.tasks.contexts.${name}.match_labels must be a list"
+            }
+            def windowsRaw = entry.preferred_windows ?: entry.preferredWindows ?: []
+            List<PreferredWindow> windows = []
+            if (windowsRaw instanceof Collection) {
+                windowsRaw.each { w ->
+                    def parsed = PreferredWindow.parse(w?.toString(), errors, "planner.tasks.contexts.${name}.preferred_windows")
+                    if (parsed) {
+                        windows << parsed
+                    }
+                }
+            } else if (windowsRaw != null) {
+                errors << "planner.tasks.contexts.${name}.preferred_windows must be a list"
+            }
+            int preferredBonus = parseNonNegInt(entry.preferred_bonus ?: entry.preferredBonus, 20,
+                "planner.tasks.contexts.${name}.preferred_bonus", errors)
+            int avoidPenalty = parseNonNegInt(entry.avoid_penalty ?: entry.avoidPenalty, 25,
+                "planner.tasks.contexts.${name}.avoid_penalty", errors)
+            result << new TaskContext(name.toString(), matchLabels, windows, preferredBonus, avoidPenalty)
+        }
+        return result
+    }
+
+    private static Duration parseDurationValue(def value, Duration defaultValue, String path, List errors) {
+        if (value == null) {
+            return defaultValue
+        }
+        try {
+            Duration d = Duration.parse(value.toString().trim())
+            if (d.isNegative()) {
+                errors << "${path} must be non-negative"
+                return defaultValue
+            }
+            return d
+        } catch (Exception e) {
+            errors << "${path} is invalid ISO-8601 duration: ${value}"
+            return defaultValue
+        }
+    }
+
+    private static int parsePositiveInt(def value, int defaultValue, String path, List errors) {
+        if (value == null) {
+            return defaultValue
+        }
+        try {
+            int v = value as int
+            if (v <= 0) {
+                errors << "${path} must be positive"
+                return defaultValue
+            }
+            return v
+        } catch (Exception e) {
+            errors << "${path} is invalid: ${value}"
+            return defaultValue
+        }
+    }
+
+    /**
+     * Stability / churn controls for the preview scheduler.
+     * {@link #requireApprovalForMoveWithin} is preview-only metadata: when a proposed
+     * move's previous start falls inside this horizon from planning {@code now}, the
+     * corresponding {@code PlanChange} is tagged {@code approvalRequired=true} for a
+     * later apply step. The Phase 2 scheduler never performs remote writes.
+     */
+    static final class StabilityConfig {
+        final Duration freezeWithin
+        final boolean keepManualMoves
+        /** Preview-only: tag moves of prior placements within this horizon as approval-required. */
+        final Duration requireApprovalForMoveWithin
+        final int minimumBufferBetweenBlocksMinutes
+        final int churnPenalty
+
+        StabilityConfig(Duration freezeWithin, boolean keepManualMoves, Duration requireApprovalForMoveWithin,
+                        int minimumBufferBetweenBlocksMinutes, int churnPenalty) {
+            this.freezeWithin = freezeWithin
+            this.keepManualMoves = keepManualMoves
+            this.requireApprovalForMoveWithin = requireApprovalForMoveWithin
+            this.minimumBufferBetweenBlocksMinutes = minimumBufferBetweenBlocksMinutes
+            this.churnPenalty = churnPenalty
+        }
+
+        static StabilityConfig defaults() {
+            new StabilityConfig(Duration.ofHours(48), true, Duration.ofDays(7), 10, 40)
+        }
+    }
+
+    static final class BatchingConfig {
+        final boolean enabled
+        final int projectBatchBonus
+        final int maxFocusBlockMinutes
+        final int minimumFocusBlockMinutes
+        final int contextSwitchPenalty
+
+        BatchingConfig(boolean enabled, int projectBatchBonus, int maxFocusBlockMinutes,
+                       int minimumFocusBlockMinutes, int contextSwitchPenalty) {
+            this.enabled = enabled
+            this.projectBatchBonus = projectBatchBonus
+            this.maxFocusBlockMinutes = maxFocusBlockMinutes
+            this.minimumFocusBlockMinutes = minimumFocusBlockMinutes
+            this.contextSwitchPenalty = contextSwitchPenalty
+        }
+
+        static BatchingConfig defaults() {
+            new BatchingConfig(true, 25, 90, 30, 15)
+        }
+    }
+
+    static final class TaskContext {
+        final String name
+        final List<String> matchLabels
+        final List<PreferredWindow> preferredWindows
+        final int preferredBonus
+        final int avoidPenalty
+
+        TaskContext(String name, List<String> matchLabels, List<PreferredWindow> preferredWindows,
+                    int preferredBonus, int avoidPenalty) {
+            this.name = name
+            this.matchLabels = Collections.unmodifiableList(new ArrayList<>(matchLabels ?: []))
+            this.preferredWindows = Collections.unmodifiableList(new ArrayList<>(preferredWindows ?: []))
+            this.preferredBonus = preferredBonus
+            this.avoidPenalty = avoidPenalty
+        }
+    }
+
+    /**
+     * Preferred local window: optional day group + HH:mm-HH:mm.
+     * Examples: "weekday 12:00-13:00", "09:00-12:00", "saturday 10:00-14:00"
+     */
+    static final class PreferredWindow {
+        final Set<DayOfWeek> days
+        final LocalTime start
+        final LocalTime end
+        final String raw
+
+        PreferredWindow(Set<DayOfWeek> days, LocalTime start, LocalTime end, String raw) {
+            this.days = Collections.unmodifiableSet(new LinkedHashSet<>(days ?: []))
+            this.start = start
+            this.end = end
+            this.raw = raw
+        }
+
+        boolean matches(DayOfWeek day, LocalTime time) {
+            if (days && !days.contains(day)) {
+                return false
+            }
+            return !time.isBefore(start) && time.isBefore(end)
+        }
+
+        /**
+         * Whether [startZ, endZ) overlaps this preferred window on the same local calendar day.
+         * Scheduling candidates are same-day intervals; multi-day or cross-midnight ranges
+         * return false (overnight windows are unsupported). Uses the zone of {@code startZ}
+         * so DST transitions on that local date are handled via ZonedDateTime conversion.
+         */
+        boolean overlapsInstantRange(java.time.ZonedDateTime startZ, java.time.ZonedDateTime endZ) {
+            if (startZ == null || endZ == null || !endZ.isAfter(startZ)) {
+                return false
+            }
+            // Same local calendar day only — candidates are same-day placeable fragments.
+            if (startZ.toLocalDate() != endZ.toLocalDate()) {
+                return false
+            }
+            def day = startZ.dayOfWeek
+            if (days && !days.contains(day)) {
+                return false
+            }
+            LocalTime t0 = startZ.toLocalTime()
+            LocalTime t1 = endZ.toLocalTime()
+            // Same local date already enforced; zero-length local times cannot overlap a window
+            if (!t1.isAfter(t0)) {
+                return false
+            }
+            // overlap of [t0,t1) with [start,end) on same local day
+            return t0.isBefore(end) && start.isBefore(t1)
+        }
+
+        static PreferredWindow parse(String raw, List errors, String path) {
+            if (!raw || raw.trim().isEmpty()) {
+                errors << "${path} entry must not be empty"
+                return null
+            }
+            def s = raw.trim()
+            String dayPart = null
+            String rangePart = s
+            def m = s =~ /^(?i)(weekday|weekdays|weekend|weekends|everyday|daily|all|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(.+)$/
+            if (m.matches()) {
+                dayPart = m[0][1]
+                rangePart = m[0][2].trim()
+            }
+            def range = parseTimeRange(rangePart)
+            if (!range) {
+                errors << "${path} invalid window '${raw}'"
+                return null
+            }
+            Set<DayOfWeek> days = new LinkedHashSet<>()
+            if (dayPart) {
+                days.addAll(expandDayGroup(dayPart, errors))
+            }
+            return new PreferredWindow(days, range[0], range[1], s)
+        }
+    }
+
     static final class WorkingWindow {
         final DayOfWeek dayOfWeek
         final LocalTime start
@@ -520,6 +834,9 @@ final class PlannerConfig {
         private List<String> schedulingEligibleLabels = []
         private int defaultDurationMinutes = 30
         private Map<String, Integer> durationLabels = [:]
+        private StabilityConfig stability = StabilityConfig.defaults()
+        private BatchingConfig batching = BatchingConfig.defaults()
+        private List<TaskContext> taskContexts = []
 
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
@@ -532,6 +849,9 @@ final class PlannerConfig {
         Builder schedulingEligibleLabels(List<String> v) { this.schedulingEligibleLabels = v ?: []; this }
         Builder defaultDurationMinutes(int v) { this.defaultDurationMinutes = v; this }
         Builder durationLabels(Map<String, Integer> v) { this.durationLabels = v ?: [:]; this }
+        Builder stability(StabilityConfig v) { this.stability = v; this }
+        Builder batching(BatchingConfig v) { this.batching = v; this }
+        Builder taskContexts(List<TaskContext> v) { this.taskContexts = v ?: []; this }
 
         // package-private accessors for invariant validation
         String getMode() { mode }
@@ -542,6 +862,9 @@ final class PlannerConfig {
         List<WorkingWindow> getWorkingWindows() { workingWindows }
         EventRole getUnknownCalendarFallback() { unknownCalendarFallback }
         List<EventRule> getEventRules() { eventRules }
+        StabilityConfig getStability() { stability }
+        BatchingConfig getBatching() { batching }
+        List<TaskContext> getTaskContexts() { taskContexts }
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)

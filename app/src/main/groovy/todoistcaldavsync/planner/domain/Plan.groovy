@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.Collections
 
 /**
- * Immutable plan snapshot. Phase 1 uses this for capacity diagnostics structure.
+ * Immutable plan snapshot / preview proposal.
  */
 final class Plan {
     final String id
@@ -13,9 +13,12 @@ final class Plan {
     final String mode
     final List<Task> tasks
     final List<TimeSlot> slots
+    final List<ScheduledBlock> scheduledBlocks
+    final List<UnscheduledTask> unscheduled
     final List<PlanChange> changes
     final List<PlanningExplanation> explanations
     final Map<String, Object> metrics
+    final String humanDiff
 
     private Plan(Builder b) {
         this.id = b.id
@@ -24,9 +27,12 @@ final class Plan {
         this.mode = b.mode
         this.tasks = Collections.unmodifiableList(new ArrayList<>(b.tasks ?: []))
         this.slots = Collections.unmodifiableList(new ArrayList<>(b.slots ?: []))
+        this.scheduledBlocks = Collections.unmodifiableList(new ArrayList<>(b.scheduledBlocks ?: []))
+        this.unscheduled = Collections.unmodifiableList(new ArrayList<>(b.unscheduled ?: []))
         this.changes = Collections.unmodifiableList(new ArrayList<>(b.changes ?: []))
         this.explanations = Collections.unmodifiableList(new ArrayList<>(b.explanations ?: []))
         this.metrics = Collections.unmodifiableMap(new LinkedHashMap<>(b.metrics ?: [:]))
+        this.humanDiff = b.humanDiff
     }
 
     static Builder builder() {
@@ -40,9 +46,12 @@ final class Plan {
         private String mode = 'preview'
         private List<Task> tasks = []
         private List<TimeSlot> slots = []
+        private List<ScheduledBlock> scheduledBlocks = []
+        private List<UnscheduledTask> unscheduled = []
         private List<PlanChange> changes = []
         private List<PlanningExplanation> explanations = []
         private Map<String, Object> metrics = [:]
+        private String humanDiff
 
         Builder id(String v) { this.id = v; this }
         Builder version(int v) { this.version = v; this }
@@ -50,9 +59,12 @@ final class Plan {
         Builder mode(String v) { this.mode = v; this }
         Builder tasks(List<Task> v) { this.tasks = v ?: []; this }
         Builder slots(List<TimeSlot> v) { this.slots = v ?: []; this }
+        Builder scheduledBlocks(List<ScheduledBlock> v) { this.scheduledBlocks = v ?: []; this }
+        Builder unscheduled(List<UnscheduledTask> v) { this.unscheduled = v ?: []; this }
         Builder changes(List<PlanChange> v) { this.changes = v ?: []; this }
         Builder explanations(List<PlanningExplanation> v) { this.explanations = v ?: []; this }
         Builder metrics(Map<String, Object> v) { this.metrics = v ?: [:]; this }
+        Builder humanDiff(String v) { this.humanDiff = v; this }
 
         Plan build() {
             if (!id) {
