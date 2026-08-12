@@ -1,0 +1,46 @@
+planner:
+  mode: preview
+  timezone: America/New_York
+  output_calendar: Todoist Planned
+
+  availability:
+    working_windows:
+      weekday: ["09:00-12:00", "13:00-17:00"]
+      weekend: ["10:00-14:00"]
+
+    calendars:
+      - calendar: Work
+        default_role: hard_blocker
+      - calendar: Family
+        default_role: soft_blocker
+      - calendar: Bob
+        default_role: informational
+      - calendar: Todoist Planned
+        default_role: managed_output
+
+    event_rules:
+      - name: Justin drives Bob
+        calendar_regex: "^Bob$"
+        title_regex: "(?i)\\bjustin\\b.*\\bdrives\\b"
+        role: hard_blocker
+        buffer_before_minutes: 15
+        buffer_after_minutes: 15
+      - name: Family logistics text
+        calendar_regex: "^Family$"
+        text_regex: "(?is)\\bpickup\\b"
+        role: soft_blocker
+      - name: Default Bob informational
+        calendar_regex: "^Bob$"
+        role: informational
+
+    unknown_calendar_fallback: informational
+
+  tasks:
+    scheduling_eligible_labels: [schedule]
+    manual_label: manual
+    default_duration_minutes: 30
+    duration_labels:
+      t15: 15
+      t30: 30
+      t60: 60
+      t90: 90

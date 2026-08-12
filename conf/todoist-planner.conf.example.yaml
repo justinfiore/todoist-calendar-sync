@@ -1,0 +1,220 @@
+# Example planner configuration — safe preview / read-only defaults.
+# Phase 1: use with PlannerCli --mode capacity-report (no remote writes).
+
+planner:
+  # preview | approval_required | apply_safe_changes | fully_automated
+  # Safe default: preview (calculate/report only; no Todoist or calendar writes)
+  mode: preview
+  timezone: America/New_York
+  output_calendar: Todoist Planned
+
+  planning_runs:
+    - name: daily
+      horizon: P3D
+      schedule: "0 6 * * *"
+      create_concrete_blocks_until: P3D
+
+  stability:
+    freeze_within: PT48H
+    keep_manual_moves: true
+    require_approval_for_move_within: P7D
+    minimum_buffer_between_blocks_minutes: 10
+
+  availability:
+    working_windows:
+      weekday: ["06:30-07:30", "12:00-13:00", "20:00-22:00"]
+      weekend: ["09:00-12:00", "14:00-16:00"]
+
+    calendars:
+      - calendar: Work
+        default_role: hard_blocker
+      - calendar: Family
+        default_role: soft_blocker
+      - calendar: Bob
+        default_role: informational
+      - calendar: Todoist Planned
+        default_role: managed_output
+
+    # First matching rule wins (configuration order).
+    event_rules:
+      - name: Justin transports or attends an activity
+        calendar_regex: "^Bob$"
+        title_regex: "(?i)\\b(justin|dad)\\b.*\\b(takes|drive|drives|coaches|attend)\\b"
+        role: hard_blocker
+        buffer_before_minutes: 15
+        buffer_after_minutes: 20
+      - name: Family logistics involving Justin
+        calendar_regex: "^(Family|Kids)$"
+        text_regex: "(?is)\\b(justin|dad)\\b.*\\b(pickup|drop.?off|transport|volleyball|scouts)\\b"
+        role: soft_blocker
+      - name: Default informational child event
+        calendar_regex: "^(Bob|Kids)$"
+        role: informational
+
+    # Unknown calendars use this visible fallback (diagnostic, not silent free time)
+    unknown_calendar_fallback: informational
+
+  tasks:
+    scheduling_eligible_labels: [schedule]
+    manual_label: manual
+    default_duration_minutes: 30
+    duration_labels:
+      t15: 15
+      t30: 30
+      t60: 60
+      t90: 90
+    contexts:
+      phone:
+        match_labels: [phone]
+        preferred_windows: ["weekday 12:00-13:00"]
+      home:
+        match_labels: [home]
+        preferred_windows: ["weekday 20:00-22:00", "weekend 09:00-12:00"]
+      computer:
+        match_labels: [computer]
+        preferred_windows: ["weekday 06:30-07:30", "weekday 20:00-22:00"]
+
+  batching:
+    enabled: true
+    project_batch_bonus: 25
+    max_focus_block_minutes: 90
+    minimum_focus_block_minutes: 30
+    context_switch_penalty: 15
+
+  # Weather-aware outdoor task policy (Phase 4). Disabled by default — non-weather
+  # planning is unchanged. When enabled, first matching task_rules entry wins
+  # (case-insensitive label intersection). Missing/stale forecast uses fallback.
+  weather:
+    enabled: false
+    provider: open_meteo
+    # latitude: 40.7128
+    # longitude: -74.0060
+    # timezone: America/New_York   # defaults to planner.timezone
+    max_age: PT6H
+    forecast_horizon_days: 7
+    fallback: fail_closed          # fail_closed | fail_open
+    suitability_bonus: 35
+    # task_rules:
+    #   - name: outdoor-dry
+    #     match_labels: [outdoor, dry-weather]
+    #     require:
+    #       precipitation_probability_max: 25
+    #       precipitation_mm_max: 0.5
+    #       wind_speed_kph_max: 25
+    #   - name: deck-paint
+    #     match_labels: [paint, deck]
+    #     require:
+    #       precipitation_probability_max: 15
+    #       precipitation_mm_max: 0
+    #       temperature_min_c: 10
+    #       wind_speed_kph_max: 20
+    #     preferred:
+    #       daylight: true
+    #       forecast_confidence_min: 0.70
+
+  # Optional Slack delivery (Phase 5). Disabled by default — planning is unaffected.
+  # Secrets are env var *names* only; never put tokens in this file or persisted state.
+  #
+  # Library-only integration (Phase 5): MessagingService + FeedbackParser are library APIs.
+  # There is no CLI/daemon wiring in Phase 5 — host applications construct these services
+  # and drive deliverDue / handleFeedback / applyDecision explicitly.
+  #
+  # Authorization (required for production feedback):
+  # FeedbackParser is fail-closed. Default / null authorization predicates deny ALL actors
+  # (including help/status). Inject an explicit allowlist or policy, e.g.:
+  #   new FeedbackParser(decisionStore, FeedbackParser.allowlist(['alice', 'bob']), clock)
+  # Unknown, null, and blank actors are always denied. No command bypasses authorization.
+  #
+  # Semantics:
+  # - timezone: human 12h times + local day/risk/schedule boundaries (falls back to planner.timezone).
+  # - schedules[].horizon: drives summary range/aggregation (not hardcoded 1/7/14 when set).
+  # - schedules[].kind: normalized at load via the same canonical message-kind normalizer as
+  #   enabled_kinds (daily | weekly | medium | risk | proposal aliases → daily_summary |
+  #   weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal). Case/whitespace
+  #   normalized. Unknown, blank, and null kinds fail config validation with index and value
+  #   (never deferred to render). Duplicate delivery after normalization (same canonical
+  #   kind+schedule+horizon+window+destination) is a config error. Stored/due intents use
+  #   canonical kinds only so daily→risk behavior and renderKind never see aliases.
+  # - enabled_kinds: when explicitly present, exclusive allowlist of message kinds
+  #   (daily_summary | weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal).
+  #   Aliases/case normalize deterministically (e.g. daily, risk, WEEKLY_SUMMARY). Unknown, blank,
+  #   and duplicate-after-normalization entries are config errors. Explicit [] disables all kinds.
+  #   Omitted kinds are false even if legacy per-kind booleans default true. An explicit
+  #   per-kind true boolean for a kind omitted from enabled_kinds is a config conflict error.
+  #   When enabled_kinds is absent, legacy booleans below apply (default true each).
+  # - capacity_risk_alerts: when enabled_kinds is absent, enables the risk kind (default true).
+  #   Does NOT bypass schedules. Risk sends only when an explicit capacity_risk_alert schedule
+  #   is due, or when a due daily_summary intent triggers the documented daily-risk path and
+  #   risk is enabled via allowlist or capacity_risk_alerts. No due intent => zero risk sends.
+  # - risk_deadline_days: include unscheduled risk tasks whose deadline is overdue or within N
+  #   local days of now; tasks without deadline are excluded.
+  # - Delivery ledger atomically claims PENDING (tryClaimPending) before provider send under one
+  #   store lock; concurrent same-key callers yield exactly one provider send. UNKNOWN after
+  #   provider success + ledger failure (no blind resend). FAILED allows retry re-claim.
+  messaging:
+    enabled: false
+    provider: slack
+    # destination: "#todoist-planner"   # channel name or channel id (required when enabled)
+    # slack_mode: webhook               # webhook | chat_api
+    # webhook_url_env: SLACK_WEBHOOK_URL
+    # bot_token_env: SLACK_BOT_TOKEN
+    # Prefer exclusive allowlist when enabling a subset of kinds:
+    # enabled_kinds: [daily_summary]    # only daily; weekly/medium/risk/proposal off
+    # enabled_kinds: []                 # explicit disable-all kinds (messaging may still be enabled)
+    # enabled_kinds: [daily_summary, capacity_risk_alert]
+    # Legacy per-kind booleans (used only when enabled_kinds is absent; default true):
+    daily_summary: true
+    weekly_summary: true
+    medium_horizon_summary: true
+    capacity_risk_alerts: true
+    proposal_summary: true
+    risk_deadline_days: 5
+    # timezone: America/New_York        # defaults to planner.timezone
+    # schedules:
+    #   - name: daily
+    #     kind: daily_summary           # aliases ok: daily, Daily, daily-summary → stored canonical
+    #     schedule: "06:00"             # HH:mm | "mon 09:00" | cron "0 6 * * *"
+    #     horizon: P1D
+    #     window: PT30M
+    #   - name: weekly
+    #     kind: weekly_summary          # aliases: weekly, WEEKLY_SUMMARY
+    #     schedule: "mon 09:00"
+    #     horizon: P7D
+    #   - name: medium
+    #     kind: medium_horizon_summary  # aliases: medium, medium-horizon
+    #     schedule: "mon 09:30"
+    #     horizon: P14D
+    #   - name: risk
+    #     kind: capacity_risk_alert     # aliases: risk, risk_alert
+    #     schedule: "06:15"
+    #     horizon: P5D
+    #     window: PT30M
+
+  ai:
+    enabled: false
+    # Provider-neutral side service. Enabling it alone changes no plan; a host must
+    # explicitly invoke AiAssistanceService and separately confirm any suggestion.
+    provider: openai_compatible
+    endpoint: https://api.openai.com/v1/chat/completions
+    model: gpt-5-mini
+    secret_env: OPENAI_API_KEY       # environment variable NAME, never the key itself
+    allowed_hosts: [api.openai.com]  # HTTPS allowlist; redirects are always disabled
+    connect_timeout: PT5S
+    request_timeout: PT30S
+    max_request_bytes: 65536
+    max_response_bytes: 65536
+    max_items: 100
+    max_string_chars: 500
+    max_tokens: 1200
+    allowed_suggestion_types:
+      - task_suggestions
+      - event_classification_suggestions
+      - temporary_planning_overrides
+      - conversational_feedback_interpretation
+    redaction_enabled: true
+    require_confirmation: true
+    safety:
+      never_apply_changes_directly: true
+      require_structured_output: true
+      require_confirmation_for_policy_changes: true
+      send_minimum_necessary_data: true

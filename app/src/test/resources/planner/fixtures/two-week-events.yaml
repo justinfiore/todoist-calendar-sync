@@ -1,0 +1,110 @@
+timezone: America/New_York
+events:
+  # Day 1 (Thu Aug 6) — hard blockers eat morning + mid-day
+  - id: "tw-ev-standup"
+    title: "Team standup"
+    calendar: Work
+    start: "2026-08-06T14:00:00Z"
+    end: "2026-08-06T14:30:00Z"
+    description: "Daily sync"
+
+  - id: "tw-ev-justin-drive"
+    title: "Justin drives Bob to practice"
+    calendar: Bob
+    start: "2026-08-06T16:00:00Z"
+    end: "2026-08-06T17:00:00Z"
+    description: ""
+
+  - id: "tw-ev-morning-sync"
+    title: "Leadership sync"
+    calendar: Work
+    start: "2026-08-06T09:00:00-04:00"
+    end: "2026-08-06T10:30:00-04:00"
+    description: "Blocks early morning"
+
+  # Soft blocker family pickup day 1
+  - id: "tw-ev-family-pickup"
+    title: "School day"
+    calendar: Family
+    start: "2026-08-06T20:00:00Z"
+    end: "2026-08-06T20:30:00Z"
+    description: "Justin handles pickup today"
+
+  # Informational Bob game (should not hard-block)
+  - id: "tw-ev-bob-game"
+    title: "Soccer game"
+    calendar: Bob
+    start: "2026-08-06T18:00:00Z"
+    end: "2026-08-06T19:30:00Z"
+    description: "U12 recreational"
+
+  # Day 2 (Fri Aug 7) — hard work meeting + afternoon block
+  - id: "tw-ev-design-review"
+    title: "Design review"
+    calendar: Work
+    start: "2026-08-07T15:00:00-04:00"
+    end: "2026-08-07T16:30:00-04:00"
+    description: "Q3 roadmap"
+
+  - id: "tw-ev-fri-am"
+    title: "Customer workshop"
+    calendar: Work
+    start: "2026-08-07T09:00:00-04:00"
+    end: "2026-08-07T11:00:00-04:00"
+    description: ""
+
+  # Soft family weekend logistics (Sat Aug 8)
+  - id: "tw-ev-family-weekend"
+    title: "Family errands"
+    calendar: Family
+    start: "2026-08-08T11:00:00-04:00"
+    end: "2026-08-08T12:00:00-04:00"
+    description: "Need pickup coordination"
+
+  # Mon Aug 10 — hard half-day
+  - id: "tw-ev-mon-training"
+    title: "Security training"
+    calendar: Work
+    start: "2026-08-10T09:00:00-04:00"
+    end: "2026-08-10T12:00:00-04:00"
+    description: ""
+
+  # Tue Aug 11 — hard afternoon
+  - id: "tw-ev-tue-offsite"
+    title: "Offsite planning"
+    calendar: Work
+    start: "2026-08-11T13:00:00-04:00"
+    end: "2026-08-11T17:00:00-04:00"
+    description: ""
+
+  # Week 2 hard blocker (Wed Aug 12)
+  - id: "tw-ev-allhands"
+    title: "All-hands meeting"
+    calendar: Work
+    start: "2026-08-12T10:00:00-04:00"
+    end: "2026-08-12T11:30:00-04:00"
+    description: "Company update"
+
+  # Week 2 hard drive (Thu Aug 13)
+  - id: "tw-ev-drive-week2"
+    title: "Justin drives Bob to orthodontist"
+    calendar: Bob
+    start: "2026-08-13T14:00:00-04:00"
+    end: "2026-08-13T15:00:00-04:00"
+    description: ""
+
+  # Soft blocker near horizon end (Mon Aug 17)
+  - id: "tw-ev-soft-late"
+    title: "Carpool week"
+    calendar: Family
+    start: "2026-08-17T16:00:00-04:00"
+    end: "2026-08-17T16:30:00-04:00"
+    description: "pickup after practice"
+
+  # Managed output (ignored as capacity consumer for placement ownership)
+  - id: "tw-ev-planned"
+    title: "Planned: Clear email inbox"
+    calendar: Todoist Planned
+    start: "2026-08-06T13:00:00-04:00"
+    end: "2026-08-06T13:30:00-04:00"
+    description: "planner-owned"

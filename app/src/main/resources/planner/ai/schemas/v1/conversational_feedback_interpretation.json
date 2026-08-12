@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "conversational_feedback_interpretation_v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "suggestionType", "correlationId", "suggestions"],
+  "properties": {
+    "schemaVersion": {"const": 1}, "suggestionType": {"const": "conversational_feedback_interpretation"},
+    "correlationId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "suggestions": {"type": "array", "maxItems": 1, "uniqueItems": true, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["suggestionId", "proposalId", "planId", "planVersion", "planHash", "action", "reason"],
+      "properties": {
+        "suggestionId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+        "proposalId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+        "planId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+        "planVersion": {"type": "integer", "minimum": 1},
+        "planHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "action": {"enum": ["APPROVE", "APPLY_SAFE", "REJECT", "REQUEST_CHANGES"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    }}
+  }
+}
