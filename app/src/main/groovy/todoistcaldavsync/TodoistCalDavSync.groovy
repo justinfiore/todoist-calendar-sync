@@ -43,6 +43,9 @@ import com.github.caldav4j.exceptions.BadStatusException
 import java.util.concurrent.TimeUnit
 import groovy.cli.picocli.CliBuilder
 import com.google.api.client.auth.oauth2.Credential;
+import todoistcaldavsync.planner.ProductionPlannerOrchestrator
+import todoistcaldavsync.planner.domain.Approval
+import org.apache.commons.io.output.AppendableWriter
 
 
 @Log4j
@@ -53,39 +56,144 @@ class TodoistCalDavSync {
     }
     
     public static void main(String[] args) {
-        def cli = new CliBuilder(usage: 'TodoistCalDavSync.groovy -f configFile -l log4j.groovy')
-        cli.setFooter("Syncs Todoist Events with CalDav Calendars")
+        int code = run(args, System.out, System.err)
+        if (code != 0) System.exit(code)
+    }
+
+    /** Main command dispatcher retained on the legacy entry point; composition lives elsewhere. */
+    static int run(String[] args, Appendable out = System.out, Appendable err = System.err) {
+        def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
+            writer: new PrintWriter(new AppendableWriter(out), true))
+        cli.setFooter('Operations: legacy-sync (default), capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
-        cli.h(args: 0, "Show the help")
+        cli.h(longOpt: 'help', args: 0, 'Show the help')
+        cli._(longOpt: 'operation', args: 1, argName: 'operation', 'Operation (default: legacy-sync)')
+        cli._(longOpt: 'range-start', args: 1, argName: 'instant', 'ISO-8601 range start')
+        cli._(longOpt: 'range-end', args: 1, argName: 'instant', 'ISO-8601 exclusive range end')
+        cli._(longOpt: 'format', args: 1, argName: 'format', 'capacity format: markdown|json')
+        cli._(longOpt: 'plan-id', args: 1, argName: 'id', 'Stored plan id')
+        cli._(longOpt: 'previous-plan-id', args: 1, argName: 'id', 'Explicit stability baseline plan id')
+        cli._(longOpt: 'approval', args: 1, argName: 'file', 'Exact approval JSON/YAML file')
+        cli._(longOpt: 'kind', args: 1, argName: 'kind', 'Message kind (omit for deliver-due)')
+        cli._(longOpt: 'feedback', args: 1, argName: 'command', 'Structured feedback command')
+        cli._(longOpt: 'actor', args: 1, argName: 'id', 'Feedback actor id')
+        cli._(longOpt: 'correlation-id', args: 1, argName: 'id', 'Feedback/AI correlation id')
+        cli._(longOpt: 'message-id', args: 1, argName: 'id', 'Provider message id for idempotency')
+        cli._(longOpt: 'decision-id', args: 1, argName: 'id', 'Stored decision id')
+        cli._(longOpt: 'ai-type', args: 1, argName: 'type', 'Allowed bounded AI suggestion type')
         def options = cli.parse(args)
-
-
-        if(options.h) {
-            showHelp(cli)
-            System.exit(0);
+        if (!options) return 2
+        if (options.h || options.help) {
+            cli.usage()
+            return 0
         }
-
         if (!options.f) {
-            throw new IllegalArgumentException("You must specify the config file");
+            err.append('Error: you must specify the config file\n')
+            return 2
         }
-
         if (!options.l) {
-            throw new IllegalArgumentException("You must specify the log4j file");
+            err.append('Error: you must specify the log4j file\n')
+            return 2
         }
+        try {
+            def logConfig = new ConfigSlurper().parse(new File(options.l.toString()).toURI().toURL())
+            PropertyConfigurator.configure(logConfig.toProperties())
+            log.info('----------------------------------------------------------------')
+            File configFile = new File(options.f.toString())
+            String operation = optionString(options, 'operation') ?: 'legacy-sync'
+            Set<String> supportedOperations = ['legacy-sync', 'capacity', 'preview', 'apply', 'apply-safe',
+                'deliver', 'feedback', 'apply-decision', 'ai-suggest'] as Set
+            if (!supportedOperations.contains(operation)) {
+                throw new IllegalArgumentException("Unsupported operation: ${operation}")
+            }
+            if (operation == 'legacy-sync') {
+                File stateFile = new File(configFile.parentFile, configFile.name.replace('.conf', '.state'))
+                new TodoistCalDavSync(configFile, stateFile).syncLoop()
+                return 0
+            }
+            ProductionPlannerOrchestrator orchestrator = new ProductionPlannerOrchestrator(configFile)
+            try {
+                def json = { value -> JsonOutput.prettyPrint(JsonOutput.toJson(value)) }
+                switch (operation) {
+                    case 'capacity':
+                        def bounds = requireBounds(options)
+                        out.append(orchestrator.capacity(bounds[0], bounds[1], optionString(options, 'format') ?: 'markdown')).append('\n')
+                        break
+                    case 'preview':
+                        def bounds = requireBounds(options)
+                        out.append(orchestrator.renderPlan(orchestrator.preview(bounds[0], bounds[1], optionString(options, 'previous-plan-id')))).append('\n')
+                        break
+                    case 'apply':
+                        Approval approval = optionString(options, 'approval') ?
+                            ProductionPlannerOrchestrator.loadApproval(new File(optionString(options, 'approval'))) : null
+                        out.append(json(orchestrator.apply(requiredOption(options, 'plan-id'), approval).toMap())).append('\n')
+                        break
+                    case 'apply-safe':
+                        out.append(json(orchestrator.applySafe(requiredOption(options, 'plan-id')).toMap())).append('\n')
+                        break
+                    case 'deliver':
+                        out.append(json(orchestrator.deliver(requiredOption(options, 'plan-id'), optionString(options, 'kind'))*.toMap())).append('\n')
+                        break
+                    case 'feedback':
+                        def result = orchestrator.feedback(requiredOption(options, 'plan-id'),
+                            requiredOption(options, 'feedback'), requiredOption(options, 'actor'),
+                            optionString(options, 'correlation-id'), optionString(options, 'message-id'))
+                        out.append(json([accepted: result.accepted, replayed: result.replayed,
+                            message: result.message, decision: result.decision?.toMap(), approval: result.approval?.toMap()])).append('\n')
+                        break
+                    case 'apply-decision':
+                        def result = orchestrator.applyDecision(requiredOption(options, 'plan-id'), requiredOption(options, 'decision-id'))
+                        out.append(json([status: result.status?.name(), action: result.action,
+                            decisionId: result.decisionId, reason: result.reason, receipt: result.receipt?.toMap()])).append('\n')
+                        break
+                    case 'ai-suggest':
+                        def result = orchestrator.aiSuggestions(requiredOption(options, 'plan-id'),
+                            requiredOption(options, 'ai-type'), requiredOption(options, 'correlation-id'),
+                            optionString(options, 'feedback'))
+                        out.append(json([accepted: result.bundle != null,
+                            error: result.error != null ? [class: result.error.errorClass?.name(), detail: result.error.detail] : null,
+                            audit: result.audit?.toMap(),
+                            bundle: result.bundle != null ? [type: result.bundle.suggestionType,
+                                contentHash: result.bundle.contentHash,
+                                suggestions: result.bundle.suggestions.collect { [id: it.suggestionId, type: it.class.simpleName] }] : null])).append('\n')
+                        break
+                    default:
+                        throw new IllegalArgumentException("Unsupported operation: ${operation}")
+                }
+                return 0
+            } finally {
+                orchestrator.close()
+            }
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            err.append("Error: ${e.message}\n")
+            return 2
+        } catch (Exception e) {
+            err.append("Error: ${e.message}\n")
+            return 1
+        }
+    }
 
-        def logConfig = new ConfigSlurper().parse(new File(options.l).toURL())
-        PropertyConfigurator.configure(logConfig.toProperties())
+    private static List<Instant> requireBounds(def options) {
+        String start = requiredOption(options, 'range-start')
+        String end = requiredOption(options, 'range-end')
+        Instant s = Instant.parse(start)
+        Instant e = Instant.parse(end)
+        if (!e.isAfter(s)) throw new IllegalArgumentException('--range-end must be after --range-start')
+        [s, e]
+    }
 
-        log.info("----------------------------------------------------------------")
+    private static String requiredOption(def options, String name) {
+        String value = optionString(options, name)
+        if (!value) throw new IllegalArgumentException("--${name} is required")
+        value
+    }
 
-
-        def configFile = new File(options.f);
-        def stateFile = new File(configFile.getParentFile(), configFile.getName().replace(".conf", ".state"))
-
-        def syncer = new TodoistCalDavSync(configFile, stateFile)
-        syncer.syncLoop()
-
+    private static String optionString(def options, String name) {
+        def value = options.getProperty(name)
+        if (value == null || value == false || value == true) return null
+        String text = value.toString()
+        text && !(text in ['false', 'true']) ? text : null
     }
 
     static def todoistApiBaseUrl = "https://api.todoist.com/api/v1"
@@ -340,7 +448,7 @@ class TodoistCalDavSync {
         def labelsToInclude = getLabelsToInclude();
         def projectsToInclude = getProjectsToInclude();
 
-        log.info("Using todoistAccessToken: $todoistAccessToken")
+        log.info("Using Todoist access token from configured secret source (redacted)")
         log.info("todoistApiBaseUrl: $todoistApiBaseUrl")
         log.info("todoistBasePath: $todoistBasePath")
         log.info("projectsToInclude: $projectsToInclude")

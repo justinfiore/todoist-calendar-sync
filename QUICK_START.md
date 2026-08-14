@@ -2,6 +2,9 @@
 
 This guide gets `todoist-calendar-sync` running with minimal setup.
 
+For the Phase 7 planner, begin with the isolated test-service and crawl/walk/run procedure in
+[docs/PLANNER_END_TO_END_TESTING.md](docs/PLANNER_END_TO_END_TESTING.md). Do not start with apply.
+
 ## 1) Prerequisites
 
 - Java 25 (the supported build and runtime baseline)
@@ -97,3 +100,26 @@ If using `GOOGLE_OAUTH2` auth:
 - Console logs from the run command.
 - Rolling file log: `logs/todoist-ical-sync.log`.
 - Full configuration and behavior reference: `README.md`.
+
+## Phase 7 planner quick start (preview only)
+
+Copy `conf/todoist-planner.conf.example.yaml`, set the explicit Todoist/CalDAV endpoints,
+credential environment-variable names, managed `output_calendar`, and four state directories.
+Keep `planner.mode: preview`, `planner.messaging.enabled: false`, `planner.ai.enabled: false`, and
+`planner.weather.enabled: false` for the first crawl.
+
+```bash
+export TODOIST_ACCESS_TOKEN='<isolated-test-token>'
+export CALDAV_PLANNED_PASSWORD='<isolated-test-calendar-password>'
+
+./gradlew installDist
+./app/build/install/todoist-caldav-sync/bin/todoist-caldav-sync \
+  -f conf/todoist-planner.conf.yaml -l conf/log4j.groovy \
+  --operation preview \
+  --range-start 2026-08-14T00:00:00Z \
+  --range-end 2026-08-17T00:00:00Z
+```
+
+Preview performs Todoist/CalDAV reads and local plan persistence only. Inspect the emitted plan id,
+hash/diff, calendar classification, unscheduled tasks, and the plan file before considering
+`approval_required` or `apply_safe_changes`. `fully_automated` is unavailable and refuses writes.

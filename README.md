@@ -2,14 +2,21 @@
 
 # todoist-calendar-sync
 
-Phase 6 includes optional, disabled-by-default AI enrichment with strict structured schemas,
-pre-transport redaction, zero mutation authority, and an explicit confirmation boundary. See
-[the Phase 6 AI assistance guide](docs/PHASE_6_AI_ASSISTANCE.md). No live model trial or secret
-provisioning is included.
+Phase 7 exposes the capacity-aware planner through the existing main executable while retaining
+the original sync as the default operation. Production planning uses real Todoist REST and CalDAV
+adapters, durable deterministic plans, exact approvals, safe-only application, optional Open-Meteo,
+explicit Slack delivery/feedback, and disabled-by-default bounded AI suggestions. `fully_automated`
+remains unavailable and refuses writes.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/justinfiore/todoist-calendar-sync)
 
 Sync Todoist tasks into one or more CalDAV calendars.
+
+Feature guides: [planner configuration](docs/PLANNER_CONFIGURATION.md),
+[end-to-end rollout/testing](docs/PLANNER_END_TO_END_TESTING.md),
+[Slack](docs/SLACK_INTEGRATION.md), [LLM](docs/LLM_INTEGRATION.md), and
+[weather](docs/WEATHER_INTEGRATION.md). The Phase 1–6 design details remain in
+[the Phase 6 guide](docs/PHASE_6_AI_ASSISTANCE.md).
 
 This app reads tasks from Todoist, filters them by labels/projects, routes each task to a calendar using rule matching, and creates/updates calendar events as `.ics` resources via CalDAV.
 
@@ -84,6 +91,26 @@ Options:
 - `-f <configFile>`: required YAML config file
 - `-l <log4j.groovy>`: required Log4j Groovy config file
 - `-h`: help
+
+Phase 7 uses the same entry point and adds `--operation`. Omitting it preserves `legacy-sync`.
+
+```bash
+# Read-only live capacity
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation capacity --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z
+
+# Generate and persist a proposal (no writes)
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation preview --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z
+
+# Apply according to the stored plan's mode
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation apply --plan-id PLAN_ID --approval approval.json
+```
+
+Other operations are `apply-safe`, `deliver`, `feedback`, `apply-decision`, and `ai-suggest`.
+Run `--help` for their arguments. Feedback never applies automatically; `apply-decision` is a
+separate explicit step. AI output is suggestions/audit metadata only and has no mutation authority.
 
 Google OAuth credential helper:
 

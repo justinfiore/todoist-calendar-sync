@@ -8,6 +8,47 @@ planner:
   timezone: America/New_York
   output_calendar: Todoist Planned
 
+  # Phase 7 production composition. Endpoints, credential environment-variable
+  # names, and every durable state path are explicit. Relative paths resolve
+  # against this configuration file's directory.
+  integration:
+    todoist:
+      base_url: https://api.todoist.com/api/v1
+      token_env: TODOIST_ACCESS_TOKEN
+      timeout: PT10S
+      max_pages: 100
+      max_response_bytes: 1048576
+      include_project_names: true
+    caldav:
+      timeout: PT15S
+      max_response_bytes: 2097152
+      calendars:
+        - name: Todoist Planned
+          url: https://caldav.example.com/calendars/me/planned/
+          auth:
+            type: basic               # none | basic | bearer
+            username: me@example.com
+            password_env: CALDAV_PLANNED_PASSWORD
+        - name: Work
+          url: https://caldav.example.com/calendars/me/work/
+          auth:
+            type: bearer
+            token_env: CALDAV_WORK_TOKEN
+    weather:
+      base_url: https://api.open-meteo.com/v1/forecast
+      timeout: PT10S
+      max_response_bytes: 1048576
+    feedback:
+      # Empty/omitted means deny all. Exact actor ids only.
+      allowed_actors: []
+    state:
+      plans_dir: ../state/planner/plans
+      applications_dir: ../state/planner/applications
+      decisions_dir: ../state/planner/decisions
+      deliveries_dir: ../state/planner/deliveries
+    # Optional explicit stability baseline; otherwise latest stored plan is used.
+    # previous_plan_id: plan-0123456789abcdef
+
   planning_runs:
     - name: daily
       horizon: P3D
@@ -112,18 +153,13 @@ planner:
     #       daylight: true
     #       forecast_confidence_min: 0.70
 
-  # Optional Slack delivery (Phase 5). Disabled by default — planning is unaffected.
+  # Optional Slack delivery (Phase 5 domain capability, production-wired in Phase 7).
+  # The installed launcher exposes explicit `deliver`, `feedback`, and `apply-decision`
+  # operations. Feedback capture never applies; `apply-decision` is a separate command.
   # Secrets are env var *names* only; never put tokens in this file or persisted state.
   #
-  # Library-only integration (Phase 5): MessagingService + FeedbackParser are library APIs.
-  # There is no CLI/daemon wiring in Phase 5 — host applications construct these services
-  # and drive deliverDue / handleFeedback / applyDecision explicitly.
-  #
-  # Authorization (required for production feedback):
-  # FeedbackParser is fail-closed. Default / null authorization predicates deny ALL actors
-  # (including help/status). Inject an explicit allowlist or policy, e.g.:
-  #   new FeedbackParser(decisionStore, FeedbackParser.allowlist(['alice', 'bob']), clock)
-  # Unknown, null, and blank actors are always denied. No command bypasses authorization.
+  # Authorization (required for production feedback) is configured at
+  # planner.integration.feedback.allowed_actors. Empty/omitted denies every actor.
   #
   # Semantics:
   # - timezone: human 12h times + local day/risk/schedule boundaries (falls back to planner.timezone).

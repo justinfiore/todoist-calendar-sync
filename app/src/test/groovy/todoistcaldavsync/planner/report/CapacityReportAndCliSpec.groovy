@@ -12,6 +12,20 @@ import java.time.ZoneId
 
 class CapacityReportAndCliSpec extends Specification {
 
+    def "PlannerCli help works for long and short forms without required fixture arguments"() {
+        when:
+        def longOut = new StringBuilder()
+        def longCode = PlannerCli.run(['--help'] as String[], longOut, new StringBuilder())
+        def shortOut = new StringBuilder()
+        def shortCode = PlannerCli.run(['-h'] as String[], shortOut, new StringBuilder())
+
+        then:
+        longCode == 0
+        shortCode == 0
+        longOut.toString().contains('capacity-report')
+        shortOut.toString().contains('--help')
+    }
+
     private static File fixture(String name) {
         def url = CapacityReportAndCliSpec.classLoader.getResource("planner/fixtures/${name}")
         if (url) {
