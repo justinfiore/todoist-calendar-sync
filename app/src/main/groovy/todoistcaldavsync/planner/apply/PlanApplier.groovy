@@ -494,8 +494,16 @@ class PlanApplier {
 
         ApplyItemStatus oldDeleteStatus = null
         String oldDeleteError = null
+        boolean priorCalendarUnknown = block.taskIds.any { String taskId ->
+            AppliedMapping prior = existingMappings[taskId]
+            prior?.eventUid == eventUid && prior.calendarStatus == ApplyItemStatus.UNKNOWN
+        }
 
-        if (calendarAlreadyOk) {
+        if (priorCalendarUnknown && !calendarAlreadyOk) {
+            calStatus = ApplyItemStatus.UNKNOWN
+            calError = 'calendar outcome requires reconciliation before another write'
+            errors << "calendar block ${block.id}: ${calError}"
+        } else if (calendarAlreadyOk) {
             calStatus = ApplyItemStatus.SKIPPED_IDEMPOTENT
             calendarOk = true
         } else {
@@ -507,7 +515,7 @@ class PlanApplier {
                 calStatus = ApplyItemStatus.APPLIED
                 calendarOk = true
             } catch (Exception e) {
-                calStatus = ApplyItemStatus.FAILED
+                calStatus = isAmbiguousWrite(e) ? ApplyItemStatus.UNKNOWN : ApplyItemStatus.FAILED
                 calError = e.message
                 errors << "calendar block ${block.id}: ${e.message}"
             }
@@ -523,7 +531,7 @@ class PlanApplier {
                 oldDeleteError = cleanup.error
                 if (cleanup.status == ApplyItemStatus.APPLIED || cleanup.status == ApplyItemStatus.SKIPPED_IDEMPOTENT) {
                     cleanedPriorUids << priorUidToCleanup
-                } else if (cleanup.status == ApplyItemStatus.FAILED) {
+                } else if (cleanup.status == ApplyItemStatus.FAILED || cleanup.status == ApplyItemStatus.UNKNOWN) {
                     errors << "old_uid_cleanup ${priorUidToCleanup}: ${cleanup.error}"
                     // Do not claim full calendar success if required cleanup failed
                     // Keep calendarOk true for new event (exists) but surface partial via oldDelete
@@ -589,7 +597,11 @@ class PlanApplier {
 
             // If old UID cleanup failed, do not claim full calendar success on mapping
             ApplyItemStatus effectiveCal
-            if (oldDeleteStatus == ApplyItemStatus.FAILED || oldDeleteStatus == ApplyItemStatus.ERROR_EXTERNAL_UID) {
+            if (oldDeleteStatus == ApplyItemStatus.UNKNOWN) {
+                effectiveCal = ApplyItemStatus.UNKNOWN
+                meta.calendarNewUpsertOk = true
+                meta.oldUidCleanupUnknown = true
+            } else if (oldDeleteStatus == ApplyItemStatus.FAILED || oldDeleteStatus == ApplyItemStatus.ERROR_EXTERNAL_UID) {
                 effectiveCal = ApplyItemStatus.PARTIAL
                 meta.calendarNewUpsertOk = true
                 meta.oldUidCleanupFailed = true
@@ -606,7 +618,7 @@ class PlanApplier {
                 liveDue = assessLiveTodoistDue(taskId, slotStart, loadLiveTasksById())
             }
             if (liveDue.exactMatch &&
-                prior != null && prior.todoistApplied() &&
+                prior != null && (prior.todoistApplied() || prior.todoistStatus == ApplyItemStatus.UNKNOWN) &&
                 prior.slotStart == slotStart && prior.eventUid == eventUid &&
                 prior.planHash == planHash &&
                 oldDeleteStatus != ApplyItemStatus.FAILED) {
@@ -629,7 +641,10 @@ class PlanApplier {
                     .build()
                 items << done
                 existingMappings[taskId] = done
-                // No putMapping — untouched mapping identity; avoid unnecessary write races
+                // Unknown outcomes become durable resolved state after live confirmation.
+                if (prior.todoistStatus == ApplyItemStatus.UNKNOWN || prior.calendarStatus == ApplyItemStatus.UNKNOWN) {
+                    stateStore.putMapping(done)
+                }
                 continue
             }
             if (liveDue.missingTask) {
@@ -689,13 +704,17 @@ class PlanApplier {
                 continue
             }
 
-            try {
+            if (prior?.todoistStatus == ApplyItemStatus.UNKNOWN) {
+                tdStatus = ApplyItemStatus.UNKNOWN
+                tdError = 'Todoist outcome requires reconciliation before another write'
+                errors << "todoist task ${taskId}: ${tdError}"
+            } else try {
                 String dueIso = formatDueIso(slotStart)
                 // CRITICAL: only update due — never deadline
                 todoistWrite.updateTaskDue(taskId, dueIso)
                 tdStatus = ApplyItemStatus.APPLIED
             } catch (Exception e) {
-                tdStatus = ApplyItemStatus.FAILED
+                tdStatus = isAmbiguousWrite(e) ? ApplyItemStatus.UNKNOWN : ApplyItemStatus.FAILED
                 tdError = e.message
                 errors << "todoist task ${taskId}: ${e.message}"
             }
@@ -816,7 +835,7 @@ class PlanApplier {
             calendarWrite.deleteOwnedEvent(priorUid, expectedBlock)
             return new CleanupResult(ApplyItemStatus.APPLIED, null)
         } catch (Exception e) {
-            return new CleanupResult(ApplyItemStatus.FAILED, e.message)
+            return new CleanupResult(isAmbiguousWrite(e) ? ApplyItemStatus.UNKNOWN : ApplyItemStatus.FAILED, e.message)
         }
     }
 
@@ -1093,6 +1112,9 @@ class PlanApplier {
         if (items.isEmpty()) {
             return ApplyItemStatus.SKIPPED_NO_CHANGES
         }
+        if (items.any { it.calendarStatus == ApplyItemStatus.UNKNOWN || it.todoistStatus == ApplyItemStatus.UNKNOWN }) {
+            return ApplyItemStatus.UNKNOWN
+        }
         boolean anyFail = items.any {
             it.calendarStatus == ApplyItemStatus.FAILED ||
                 it.todoistStatus == ApplyItemStatus.FAILED ||
@@ -1158,6 +1180,19 @@ class PlanApplier {
             return ApplyItemStatus.SKIPPED_MANUAL_OVERRIDE
         }
         return ApplyItemStatus.APPLIED
+    }
+
+    private static boolean isAmbiguousWrite(Throwable error) {
+        Throwable current = error
+        while (current != null) {
+            try {
+                if (current.hasProperty('classification') && current.classification == 'AMBIGUOUS_WRITE') return true
+            } catch (Exception ignored) {
+                // Continue through wrapped transport exceptions.
+            }
+            current = current.cause
+        }
+        false
     }
 
     /**

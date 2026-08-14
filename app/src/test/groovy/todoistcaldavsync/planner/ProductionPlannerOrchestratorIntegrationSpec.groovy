@@ -3,6 +3,8 @@ package todoistcaldavsync.planner
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
+import todoistcaldavsync.planner.adapters.OpenMeteoWeatherGateway
+import todoistcaldavsync.planner.adapters.WeatherReadGateway
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.state.PlanStore
@@ -180,5 +182,41 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         td.deadlineUpdates.empty
         cal.upserts.empty
         cal.deletes.empty
+    }
+
+    def "weather provider failure reaches configured fallback policy through production composition"() {
+        given:
+        File stateRoot = Files.createTempDirectory('phase7-weather-').toFile()
+        Map cfg = root('preview', stateRoot)
+        cfg.planner.weather = [enabled: true, provider: 'open_meteo', latitude: 40.7d,
+            longitude: -74.0d, max_age: 'PT6H', fallback: fallback,
+            task_rules: [[name: 'scheduled-work', match_labels: ['schedule'],
+                require: [precipitation_probability_max: 25]]]]
+        cfg.planner.integration.weather = [base_url: 'https://api.open-meteo.com/v1/forecast',
+            timeout: 'PT1S', max_response_bytes: 65536]
+        def td = todoist()
+        def cal = new InMemoryCalendarGateway('Planned', true, [])
+        def planner = PlannerConfig.fromMap(cfg)
+        def integration = ProductionIntegrationConfig.fromMap(cfg, Path.of('.').toAbsolutePath())
+        Closure<WeatherReadGateway> failingWeather = {
+            [fetchForecast: { Instant from, Instant to ->
+                throw new OpenMeteoWeatherGateway.WeatherGatewayException('HTTP_STATUS', 'provider unavailable')
+            }] as WeatherReadGateway
+        }
+        def app = new ProductionPlannerOrchestrator(planner, integration, td, td, cal, cal,
+            { start }, failingWeather)
+
+        when:
+        Plan plan = app.preview(start, end)
+
+        then:
+        plan.scheduledBlocks.size() == expectedScheduled
+        td.dueUpdates.empty
+        cal.upserts.empty
+
+        where:
+        fallback      | expectedScheduled
+        'fail_open'   | 1
+        'fail_closed' | 0
     }
 }

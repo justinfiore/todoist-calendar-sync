@@ -31,7 +31,7 @@
 - [x] 4.3 Complete CalDAV range REPORT parsing with configured calendar-name preservation, all-day/timed event handling, and bounded XML/ICS responses.
 - [x] 4.4 Complete all-calendar UID REPORT plus live-resource GET, and reject duplicate, cross-calendar, unmanaged, or drifted resources.
 - [x] 4.5 Restrict PUT and DELETE to deterministic planner-owned resources on the managed calendar and require live UID/ownership/block metadata checks before deletion.
-- [ ] 4.6 Record partial or ambiguous Todoist/CalDAV outcomes as reconciliation-required and prevent blind duplicate requests on rerun.
+- [x] 4.6 Record partial or ambiguous Todoist/CalDAV outcomes as reconciliation-required and prevent blind duplicate requests on rerun.
 - [ ] 4.7 Add adapter tests proving credentials and sensitive response content do not appear in logs, exceptions, receipts, or snapshots.
 
 ## 5. Fixture and WireMock HTTP integration tests

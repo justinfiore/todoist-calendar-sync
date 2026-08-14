@@ -6,6 +6,7 @@ import todoistcaldavsync.planner.domain.CalendarEvent
 import todoistcaldavsync.planner.domain.ManagedEventIds
 
 import java.time.Instant
+import java.time.Duration
 import java.time.ZoneId
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*
@@ -76,6 +77,35 @@ class ProductionHttpGatewaysWireMockSpec extends Specification {
         thrown(UnsupportedOperationException)
         server.verify(0, postRequestedFor(urlPathMatching('/api/v1/tasks/.*')))
         server.verify(0, patchRequestedFor(urlPathMatching('/api/v1/tasks/.*')))
+    }
+
+    def "Todoist streams bounded responses and classifies lost write responses as ambiguous"() {
+        given:
+        server.stubFor(get(urlEqualTo('/api/v1/tasks?limit=200'))
+            .willReturn(okJson('{' + '"padding":"' + ('x' * 4096) + '"}')))
+        def bounded = new TodoistRestGateway(baseUrl: "http://localhost:${server.port()}/api/v1",
+            tokenOverride: 'token', allowInsecureHttp: true, includeProjectNames: false, maxResponseBytes: 128)
+
+        when:
+        bounded.fetchTasks()
+
+        then:
+        def oversized = thrown(TodoistRestGateway.TodoistGatewayException)
+        oversized.classification == 'CONTENT'
+
+        when:
+        server.resetAll()
+        server.stubFor(post(urlEqualTo('/api/v1/tasks/t1'))
+            .willReturn(aResponse().withStatus(200).withFixedDelay(300).withBody('{}')))
+        def shortTimeout = new TodoistRestGateway(baseUrl: "http://localhost:${server.port()}/api/v1",
+            tokenOverride: 'token', allowInsecureHttp: true, includeProjectNames: false,
+            timeout: Duration.ofMillis(50))
+        shortTimeout.updateTaskDue('t1', '2026-08-14T14:00:00Z')
+
+        then:
+        def ambiguous = thrown(TodoistRestGateway.TodoistGatewayException)
+        ambiguous.classification == 'AMBIGUOUS_WRITE'
+        server.verify(1, postRequestedFor(urlEqualTo('/api/v1/tasks/t1')))
     }
 
     def "CalDAV REPORT preserves calendar name and parses embedded event"() {
@@ -187,6 +217,72 @@ END:VCALENDAR
         then:
         server.verify(deleteRequestedFor(urlEqualTo('/cal/work/owned.ics'))
             .withHeader('Authorization', equalTo('Basic dXNlcjpwYXNz')))
+    }
+
+    def "CalDAV streams bounded responses and classifies a lost PUT response as ambiguous"() {
+        given:
+        server.stubFor(request('REPORT', urlEqualTo('/cal/work'))
+            .willReturn(aResponse().withStatus(207).withBody('x' * 4096)))
+        def bounded = new CalDavHttpGateway(calendars: [[name: 'Work',
+            url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
+            managedCalendarName: 'Work', allowInsecureHttp: true, maxResponseBytes: 128)
+
+        when:
+        bounded.fetchEvents(Instant.parse('2026-08-14T00:00:00Z'), Instant.parse('2026-08-15T00:00:00Z'))
+
+        then:
+        def oversized = thrown(CalDavHttpGateway.CalDavGatewayException)
+        oversized.classification == 'CONTENT'
+
+        when:
+        server.resetAll()
+        server.stubFor(put(urlPathMatching('/cal/work/planner-.*\\.ics'))
+            .willReturn(aResponse().withStatus(201).withFixedDelay(300)))
+        def gateway = new CalDavHttpGateway(calendars: [[name: 'Work',
+            url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
+            managedCalendarName: 'Work', allowInsecureHttp: true, timeout: Duration.ofMillis(50))
+        def owned = CalendarEvent.builder().id('new').uid(ManagedEventIds.uidForBlock('block-lost'))
+            .title('Scheduled work').description(ManagedEventIds.buildDescription('block-lost', 'plan-1'))
+            .calendarName('Work').start(Instant.parse('2026-08-14T13:00:00Z'))
+            .end(Instant.parse('2026-08-14T13:30:00Z')).build()
+        gateway.upsertEvent(owned)
+
+        then:
+        def ambiguous = thrown(CalDavHttpGateway.CalDavGatewayException)
+        ambiguous.classification == 'AMBIGUOUS_WRITE'
+        server.verify(1, putRequestedFor(urlPathMatching('/cal/work/planner-.*\\.ics')))
+
+        when: 'a DELETE is accepted but its response is lost'
+        server.resetAll()
+        stubUidReport('/cal/work', '/cal/work/owned.ics')
+        server.stubFor(get(urlEqualTo('/cal/work/owned.ics')).willReturn(okIcs(fixture('caldav-owned-event.ics'))))
+        server.stubFor(delete(urlEqualTo('/cal/work/owned.ics'))
+            .willReturn(aResponse().withStatus(204).withFixedDelay(300)))
+        gateway.deleteOwnedEvent('planner-owned@todoist-planner.local', 'block-1')
+
+        then:
+        def ambiguousDelete = thrown(CalDavHttpGateway.CalDavGatewayException)
+        ambiguousDelete.classification == 'AMBIGUOUS_WRITE'
+        server.verify(1, deleteRequestedFor(urlEqualTo('/cal/work/owned.ics')))
+    }
+
+    def "CalDAV implicit all-day end follows next local midnight across DST"() {
+        expect:
+        def event = CalDavHttpGateway.parseCalendar("""BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:${uid}
+DTSTART;VALUE=DATE:${date}
+SUMMARY:All day
+END:VEVENT
+END:VCALENDAR
+""", 'Work', URI.create("https://calendar.example/${uid}.ics"), ZoneId.of('America/New_York'))[0]
+        event.start == expectedStart
+        event.end == expectedEnd
+
+        where:
+        uid      | date       | expectedStart                         | expectedEnd
+        'spring' | '20260308' | Instant.parse('2026-03-08T05:00:00Z') | Instant.parse('2026-03-09T04:00:00Z')
+        'fall'   | '20261101' | Instant.parse('2026-11-01T04:00:00Z') | Instant.parse('2026-11-02T05:00:00Z')
     }
 
     private CalDavHttpGateway caldavGateway() {

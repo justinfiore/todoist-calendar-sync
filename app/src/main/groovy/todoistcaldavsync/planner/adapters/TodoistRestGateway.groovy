@@ -8,6 +8,8 @@ import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.function.Function
@@ -84,7 +86,7 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
         }
         // Intentionally exactly one allowed field. Do not add deadline here.
         byte[] body = JsonOutput.toJson([due_datetime: dueDateTimeIso]).getBytes(StandardCharsets.UTF_8)
-        HttpResponse<String> response = send('POST', "/tasks/${segment(taskId)}", null, body)
+        GatewayResponse response = send('POST', "/tasks/${segment(taskId)}", null, body)
         requireSuccess(response, 'update task due')
     }
 
@@ -99,7 +101,7 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
         Set<String> seen = new HashSet<>()
         for (int page = 0; page < maxPages; page++) {
             String query = "limit=${DEFAULT_PAGE_SIZE}" + (cursor ? "&cursor=${queryValue(cursor)}" : '')
-            HttpResponse<String> response = sendReadWithRetry(path, query)
+            GatewayResponse response = sendReadWithRetry(path, query)
             requireSuccess(response, "read ${path}")
             def parsed
             try {
@@ -138,8 +140,8 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
         throw new TodoistGatewayException('PAGINATION', "Todoist ${path} exceeded max_pages=${maxPages}")
     }
 
-    private HttpResponse<String> sendReadWithRetry(String path, String query) {
-        HttpResponse<String> last
+    private GatewayResponse sendReadWithRetry(String path, String query) {
+        GatewayResponse last
         for (int attempt = 1; attempt <= 3; attempt++) {
             last = send('GET', path, query, null)
             if (!(last.statusCode() == 429 || last.statusCode() >= 500) || attempt == 3) return last
@@ -147,7 +149,7 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
         return last
     }
 
-    private HttpResponse<String> send(String method, String path, String query, byte[] body) {
+    private GatewayResponse send(String method, String path, String query, byte[] body) {
         String token = resolveToken()
         URI uri = resolve(path, query)
         try {
@@ -160,21 +162,41 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
             } else {
                 builder.method(method, HttpRequest.BodyPublishers.noBody())
             }
-            HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-            if ((response.body() ?: '').getBytes(StandardCharsets.UTF_8).length > maxResponseBytes) {
-                throw new TodoistGatewayException('CONTENT', 'Todoist response exceeded max_response_bytes')
-            }
-            return response
+            HttpResponse<InputStream> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+            return new GatewayResponse(response.statusCode(), readBounded(response.body()))
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt()
-            throw new TodoistGatewayException('INTERRUPTED', 'Todoist request interrupted', e)
+            throw new TodoistGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'INTERRUPTED',
+                "Todoist ${method} request interrupted", e)
         } catch (TodoistGatewayException e) {
             throw e
         } catch (Exception e) {
-            throw new TodoistGatewayException('TRANSPORT', "Todoist ${method} request failed", e)
+            throw new TodoistGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'TRANSPORT',
+                "Todoist ${method} request failed", e)
         } finally {
             token = null
         }
+    }
+
+    private String readBounded(InputStream input) {
+        input.withCloseable { stream ->
+            ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(maxResponseBytes, 8192L))
+            byte[] buffer = new byte[8192]
+            long total = 0L
+            int count
+            while ((count = stream.read(buffer)) != -1) {
+                total += count
+                if (total > maxResponseBytes) {
+                    throw new TodoistGatewayException('CONTENT', 'Todoist response exceeded max_response_bytes')
+                }
+                out.write(buffer, 0, count)
+            }
+            out.toString(StandardCharsets.UTF_8)
+        }
+    }
+
+    private static boolean isMutation(String method) {
+        method in ['POST', 'PUT', 'PATCH', 'DELETE']
     }
 
     private String resolveToken() {
@@ -191,7 +213,7 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
         URI.create(base + path + (query ? '?' + query : ''))
     }
 
-    private static void requireSuccess(HttpResponse<String> response, String operation) {
+    private static void requireSuccess(GatewayResponse response, String operation) {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new TodoistGatewayException('HTTP_STATUS',
                 "Todoist ${operation} failed with HTTP ${response.statusCode()}")
@@ -220,5 +242,13 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
         TodoistGatewayException(String classification, String message, Throwable cause = null) {
             super(message, cause); this.classification = classification
         }
+    }
+
+    private static final class GatewayResponse {
+        final int status
+        final String content
+        GatewayResponse(int status, String content) { this.status = status; this.content = content }
+        int statusCode() { status }
+        String body() { content }
     }
 }

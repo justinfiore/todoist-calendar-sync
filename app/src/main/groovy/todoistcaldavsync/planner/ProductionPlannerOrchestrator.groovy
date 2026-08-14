@@ -39,6 +39,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private final DecisionStore decisionStore
     private final DeliveryLedger deliveryLedger
     private final Supplier<Instant> clock
+    private final Closure<WeatherReadGateway> weatherGatewayFactory
 
     ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock = { Instant.now() }) {
         if (configFile == null || !configFile.isFile()) throw new IllegalArgumentException("Config file not found: ${configFile}")
@@ -46,6 +47,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.plannerConfig = PlannerConfig.fromMap(root)
         this.integrationConfig = ProductionIntegrationConfig.fromMap(root, configFile.absoluteFile.parentFile.toPath())
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
+        this.weatherGatewayFactory = null
         this.planStore = new PlanStore(integrationConfig.plansDir)
         this.applicationState = new ApplicationStateStore(integrationConfig.applicationsDir)
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
@@ -71,13 +73,15 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
                                   TodoistWriteGateway todoistWrite,
                                   CalendarReadGateway calendarRead,
                                   CalendarWriteGateway calendarWrite,
-                                  Supplier<Instant> clock = { Instant.now() }) {
+                                  Supplier<Instant> clock = { Instant.now() },
+                                  Closure<WeatherReadGateway> weatherGatewayFactory = null) {
         if ([plannerConfig, integrationConfig, todoistRead, todoistWrite, calendarRead, calendarWrite].any { it == null }) {
             throw new IllegalArgumentException('planner/integration config and all read/write gateways are required')
         }
         this.plannerConfig = plannerConfig
         this.integrationConfig = integrationConfig
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
+        this.weatherGatewayFactory = weatherGatewayFactory
         this.planStore = new PlanStore(integrationConfig.plansDir)
         this.applicationState = new ApplicationStateStore(integrationConfig.applicationsDir)
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
@@ -109,20 +113,30 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         Plan previous = loadPrevious(previousPlanId ?: integrationConfig.previousPlanId)
         WeatherForecast forecast = null
         if (plannerConfig.weather.enabled) {
-            def wc = plannerConfig.weather
-            WeatherReadGateway gateway = new OpenMeteoWeatherGateway(
-                wc.latitude, wc.longitude, wc.timezone ?: plannerConfig.timezone,
-                wc.forecastHorizonDays ?: 7,
-                integrationConfig.weather.baseUrl.toString(),
-                integrationConfig.weather.timeout as java.time.Duration,
-                null, null,
-                integrationConfig.weather.maxResponseBytes as long)
-            forecast = gateway.fetchForecast(rangeStart, rangeEnd)
+            try {
+                forecast = weatherGateway().fetchForecast(rangeStart, rangeEnd)
+            } catch (OpenMeteoWeatherGateway.WeatherGatewayException ignored) {
+                // Represent provider unavailability as missing forecast data so the
+                // deterministic evaluator applies the configured fallback policy.
+                forecast = null
+            }
         }
         Plan plan = new DeterministicScheduler(plannerConfig).propose(
             tasks, availability.slots, rangeStart, rangeEnd, now, previous, [] as Set, forecast)
         planStore.save(plan)
         return plan
+    }
+
+    private WeatherReadGateway weatherGateway() {
+        if (weatherGatewayFactory != null) return weatherGatewayFactory.call()
+        def wc = plannerConfig.weather
+        new OpenMeteoWeatherGateway(
+            wc.latitude, wc.longitude, wc.timezone ?: plannerConfig.timezone,
+            wc.forecastHorizonDays ?: 7,
+            integrationConfig.weather.baseUrl.toString(),
+            integrationConfig.weather.timeout as java.time.Duration,
+            null, null,
+            integrationConfig.weather.maxResponseBytes as long)
     }
 
     /** Apply a stored plan using its configured mode and exact optional approval. */

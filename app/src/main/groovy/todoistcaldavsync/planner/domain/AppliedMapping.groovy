@@ -60,7 +60,8 @@ final class AppliedMapping {
     }
 
     boolean needsReconciliation() {
-        calendarApplied() && !todoistApplied()
+        calendarStatus == ApplyItemStatus.UNKNOWN || todoistStatus == ApplyItemStatus.UNKNOWN ||
+            (calendarApplied() && !todoistApplied())
     }
 
     AppliedMapping withStatuses(ApplyItemStatus cal, ApplyItemStatus td,

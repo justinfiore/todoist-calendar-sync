@@ -4,6 +4,10 @@ import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
 import todoistcaldavsync.planner.adapters.ManagedCalendarWriteGateway
+import todoistcaldavsync.planner.adapters.CalendarWriteGateway
+import todoistcaldavsync.planner.adapters.TodoistWriteGateway
+import todoistcaldavsync.planner.adapters.CalDavHttpGateway
+import todoistcaldavsync.planner.adapters.TodoistRestGateway
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.ApplyItemStatus
 import todoistcaldavsync.planner.domain.Approval
@@ -761,6 +765,66 @@ class PlanApplierSpec extends Specification {
         todoist.dueUpdates.isEmpty()
         def m = stateStore.loadMapping('t1')
         m == null || m.todoistStatus == ApplyItemStatus.PENDING
+    }
+
+    def "ambiguous Todoist write is durably reconciled from live state without resend"() {
+        given:
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)])
+        def approval = approvalFor(plan)
+        int writeCalls = 0
+        TodoistWriteGateway ambiguous = [
+            updateTaskDue: { String taskId, String due ->
+                writeCalls++
+                todoist.updateTaskDue(taskId, due)
+                throw new TodoistRestGateway.TodoistGatewayException('AMBIGUOUS_WRITE', 'response lost')
+            },
+            updateTaskDeadline: { String taskId, String deadline -> throw new UnsupportedOperationException() }
+        ] as TodoistWriteGateway
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(calendar, MANAGED_CAL),
+            calendar, ambiguous, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approval)
+        def second = subject.apply(plan, approval)
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        first.items[0].todoistStatus == ApplyItemStatus.UNKNOWN
+        first.items[0].needsReconciliation()
+        second.overallStatus == ApplyItemStatus.SKIPPED_IDEMPOTENT
+        writeCalls == 1
+        stateStore.loadMapping('t1').todoistApplied()
+    }
+
+    def "ambiguous calendar PUT is reconciled from live owned event without resend"() {
+        given:
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)])
+        def approval = approvalFor(plan)
+        int writeCalls = 0
+        CalendarWriteGateway ambiguous = [
+            upsertEvent: { CalendarEvent event ->
+                writeCalls++
+                calendar.upsertEvent(event)
+                throw new CalDavHttpGateway.CalDavGatewayException('AMBIGUOUS_WRITE', 'response lost')
+            },
+            deleteOwnedEvent: { String uid, String blockId -> calendar.deleteOwnedEvent(uid, blockId) }
+        ] as CalendarWriteGateway
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(ambiguous, calendar, MANAGED_CAL),
+            calendar, todoist, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approval)
+        def second = subject.apply(plan, approval)
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        first.items[0].calendarStatus == ApplyItemStatus.UNKNOWN
+        second.overallStatus == ApplyItemStatus.APPLIED
+        writeCalls == 1
+        todoist.dueUpdates.size() == 1
+        stateStore.loadMapping('t1').fullyApplied()
     }
 
     def "failed apply is not skipped as already-applied on retry"() {

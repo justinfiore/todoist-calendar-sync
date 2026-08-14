@@ -9,6 +9,8 @@ import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.time.Instant
@@ -83,7 +85,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         calendars.each { CalendarEndpoint endpoint ->
             report(endpoint, rangeReport(rangeStart, rangeEnd)).each { ReportResource resource ->
                 String calendarData = resource.calendarData ?: getResource(endpoint, resource.href)
-                result.addAll(parseCalendar(calendarData, endpoint.name, resource.href))
+                result.addAll(parseCalendar(calendarData, endpoint.name, resource.href, defaultZone))
             }
         }
         return Collections.unmodifiableList(result.toSorted { a, b ->
@@ -100,7 +102,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             report(endpoint, uidReport(uid)).each { ReportResource resource ->
                 // GET after UID REPORT is intentional: ownership decisions use live resource data.
                 String calendarData = getResource(endpoint, resource.href)
-                parseCalendar(calendarData, endpoint.name, resource.href).findAll { it.uid == uid }.each { matches << it }
+                parseCalendar(calendarData, endpoint.name, resource.href, defaultZone).findAll { it.uid == uid }.each { matches << it }
             }
         }
         if (matches.size() > 1) {
@@ -122,7 +124,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         CalendarEndpoint endpoint = byName[managedCalendarName]
         URI target = resourceUri(endpoint, event.uid)
         String body = renderCalendar(event)
-        HttpResponse<String> response = send(endpoint, 'PUT', target,
+        GatewayResponse response = send(endpoint, 'PUT', target,
             ['Content-Type': 'text/calendar; charset=utf-8'], body)
         requireStatus(response, [200, 201, 204] as Set, 'PUT', endpoint.name)
     }
@@ -140,12 +142,12 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         if (!isWithinCollection(endpoint.uri, target)) {
             throw new IllegalStateException('Refusing CalDAV delete outside managed collection')
         }
-        HttpResponse<String> response = send(endpoint, 'DELETE', target, [:], null)
+        GatewayResponse response = send(endpoint, 'DELETE', target, [:], null)
         requireStatus(response, [200, 202, 204] as Set, 'DELETE', endpoint.name)
     }
 
     private List<ReportResource> report(CalendarEndpoint endpoint, String body) {
-        HttpResponse<String> response = send(endpoint, 'REPORT', endpoint.uri,
+        GatewayResponse response = send(endpoint, 'REPORT', endpoint.uri,
             ['Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'], body)
         requireStatus(response, [200, 207] as Set, 'REPORT', endpoint.name)
         try {
@@ -170,13 +172,13 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     }
 
     private String getResource(CalendarEndpoint endpoint, URI href) {
-        HttpResponse<String> response = send(endpoint, 'GET', href, ['Accept': 'text/calendar'], null)
+        GatewayResponse response = send(endpoint, 'GET', href, ['Accept': 'text/calendar'], null)
         requireStatus(response, [200] as Set, 'GET', endpoint.name)
         response.body()
     }
 
-    private HttpResponse<String> send(CalendarEndpoint endpoint, String method, URI uri,
-                                      Map<String, String> headers, String body) {
+    private GatewayResponse send(CalendarEndpoint endpoint, String method, URI uri,
+                                 Map<String, String> headers, String body) {
         if (!isWithinOrigin(endpoint.uri, uri)) {
             throw new CalDavGatewayException('ENDPOINT', 'Refusing cross-origin CalDAV request')
         }
@@ -188,21 +190,41 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             builder.method(method, body != null
                 ? HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)
                 : HttpRequest.BodyPublishers.noBody())
-            HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
-            if ((response.body() ?: '').getBytes(StandardCharsets.UTF_8).length > maxResponseBytes) {
-                throw new CalDavGatewayException('CONTENT', 'CalDAV response exceeded max_response_bytes')
-            }
-            return response
+            HttpResponse<InputStream> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+            return new GatewayResponse(response.statusCode(), readBounded(response.body()))
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt()
-            throw new CalDavGatewayException('INTERRUPTED', 'CalDAV request interrupted', e)
+            throw new CalDavGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'INTERRUPTED',
+                "CalDAV ${method} interrupted for ${endpoint.name}", e)
         } catch (CalDavGatewayException e) {
             throw e
         } catch (Exception e) {
-            throw new CalDavGatewayException('TRANSPORT', "CalDAV ${method} failed for ${endpoint.name}", e)
+            throw new CalDavGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'TRANSPORT',
+                "CalDAV ${method} failed for ${endpoint.name}", e)
         } finally {
             auth = null
         }
+    }
+
+    private String readBounded(InputStream input) {
+        input.withCloseable { stream ->
+            ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.min(maxResponseBytes, 8192L))
+            byte[] buffer = new byte[8192]
+            long total = 0L
+            int count
+            while ((count = stream.read(buffer)) != -1) {
+                total += count
+                if (total > maxResponseBytes) {
+                    throw new CalDavGatewayException('CONTENT', 'CalDAV response exceeded max_response_bytes')
+                }
+                out.write(buffer, 0, count)
+            }
+            out.toString(StandardCharsets.UTF_8)
+        }
+    }
+
+    private static boolean isMutation(String method) {
+        method in ['POST', 'PUT', 'PATCH', 'DELETE']
     }
 
     static List<CalendarEvent> parseCalendar(String ics, String calendarName, URI href,
@@ -235,7 +257,11 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             DateValue end = props.DTEND != null ? parseDateValue(props.DTEND, defaultZone) : null
             Instant endInstant = end?.instant
             if (endInstant == null && props.DURATION?.value) endInstant = start.instant + Duration.parse(props.DURATION.value)
-            if (endInstant == null) endInstant = start.instant + (start.dateOnly ? Duration.ofDays(1) : Duration.ofMinutes(30))
+            if (endInstant == null) {
+                endInstant = start.dateOnly
+                    ? LocalDate.parse(startProp.value, ICAL_DATE).plusDays(1).atStartOfDay(defaultZone).toInstant()
+                    : start.instant + Duration.ofMinutes(30)
+            }
             events << CalendarEvent.builder()
                 .id(href.toString() + (components.size() > 1 ? "#${idx}" : ''))
                 .uid(unescape(uid))
@@ -294,7 +320,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         URI.create(base + '/' + URLEncoder.encode(uid, StandardCharsets.UTF_8).replace('+', '%20') + '.ics')
     }
 
-    private static void requireStatus(HttpResponse<String> response, Set<Integer> expected,
+    private static void requireStatus(GatewayResponse response, Set<Integer> expected,
                                       String method, String calendar) {
         if (!expected.contains(response.statusCode())) {
             throw new CalDavGatewayException('HTTP_STATUS',
@@ -381,5 +407,13 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         CalDavGatewayException(String classification, String message, Throwable cause = null) {
             super(message, cause); this.classification=classification
         }
+    }
+
+    private static final class GatewayResponse {
+        final int status
+        final String content
+        GatewayResponse(int status, String content) { this.status = status; this.content = content }
+        int statusCode() { status }
+        String body() { content }
     }
 }

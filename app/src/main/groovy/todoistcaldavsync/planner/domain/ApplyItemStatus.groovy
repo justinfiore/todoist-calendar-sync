@@ -14,6 +14,7 @@ enum ApplyItemStatus {
     SKIPPED_DRIFT('skipped_drift'),
     SKIPPED_NO_CHANGES('skipped_no_changes'),
     PARTIAL('partial'),
+    UNKNOWN('unknown'),
     FAILED('failed'),
     ERROR_EXTERNAL_UID('error_external_uid')
 
@@ -39,6 +40,6 @@ enum ApplyItemStatus {
     }
 
     boolean isBlocking() {
-        this == FAILED || this == PARTIAL || this == ERROR_EXTERNAL_UID
+        this == UNKNOWN || this == FAILED || this == PARTIAL || this == ERROR_EXTERNAL_UID
     }
 }
