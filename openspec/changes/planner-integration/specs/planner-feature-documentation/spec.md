@@ -1,47 +1,51 @@
 ## ADDED Requirements
 
-### Requirement: README is the documentation entry point
-The README SHALL describe the integrated planner, supported safety modes and operations, preserve the legacy-sync path, and link to the quick start, full planner configuration reference, end-to-end testing guide, and Slack, LLM, and Weather feature guides using valid relative links.
+### Requirement: README and quick start present daemon-first SmartPlanner
+The README and quick start SHALL identify `planner-daemon` as the primary SmartPlanner production lifecycle, explain that it remains running, preserve `legacy-sync` and one-shot controls, summarize multiple horizons and threaded messaging, and link every detailed guide with valid relative paths.
 
-#### Scenario: New operator navigates from README
-- **WHEN** an operator reads the planner section of the README
-- **THEN** the operator SHALL be able to identify the safe default, supported rollout progression, principal commands, configuration template, and each detailed guide without searching the repository
+#### Scenario: Operator finds the production entry point
+- **WHEN** an operator reads the SmartPlanner introduction
+- **THEN** they SHALL find the daemon command, readiness/fatal behavior, safe default, config template, Slack App setup, commands, state locations, and crawl/walk/run guide without searching source code
 
-### Requirement: Configuration reference is complete and example-driven
-The documentation and annotated example YAML SHALL cover every supported planner key, type, default, required/optional status, allowed values, precedence, validation behavior, credential environment-variable reference, state path, and interaction among modes and features. Safe features SHALL be disabled by default.
+### Requirement: Configuration reference covers every daemon contract
+The annotated YAML and SmartPlanner configuration guide SHALL document every daemon lifecycle, planning-run, horizon/interval, retry, startup probe, shutdown, concurrency/coalescing, Slack Socket Mode, app name/command/channel/token, status, regex rule, temporary override, authorization, LLM confirmation, and state key including type/default/bounds/interactions/failures.
 
-#### Scenario: Operator configures production preview
-- **WHEN** an operator follows the configuration reference and example
-- **THEN** they SHALL be able to produce a valid `preview` configuration with explicit Todoist/CalDAV endpoints, least-privilege credential references, all state paths, calendar classification, task policy, and disabled optional integrations without embedding secrets
+#### Scenario: Operator configures multiple horizons
+- **WHEN** the operator copies documented daily/weekly/medium examples
+- **THEN** the configuration SHALL parse, each run SHALL have independent horizon/interval behavior, and invalid duplicates/durations SHALL have documented fail-fast errors
 
-#### Scenario: Invalid or unsafe configuration is documented
-- **WHEN** a value is absent, conflicts with another key, contains a raw secret, or selects an unsupported mode/provider behavior
-- **THEN** the reference SHALL state the expected fail-closed validation result and remediation
+#### Scenario: Unsafe messaging config is supplied
+- **WHEN** daemon mode is configured with webhook-only Slack, inline tokens, missing app/bot token references, invalid regexes, or no receive-capable channel
+- **THEN** docs SHALL state the startup rejection and exact remediation
 
-### Requirement: Slack feature guide is operationally complete
-The Slack guide SHALL cover disabled-by-default behavior, webhook and chat API setup, minimal permissions, destination semantics, secret environment variables, message kinds and schedules, delivery idempotency/unknown outcomes, actor allowlisting, feedback/decision separation, test procedure, troubleshooting, and rollback/disable steps.
+### Requirement: Slack guide is complete for Socket Mode and conversations
+The Slack guide SHALL use authoritative Slack documentation links and cover manifest creation, default/custom app naming, `connections:write` app token, bot token/scopes/events, Socket Mode/no public Request URL, command setup, configured channel, parent proposals, thread replies/iterations, actor authorization, dedupe/reconnect, working status via `assistant.threads.setStatus`, rate limits, testing, troubleshooting, and disable/rollback.
 
-#### Scenario: Slack is enabled safely
-- **WHEN** an operator follows the Slack guide
-- **THEN** they SHALL be able to send a test message to an isolated destination, verify the durable receipt, test unauthorized and authorized feedback without implicit apply, and disable the integration without affecting planning
+#### Scenario: Operator creates the default app
+- **WHEN** the operator registers the supplied manifest without editing names
+- **THEN** the Slack app and bot SHALL be named SmartPlanner and expose `/smartplanner`
 
-### Requirement: LLM feature guide is operationally complete
-The LLM guide SHALL describe the provider-neutral and OpenAI-compatible configuration, allowed host and HTTPS controls, model/endpoint/secret reference, request/response/time/token/item/string bounds, redaction, strict schemas, suggestion types, confirmation boundaries, audit metadata, test procedure, troubleshooting, and disable steps. It SHALL state that LLM output never directly mutates plans or providers.
+#### Scenario: Operator tests commands and threads
+- **WHEN** setup is complete in an isolated channel
+- **THEN** the guide SHALL provide commands and pass/fail observations for plan/replan/status/help, proposal parent identity, thread-only feedback, multiple iterations, status set/clear, unauthorized messages, and no inbound listener
 
-#### Scenario: LLM suggestion is tested safely
-- **WHEN** an operator enables AI for an isolated test and invokes an explicit suggestion operation
-- **THEN** they SHALL verify bounded redacted context, validated structured output, audit information, no automatic confirmation, and zero Todoist/calendar/Slack mutations
+### Requirement: LLM guide covers conversational feedback safely
+The LLM guide SHALL document optional unmatched-feedback interpretation, bounded/redacted thread context, strict action/override schemas, confirmation wording, exact plan binding, expiry, audit, zero direct mutation authority, provider failure behavior, and disable steps.
 
-### Requirement: Weather feature guide is operationally complete
-The Weather guide SHALL cover Open-Meteo endpoint/location/timezone/horizon/max-age/body/timeout configuration, task suitability rules, units, stale/missing/malformed forecast handling, fail-open versus fail-closed trade-offs, deterministic scheduling effect, fixture/live test procedure, troubleshooting, and disable steps.
+#### Scenario: Natural-language feedback is tested
+- **WHEN** an operator enables AI in an isolated thread and posts unmatched feedback
+- **THEN** the guide SHALL require a confirmation summary, zero replan/apply before deterministic confirmation, bounded new iteration afterward, and unchanged Todoist source/config
 
-#### Scenario: Weather behavior is verified
-- **WHEN** an operator tests clear, unsuitable, stale, and unavailable forecast cases
-- **THEN** the guide SHALL enable them to verify expected scheduling explanations and fallback behavior without causing remote writes
+### Requirement: End-to-end guide validates a supervised service
+The end-to-end guide SHALL include service foreground/system supervision examples, startup probes/readiness, scheduled and Slack-triggered runs, status/health, non-fatal retry, fatal termination, restart recovery, graceful shutdown, backups, observations, acceptance gates, and rollback.
 
-### Requirement: End-to-end commands and examples are reproducible
-Every command SHALL use the actual Gradle task, installed launcher, main class, option name, and configuration path implemented by the repository. Examples SHALL use placeholders or fake values and SHALL not contain personal or production secrets.
+#### Scenario: Daemon smoke test is followed
+- **WHEN** an operator executes the documented isolated smoke procedure
+- **THEN** it SHALL verify the process stays alive across at least two triggers and one handled failure, persists conversations/dedupe, accepts thread feedback, and shuts down cleanly
 
-#### Scenario: Documentation verification is run
+### Requirement: Examples and app artifacts are reproducible and secret-safe
+Every command, manifest, YAML, environment variable, Gradle task, launcher option, scope, event, and API method SHALL match implementation. Examples SHALL use fake placeholders, tracked files SHALL contain no production/personal secrets, and documentation SHALL distinguish automated from live verification.
+
+#### Scenario: Documentation verification runs
 - **WHEN** implementation is complete
-- **THEN** maintainers SHALL verify relative links, copy/paste command syntax, CLI help alignment, example-config parsing, and absence of secrets or stale Phase-only limitations
+- **THEN** maintainers SHALL verify Markdown links, YAML/manifest parsing, CLI help, Slack command names/scopes/events, config coverage, source URLs, and tracked-file cleanliness

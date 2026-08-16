@@ -1,103 +1,183 @@
 ## Context
 
-The Phase 6 branch contains independently tested planner modules for task/calendar normalization, availability, deterministic scheduling, guarded application, weather, Slack messaging and feedback, and bounded AI assistance. The legacy `TodoistCalDavSync` entry point still owns the installed launcher and production lifecycle. The integration branch already contains uncommitted candidate implementation and documentation; implementation work must review and complete it rather than overwrite it blindly.
+SmartPlanner already has deterministic scheduling, immutable plans, guarded apply, durable plans/applications/decisions/deliveries, Slack outbound delivery, structured feedback, and bounded AI services. Production composition currently dispatches one operation and exits. The required runtime is instead a supervised daemon that coordinates periodic and user-triggered work while preserving the existing authority boundaries.
 
-The integration crosses remote APIs, durable state, safety modes, and operator procedures. Its primary stakeholder is an operator migrating from a due-date calendar renderer to a planner without exposing production tasks and calendars to unreviewed mutations.
+Slack is the first bidirectional Messaging Surface. Authoritative Slack documentation establishes these implementation constraints:
 
-Constraints:
+- Socket Mode receives Events API and interactive payloads over an outbound WebSocket, so no public Request URL is required.
+- An app-level token with `connections:write` opens/maintains the connection; the bot token is separate.
+- Slack recommends Bolt/SDK support; the current Java guide documents `com.slack.api:bolt-socket-mode:1.50.0` and requires Socket Mode payload acknowledgement within three seconds.
+- Proposal replies are correlated by channel and parent `thread_ts`.
+- `assistant.threads.setStatus` accepts `channel_id`, `thread_ts`, and `status`, uses `chat:write`, expires after two minutes, and clears on reply or an empty status.
 
-- Java 25, Groovy 5, Gradle 9, Spock, and WireMock remain the baseline.
-- Scheduling remains deterministic; LLM output has no mutation authority.
-- Planner writes are restricted to the configured managed calendar and Todoist due datetime. Todoist deadlines are invariant.
-- Automated tests are hermetic and never require provider credentials.
-- Legacy sync behavior remains available.
-- Existing uncommitted branch content must be preserved, inspected, tested, and refined.
+Constraints remain Java 25, Groovy 5, Gradle 9, deterministic scheduling, hermetic tests, no Todoist deadline mutation, managed-calendar-only writes, exact approvals, and no direct LLM mutation authority.
 
 ## Goals / Non-Goals
 
-**Goals:**
+**Goals**
 
-- Compose all Phase 1–6 capabilities behind the existing installed application.
-- Separate read/preview, approval, safe apply, feedback, delivery, and AI operations at explicit command boundaries.
-- Make endpoint, credential-reference, state, authorization, and optional-integration configuration complete and fail closed.
-- Verify each HTTP contract using checked-in fixtures and WireMock, plus orchestration and CLI integration tests.
-- Give an operator a reversible test-account and production rollout procedure.
-- Provide discoverable feature documentation from the README.
+- Keep SmartPlanner alive and independently schedule multiple named horizons.
+- Publish every proposal as a channel parent and iterate in its thread.
+- Receive Slack commands and thread feedback through outbound-only Socket Mode.
+- Support deterministic regex actions and optional bounded LLM interpretation.
+- Apply or replan only through persisted, plan-bound decisions and guarded gateways.
+- Survive all non-fatal cycle/event failures and reconnect after optional-provider outages.
+- Fail startup early for invalid configuration or unusable required Todoist/CalDAV credentials/connectivity.
 
-**Non-Goals:**
+**Non-Goals**
 
-- Replacing or silently migrating the legacy sync operation.
-- Enabling fully autonomous application. `fully_automated` remains refused.
-- Allowing LLM responses, Slack messages, or natural-language feedback to bypass structured confirmation.
-- Modifying Todoist deadlines.
-- Running automated tests against real Todoist, CalDAV, Weather, Slack, or LLM services.
-- Provisioning provider accounts, secrets, calendars, or Slack applications.
+- Removing `legacy-sync` or one-shot diagnostics.
+- Running an inbound HTTP server for Slack.
+- Treating every arbitrary channel message as feedback.
+- Allowing a regex, Slack user, or LLM response to bypass actor authorization, plan identity, or apply policy.
+- Making `fully_automated` available.
+- Provisioning a Slack app automatically or storing raw provider secrets.
 
 ## Decisions
 
-### 1. Keep one launcher with an explicit production composition root
+### 1. Add a daemon operation without removing one-shot controls
 
-`TodoistCalDavSync` remains the installed main class and dispatches named operations. A dedicated `ProductionPlannerOrchestrator` assembles configuration, adapters, state stores, and Phase 1–6 services. This keeps lifecycle and dependency wiring out of deterministic domain services and creates a dependency-injection seam for integration tests.
+`TodoistCalDavSync --operation planner-daemon` constructs `SmartPlannerDaemon` and blocks until graceful shutdown. Existing `capacity`, `preview`, `apply`, `apply-safe`, `deliver`, `feedback`, `apply-decision`, and `ai-suggest` remain troubleshooting/manual controls. `legacy-sync` remains the compatibility default when `--operation` is omitted.
 
-Alternative: create a separate planner executable. Rejected because it duplicates packaging/configuration and does not satisfy integration into the existing application.
+The daemon owns lifecycle and orchestration; `ProductionPlannerOrchestrator` remains the synchronous application service for individual plan/apply/deliver operations.
 
-### 2. Make every side effect an explicit operation
+### 2. Configure independent fixed-delay horizon schedules
 
-Operations are separated into `capacity`, `preview`, `apply`, `apply-safe`, `deliver`, `feedback`, `apply-decision`, and `ai-suggest`. Feedback persists a decision but never applies it in the same call. AI returns bounded suggestions/audit only. Preview may persist an immutable local plan snapshot but performs no remote writes.
+Configuration uses `planner.daemon.planning_runs[]`:
 
-Alternative: a single daemon cycle that reads, plans, communicates, and writes. Rejected because it obscures authority boundaries, weakens testability, and makes rollback harder.
+```yaml
+planner:
+  daemon:
+    enabled: true
+    startup_connectivity_check: true
+    shutdown_timeout: PT20S
+    retry:
+      initial_delay: PT5S
+      max_delay: PT5M
+      multiplier: 2.0
+    planning_runs:
+      - name: daily
+        horizon: P2D
+        interval: PT1H
+        run_on_startup: true
+      - name: weekly
+        horizon: P7D
+        interval: PT6H
+        run_on_startup: true
+      - name: medium
+        horizon: P14D
+        interval: P1D
+        run_on_startup: false
+```
 
-### 3. Preserve the three safe rollout modes and refuse automatic mode
+Names are unique. Horizon and interval are positive ISO-8601 duration/period values with documented bounds. Each run plans `[now, now + horizon)` in the configured planner timezone. Fixed-delay scheduling prevents overlapping runs of the same name; a bounded single planning executor serializes provider/state mutations across horizons. Coalescing keeps at most one pending trigger per horizon.
 
-- `preview`: read and plan; remote writes are skipped.
-- `approval_required`: application requires approval bound to exact plan ID, version, and semantic hash.
-- `apply_safe_changes`: ordinary changes may apply; frozen, manually moved, drifted, protected, and approval-required changes remain withheld.
-- `fully_automated`: fail closed with a durable refusal and zero writes.
+### 3. Validate required providers before entering the loop
 
-The crawl/walk/run guide uses those first three modes in that order. This corrects ambiguous “automatic mode” terminology without creating autonomous authority.
+Startup order is: parse/validate all config and regexes; resolve required credential environment variables; construct stores/adapters; perform bounded authenticated Todoist and CalDAV read probes; then start Slack and schedules. Invalid config or classified Todoist/CalDAV authentication/connectivity failure exits nonzero before the daemon advertises readiness.
 
-### 4. Isolate production HTTP adapters behind narrow ports
+After readiness, a failed cycle/event is caught at its work-item boundary. Authentication/authorization loss for required Todoist/CalDAV is classified fatal and requests orderly daemon termination. Transient timeouts, 429s, 5xx responses, malformed optional-provider responses, Slack disconnects, Weather failures, and LLM failures are recorded and retried/degraded without killing the process. Uncaught `Error` is logged and does not silently disappear, but JVM-fatal conditions are not promised recoverable.
 
-Todoist read/write, calendar read/write, weather read, messaging, and LLM access remain separate interfaces. Production adapters enforce bounded timeouts/bodies/pages, explicit endpoints, HTTPS by default, credential lookup through environment-variable names, and redacted errors. Todoist writes expose due-time update only; deadline update refuses. CalDAV writes validate managed-calendar ownership and search all configured calendars for UID collisions.
+### 4. Make Messaging Surface bidirectional and conversation-aware
 
-Alternative: reuse legacy internals directly. Rejected because legacy classes combine configuration, looping, HTTP, mapping, and mutation, making the new safety contracts difficult to enforce and test.
+Introduce narrow ports:
 
-### 5. Treat four state stores as one operational consistency unit
+- `MessagingSurface.start(handler)` / `close()` for inbound lifecycle.
+- `publishProposal(message)` returning channel/message/thread identity.
+- `reply(channel, threadTs, message)`.
+- `setWorkingStatus(channel, threadTs, status)` and `clearWorkingStatus(...)`.
+- inbound `MessagingEvent` with provider event ID, actor, channel, message timestamp, parent thread timestamp, text, and event type.
 
-Plans, applications/mappings, decisions, and deliveries use explicit independent paths but are backed up/restored together. Ambiguous provider success is recorded as unknown/reconciliation-required and never resolved by deleting state or blindly retrying.
+`SlackSocketModeMessagingSurface` uses Bolt Socket Mode with separate app-token and bot-token environment references. Listener callbacks acknowledge immediately and enqueue normalized events; no planning, LLM, or provider mutation occurs on the Socket Mode callback thread. Event IDs and `(channel, messageTs)` are durably deduplicated.
 
-### 6. Test both transport contracts and orchestration semantics
+The existing outbound Slack gateway remains useful for HTTP contract code, but daemon proposals use chat API so Slack returns `channel` and `ts`. Webhook-only mode is not valid for bidirectional daemon operation.
 
-WireMock tests cover every HTTP method, URL/query/body/header/auth contract and representative success, pagination, retryable failure, non-retryable failure, malformed/oversized response, timeout, and ambiguous write outcome. Checked-in JSON/YAML/ICS fixtures make responses reviewable. In-memory gateways then test multi-step orchestration deterministically without conflating scheduler assertions with transport stubs. CLI tests validate dispatch, required options, help, exit codes, and secret-free errors.
+### 5. Ship a configurable Slack App manifest template
 
-### 7. Organize documentation for operators
+`conf/smartplanner-slack-app-manifest.example.yaml` defaults both app name and bot display name to `SmartPlanner`, enables Socket Mode, declares `/smartplanner`, and includes the event subscriptions/scopes needed by the configured channel type. Operators may edit names before app creation. Runtime `planner.messaging.app_name` defaults to `SmartPlanner` for messages/docs/validation but does not pretend to rename an already registered Slack app.
 
-The README contains a concise planner overview, safety modes, command links, and links to the full configuration, end-to-end, Slack, LLM, and Weather guides. The example YAML is executable documentation with safe disabled defaults and environment-variable names—not secrets. Feature guides include prerequisites, minimal and advanced examples, permissions, verification, failure behavior, and troubleshooting.
+Minimum public-channel bot scopes are `chat:write`, `commands`, `app_mentions:read`, and `channels:history`; private-channel deployments additionally need the documented private-channel history/access scope. The app-level token has `connections:write`.
+
+### 6. Define command and thread behavior explicitly
+
+Supported slash/app commands:
+
+- `plan [RUN_NAME]`: enqueue a plan for one configured horizon, or all when omitted.
+- `replan [RUN_NAME] [feedback]`: enqueue a new iteration using feedback/overrides.
+- `status`: report readiness, Socket Mode state, last/next runs, and queued work without secrets.
+- `help`: show allowed commands and current authorization limits.
+
+Commands are accepted only from configured actors and channel. Slash commands are acknowledged within three seconds. Work is bounded and asynchronous. For commands with no source thread, SmartPlanner posts a command receipt parent, applies `assistant.threads.setStatus` there, then posts the result. App mentions and thread requests use their existing thread. Status text/loading messages are configurable and bounded; API failure is recorded and processing continues.
+
+### 7. Correlate each proposal thread with immutable plan identity
+
+A successful proposal parent persists a conversation record containing provider, channel, root `thread_ts`, horizon/run name, current plan ID/version/hash, proposal ID, iteration number, prior plan/proposal IDs, and timestamps. Only messages whose channel and root `thread_ts` match an active conversation are treated as proposal feedback. Bot/self messages, edits/deletes unless explicitly supported, duplicate event IDs, other channels, and top-level chatter are ignored.
+
+A replan stays in the same thread, persists a new immutable plan, updates the conversation's current exact identity, and posts a diff/summary reply. Any approval for an older iteration is stale and refuses writes.
+
+### 8. Parse deterministic regex rules before optional LLM interpretation
+
+Configuration uses ordered rules:
+
+```yaml
+planner:
+  integration:
+    feedback:
+      allowed_actors: [U123]
+      rules:
+        - name: approve
+          pattern: '(?i)^\\s*(approve|acknowledge|yes)\\s*$'
+          action: approve
+        - name: reject
+          pattern: '(?i)^\\s*(reject|no)\\s*(?<reason>.*)$'
+          action: reject
+        - name: replan
+          pattern: '(?is)^\\s*(replan|change)\\b(?<feedback>.*)$'
+          action: replan
+```
+
+Patterns use Java regex syntax, compile at startup, are length/count bounded, and first match wins. Supported actions are `acknowledge`, `approve`, `reject`, `replan`, `apply_safe`, `status`, and `help`; write-capable actions remain constrained by planner mode and actor authorization. Capture groups such as `feedback`/`reason` are bounded and persisted after secret/mention-safe normalization.
+
+Unmatched thread text is ordinary feedback. If AI is disabled, SmartPlanner asks for a supported deterministic command. If AI is enabled and conversational interpretation is allowed, it sends bounded/redacted context and accepts only the existing strict interpretation/temporary-override schemas. It posts a confirmation summary; no LLM output is applied until a subsequent authorized deterministic confirmation binds it to the current plan.
+
+### 9. Model replanning overrides as temporary, bounded inputs
+
+`PlanningOverride` records source event/conversation, target run/plan, expiration, optional task IDs, exclusions, priority adjustments within configured bounds, and bounded textual criteria. Regex rules may supply predefined configured override templates; LLM output may propose the same schema. Confirmed overrides are persisted in the decision store and passed as planning input to a new iteration; they do not rewrite Todoist source tasks or permanent config. Expired, stale-plan, unknown-task, or out-of-range overrides are refused.
+
+### 10. Keep apply and ambiguity safety unchanged
+
+Approval in a thread creates a decision bound to the conversation's newest plan ID/version/hash. `approval_required` applies only after exact approval. `apply_safe_changes` may apply only ordinary eligible items after an authorized `apply_safe` action. `preview` never writes. `fully_automated` remains refused. Reject/acknowledge/replan never apply. Ambiguous provider writes retain reconciliation barriers and are never blindly retried by later cycles.
+
+### 11. Test time, transport, and lifecycle through injected seams
+
+`SmartPlannerDaemon` accepts injected clock, scheduler/sleeper/executor, messaging surface, and shutdown signal. Tests advance virtual time instead of sleeping. Socket Mode listener tests inject normalized envelopes or a fake surface; Web API request contracts use WireMock. A small SDK-composition test proves listener registration and asynchronous dispatch without connecting to Slack.
 
 ## Risks / Trade-offs
 
-- **[Existing uncommitted implementation may be incomplete or internally inconsistent]** → Review its diff file-by-file, run focused and full tests, and amend it rather than assuming it satisfies this spec.
-- **[Provider behavior differs from fixtures]** → Include representative protocol details and negative cases; require isolated live-account testing before production.
-- **[Partial CalDAV/Todoist application]** → Persist itemized receipts, classify ambiguity, stop blind retries, and document reconciliation/rollback.
-- **[Mode or operation confusion causes writes]** → Safe configuration default, explicit operation names, no implicit preview-to-apply transition, and guide checkpoints that verify zero writes first.
-- **[State restore is inconsistent]** → Document and test paths; snapshot/restore all four stores together.
-- **[Secrets leak through config/logs/test output]** → Reject inline production secrets, use env-name references, test redaction, and use fake fixture credentials only.
-- **[Legacy and planner behavior diverge]** → Preserve `legacy-sync` as default and add regression coverage for its dispatch.
-- **[Broad integration tests become brittle]** → Keep provider contract tests focused per adapter and use injected in-memory ports for orchestration behavior.
+- **Bolt dependency/runtime conflicts** → Pin documented compatible versions, inspect dependency resolution, run full distribution/build tests, and isolate SDK usage behind one adapter.
+- **Duplicate Socket Mode events or reconnects** → acknowledge quickly, durable dedupe, idempotent work keys, and conversation identity checks.
+- **Long work blocks Slack callbacks** → callbacks only normalize/ack/enqueue; bounded worker executors perform work.
+- **Thread feedback authorizes stale plans** → conversation always tracks newest exact identity; old approvals fail.
+- **Status API may be unavailable for app configuration** → record failure, post normal thread progress/result, never change authority or daemon liveness.
+- **Repeated failing cycles create noise** → exponential bounded retry, coalescing, structured health status, and optional alert throttling.
+- **Arbitrary feedback changes planning unexpectedly** → ordered rules, allowlists, bounded override schema, explicit confirmation, expiry, immutable source data, and diff replies.
 
 ## Migration Plan
 
-1. Preserve and inventory the existing integration-worktree changes.
-2. Complete configuration validation, composition, adapters, and CLI wiring behind explicit operations.
-3. Complete fixtures, WireMock provider tests, orchestration tests, CLI tests, and legacy regression tests.
-4. Run focused tests, full `:app:test`, `build`, and `installDist`; exercise the installed launcher help and a hermetic preview path.
-5. Finish README, quick start, example config, configuration reference, feature guides, and end-to-end guide; verify all relative links and commands.
-6. Use dedicated Todoist and CalDAV test data for preview, exact approval, idempotency, safe-only write, ownership, and rollback gates.
-7. Production crawl: `preview`, disabled optional integrations, narrow horizon, verified zero remote writes.
-8. Production walk: `approval_required`, exact small approval, minimal write permissions, observed receipts and idempotent rerun.
-9. Production run: `apply_safe_changes`, short horizon and daily receipt review; expand only after clean observations. Never advance to `fully_automated`.
-10. Rollback on unexplained/ambiguous outcomes: stop applies/deliveries, retain evidence, compare live resources, restore remote backup and matching four-store snapshot, and return to `preview`.
+1. Commit this revised OpenSpec artifact set before code edits.
+2. Add daemon/lifecycle/config models and deterministic tests.
+3. Add conversation/override persistence and regex parser tests.
+4. Add Slack manifest, Socket Mode surface, commands, thread correlation, status API, and WireMock/fake-surface tests.
+5. Wire periodic and Slack-triggered planning, iteration, decisions, and guarded apply.
+6. Update docs/config examples and remove one-shot-primary wording.
+7. Run focused tests, full rerun, build, installDist, installed help, and hermetic daemon smoke tests.
+8. Keep live Slack/Todoist/CalDAV verification open until operator credentials/test workspace are available; document exact commands and acceptance gates.
 
-## Open Questions
+## Resolved Decisions
 
-None. The requested implementation surface, WireMock approach, documentation set, and rollout progression are sufficiently defined. Provider-specific details must be implemented against the current live API contracts during apply rather than invented in this proposal.
+- Implementation uses Hermes directly, not delegated coding agents.
+- Slack uses outbound-only Socket Mode and Bolt for Java.
+- Default app/display name is SmartPlanner; operators may edit the manifest/configured display name.
+- Proposal feedback is thread-scoped and supports multiple iterations.
+- Bot working state uses `assistant.threads.setStatus` with graceful degradation.
+- `fully_automated` remains unavailable.
