@@ -42,7 +42,7 @@ todoist-caldav-sync ... --operation ai-suggest --plan-id ID \
 
 Allowed types are task suggestions, event-classification suggestions, temporary planning overrides,
 and conversational feedback interpretation, subject to configuration. Output remains a proposal.
-Confirmation/policy workflows are separate Phase 6 APIs; no AI output directly changes a plan,
+Confirmation/policy workflows are separate AI Assistance APIs; no AI output directly changes a plan,
 calendar, Todoist task, configuration, decision, or Slack message. Test against a mock/approved test
 endpoint first and verify redaction, schema rejection, token/body bounds, and unchanged remote/local
 write surfaces.

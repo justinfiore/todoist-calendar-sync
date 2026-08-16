@@ -57,7 +57,7 @@
 ## 7. Operator and feature documentation
 
 - [x] 7.1 Update README and quick start with planner overview, legacy compatibility, safety mode table, command examples, safe defaults, and links to every detailed guide.
-- [x] 7.2 Complete `conf/todoist-planner.conf.example.yaml` and `docs/PLANNER_CONFIGURATION.md` for every supported key, allowed value, default, validation rule, environment-variable reference, state path, and cross-feature interaction.
+- [x] 7.2 Complete `conf/todoist-planner.conf.example.yaml` and `docs/SMART_PLANNER_CONFIGURATION.md` for every supported key, allowed value, default, validation rule, environment-variable reference, state path, and cross-feature interaction.
 - [x] 7.3 Complete `docs/SLACK_INTEGRATION.md` with webhook/chat setup, least permissions, destinations, kinds/schedules, durable delivery states, feedback actor authorization, explicit decision apply, testing, troubleshooting, disable, and rollback.
 - [x] 7.4 Complete `docs/LLM_INTEGRATION.md` with provider/endpoint/model/host/secret controls, bounds, redaction, schemas/types, confirmation and no-mutation authority, testing, troubleshooting, audit, and disable instructions.
 - [x] 7.5 Complete `docs/WEATHER_INTEGRATION.md` with endpoint/location/timezone/horizon/staleness/limits, suitability rules, fail-open/fail-closed behavior, deterministic explanations, tests, troubleshooting, and disable instructions.

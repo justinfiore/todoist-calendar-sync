@@ -2,7 +2,7 @@
 
 # todoist-calendar-sync
 
-Phase 7 exposes the capacity-aware planner through the existing main executable while retaining
+SmartPlanner exposes capacity-aware planning through the existing main executable while retaining
 the original sync as the default operation. Production planning uses real Todoist REST and CalDAV
 adapters, durable deterministic plans, exact approvals, safe-only application, optional Open-Meteo,
 explicit Slack delivery/feedback, and disabled-by-default bounded AI suggestions. `fully_automated`
@@ -12,11 +12,11 @@ remains unavailable and refuses writes.
 
 Sync Todoist tasks into one or more CalDAV calendars.
 
-Feature guides: [planner configuration](docs/PLANNER_CONFIGURATION.md),
+Feature guides: [SmartPlanner configuration](docs/SMART_PLANNER_CONFIGURATION.md),
 [end-to-end rollout/testing](docs/PLANNER_END_TO_END_TESTING.md),
 [Slack](docs/SLACK_INTEGRATION.md), [LLM](docs/LLM_INTEGRATION.md), and
-[weather](docs/WEATHER_INTEGRATION.md). The Phase 1–6 design details remain in
-[the Phase 6 guide](docs/PHASE_6_AI_ASSISTANCE.md).
+[weather](docs/WEATHER_INTEGRATION.md). The bounded suggestion and confirmation contracts are in
+[AI Assistance](docs/AI_ASSISTANCE.md).
 
 This app reads tasks from Todoist, filters them by labels/projects, routes each task to a calendar using rule matching, and creates/updates calendar events as `.ics` resources via CalDAV.
 
@@ -92,25 +92,56 @@ Options:
 - `-l <log4j.groovy>`: required Log4j Groovy config file
 - `-h`: help
 
-Phase 7 uses the same entry point and adds `--operation`. Omitting it preserves `legacy-sync`.
+SmartPlanner uses the same entry point and adds `--operation`. Omitting it preserves `legacy-sync`.
+
+Every command below also requires `-f CONFIG -l LOG_CONFIG`. Use the installed
+`todoist-caldav-sync` launcher or the equivalent Gradle run command.
+
+| Operation | Required/optional arguments | Behavior |
+| --- | --- | --- |
+| `legacy-sync` | no planner arguments | Runs the original Todoist-to-CalDAV sync/loop. This is the default when `--operation` is omitted. |
+| `capacity` | `--range-start INSTANT --range-end INSTANT`; optional `--format markdown\|json` | Reads Todoist and CalDAV and reports capacity for the half-open UTC interval. It makes no remote writes. |
+| `preview` | `--range-start INSTANT --range-end INSTANT`; optional `--previous-plan-id ID` | Builds, renders, and locally persists a deterministic plan. It makes no Todoist or CalDAV writes. |
+| `apply` | `--plan-id ID`; optional `--approval FILE` | Applies a stored plan according to its configured safety mode. `approval_required` needs an exact approval file; `preview` and unavailable `fully_automated` refuse writes. |
+| `apply-safe` | `--plan-id ID` | Applies only ordinary safe changes from a stored plan. Protected, frozen, manual, drifted, and approval-required changes remain withheld. |
+| `deliver` | `--plan-id ID`; optional `--kind KIND` | Delivers one enabled message kind when `--kind` is supplied, or evaluates configured due schedules when it is omitted. The durable ledger prevents blind duplicate sends. |
+| `feedback` | `--plan-id ID --feedback COMMAND --actor ID`; optional `--correlation-id ID --message-id ID` | Authorizes, parses, and persists structured feedback such as `approve`, `reject`, `apply-safe`, `request-changes`, `status`, or `help`. It never applies a plan. |
+| `apply-decision` | `--plan-id ID --decision-id ID` | Explicitly revalidates and applies an accepted stored `APPROVE` or `APPLY_SAFE` decision. Rejected, stale, conflicting, or replayed decisions do not write. |
+| `ai-suggest` | `--plan-id ID --ai-type TYPE --correlation-id ID`; optional `--feedback TEXT` | Requests a configured bounded AI suggestion. Allowed types are `task_suggestions`, `event_classification_suggestions`, `temporary_planning_overrides`, and `conversational_feedback_interpretation`. Output has no mutation authority. |
+
+Examples:
 
 ```bash
-# Read-only live capacity
-todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
-  --operation capacity --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z
+# Read-only capacity report
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation capacity \
+  --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z --format markdown
 
-# Generate and persist a proposal (no writes)
-todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
-  --operation preview --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z
+# Persist a preview, optionally comparing it with a known baseline
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation preview \
+  --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z \
+  --previous-plan-id PREVIOUS_PLAN_ID
 
-# Apply according to the stored plan's mode
+# Apply an exactly approved plan, or apply only its safe subset
 todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
   --operation apply --plan-id PLAN_ID --approval approval.json
-```
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation apply-safe --plan-id PLAN_ID
 
-Other operations are `apply-safe`, `deliver`, `feedback`, `apply-decision`, and `ai-suggest`.
-Run `--help` for their arguments. Feedback never applies automatically; `apply-decision` is a
-separate explicit step. AI output is suggestions/audit metadata only and has no mutation authority.
+# Deliver a proposal now, or omit --kind to process due schedules
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation deliver --plan-id PLAN_ID --kind proposal
+
+# Persist structured feedback, then explicitly apply its accepted decision
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation feedback \
+  --plan-id PLAN_ID --feedback 'approve PROPOSAL_ID PLAN_HASH' --actor ACTOR_ID \
+  --correlation-id CORRELATION_ID --message-id MESSAGE_ID
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation apply-decision --plan-id PLAN_ID --decision-id DECISION_ID
+
+# Request suggestion-only AI assistance
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation ai-suggest \
+  --plan-id PLAN_ID --ai-type task_suggestions --correlation-id CORRELATION_ID
+```
 
 Google OAuth credential helper:
 

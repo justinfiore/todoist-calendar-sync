@@ -1,6 +1,6 @@
-# Planner production configuration
+# SmartPlanner configuration
 
-Phase 7 configuration is under `planner`. The complete annotated template is
+SmartPlanner configuration is under `planner`. The complete annotated template is
 `conf/todoist-planner.conf.example.yaml`. Production operations fail closed if integration endpoints
 or state paths are missing. Relative state paths resolve from the config file directory.
 

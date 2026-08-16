@@ -31,6 +31,6 @@ None. This repository has no existing OpenSpec baseline capabilities; this chang
 - Provider adapters: Todoist REST, CalDAV HTTP, Open-Meteo, Slack, and OpenAI-compatible LLM boundaries.
 - Durable state: plan snapshots, application receipts/mappings, decisions, and delivery ledger directories; these must be backed up and restored as one consistent set.
 - Tests: Spock, WireMock, checked-in JSON/YAML/ICS fixtures, CLI tests, and orchestration integration tests. No real provider calls are permitted in the automated suite.
-- Documentation/configuration: `README.md`, `QUICK_START.md`, `conf/todoist-planner.conf.example.yaml`, configuration reference, end-to-end guide, and feature guides.
+- Documentation/configuration: `README.md`, `QUICK_START.md`, `conf/todoist-planner.conf.example.yaml`, `docs/SMART_PLANNER_CONFIGURATION.md`, end-to-end guide, and feature guides.
 - Dependencies: existing WireMock test dependency is used; no production dependency should be added unless justified during implementation.
 - Compatibility: the default `legacy-sync` operation and existing legacy configuration behavior remain available. Planner production operations require explicit planner integration configuration and fail closed when prerequisites are absent.
