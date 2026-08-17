@@ -1,6 +1,6 @@
 package todoistcaldavsync.planner.messaging
 
-/** Normalized inbound event. Provider callbacks acknowledge before enqueuing this value. */
+/** Normalized inbound event. Provider callbacks acknowledge only after successful queue admission. */
 final class MessagingEvent {
     final String eventId
     final String type

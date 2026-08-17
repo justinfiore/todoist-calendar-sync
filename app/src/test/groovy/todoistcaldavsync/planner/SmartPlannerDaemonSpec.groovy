@@ -1,6 +1,7 @@
 package todoistcaldavsync.planner
 
 import groovy.json.JsonSlurper
+
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
@@ -21,6 +22,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -110,7 +114,7 @@ class SmartPlannerDaemonSpec extends Specification {
     private List build(File stateRoot, AtomicReference<Instant> now,
                        MessagingSurface surface = new InMemoryMessagingSurface(), Closure aiProvider = null,
                        TodoistReadGateway todoistRead = null, TodoistWriteGateway todoistWrite = null,
-                       ScheduledThreadPoolExecutor scheduler = null) {
+                       ScheduledThreadPoolExecutor scheduler = null, ConversationStore conversationStore = null) {
         Map root = config(stateRoot)
         if (aiProvider != null) {
             root.planner.ai = [enabled: true, provider: 'fixture', model: 'fixture-model',
@@ -126,7 +130,7 @@ class SmartPlannerDaemonSpec extends Specification {
         def orchestrator = new ProductionPlannerOrchestrator(planner, integration, readGateway, writeGateway, calendar, calendar,
             { now.get() }, null, aiProvider)
         def daemon = new SmartPlannerDaemon(orchestrator, surface, { now.get() },
-            scheduler ?: Executors.newSingleThreadScheduledExecutor())
+            scheduler ?: Executors.newSingleThreadScheduledExecutor(), conversationStore)
         [daemon, orchestrator, writeGateway, calendar, surface, integration]
     }
 
@@ -569,6 +573,129 @@ class SmartPlannerDaemonSpec extends Specification {
         !surface.connected
         new ConversationStore(daemon.@config.deliveriesDir.resolve('conversations'))
             .find('C123', proposal.threadTs).planId == proposal.planId
+    }
+
+    def 'interrupted event claims are reclaimable after restart and completed events remain deduplicated'() {
+        given:
+        Path directory = Files.createTempDirectory('smartplanner-event-claims-')
+        def firstProcess = new ConversationStore(directory, null, 'process-1')
+        def restartedProcess = new ConversationStore(directory, null, 'process-2')
+        Map payload = [eventId: 'Ev-restart', type: 'command', actorId: 'U1', channelId: 'C123',
+            messageTs: '1.1', threadTs: null, text: 'status', bot: false]
+
+        expect: 'the first process owns an in-flight claim and suppresses concurrent duplicates'
+        firstProcess.claimEvent('Ev-restart', 'C123', '1.1', initial, payload)
+        !firstProcess.claimEvent('Ev-restart', 'C123', '1.1', initial)
+        restartedProcess.recoverableEventPayloads() == [payload]
+
+        when: 'the daemon restarts before the event action completes'
+        boolean reclaimed = restartedProcess.claimEvent('Ev-restart', 'C123', '1.1', initial.plusSeconds(1))
+        restartedProcess.completeEvent('Ev-restart', initial.plusSeconds(2))
+
+        then: 'the interrupted event is retried once and its completed result becomes terminal'
+        reclaimed
+        !new ConversationStore(directory, null, 'process-3')
+            .claimEvent('Ev-restart', 'C123', '1.1', initial.plusSeconds(3))
+    }
+
+    def 'failed revised-conversation persistence leaves the old plan blocked from approval'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-revision-barrier-').toFile()
+        def now = new AtomicReference<>(initial)
+        Path conversationDir = state.toPath().resolve('deliveries/conversations')
+        def failingStore = new ConversationStore(conversationDir, { Map root ->
+            boolean finalRevision = (root.conversations instanceof Map) &&
+                root.conversations.values().any { it instanceof Map && it.iteration == 2 && it.status == 'ACTIVE' }
+            if (finalRevision) throw new IOException('injected final conversation persistence failure')
+        }, 'daemon-process')
+        def parts = build(state, now, new InMemoryMessagingSurface(), null, null, null, null, failingStore)
+        SmartPlannerDaemon daemon = parts[0]
+        InMemoryMessagingSurface surface = parts[4]
+        daemon.start()
+        def original = daemon.runNow('daily')
+
+        when: 'the revised Slack message succeeds but the new identity cannot be persisted'
+        Throwable failure = null
+        try {
+            surface.emit(new MessagingEvent(eventId: 'Ev-revision-fail', type: 'thread_reply', actorId: 'U1',
+                channelId: 'C123', messageTs: '10.2', threadTs: original.threadTs, text: 'try again'))
+        } catch (Throwable t) { failure = t }
+        def blocked = new ConversationStore(conversationDir).find('C123', original.threadTs)
+        surface.emit(new MessagingEvent(eventId: 'Ev-approve-blocked', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '10.3', threadTs: original.threadTs, text: 'yes'))
+
+        then:
+        failure != null
+        surface.replies.any { it.text.contains('Revised proposal') }
+        surface.replies.any { it.text.contains('Feedback failed safely') }
+        blocked.status == 'PUBLISHING_REVISION'
+        parts[2].dueUpdates.empty
+        parts[3].upserts.empty
+
+        cleanup:
+        daemon?.close()
+    }
+
+    def 'bounded Slack callback admission rejects overload and connection status follows the live client'() {
+        given:
+        def release = new CountDownLatch(1)
+        def entered = new CountDownLatch(1)
+        def live = new java.util.concurrent.atomic.AtomicBoolean(true)
+        def callbacks = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<Runnable>(1))
+        def surface = new SlackSocketModeMessagingSurface([channel: 'C123', maxEventTextChars: 4000],
+            null, null, callbacks, null, { live.get() })
+        surface.@handler = { MessagingEvent ignored ->
+            entered.countDown()
+            release.await()
+        } as java.util.function.Consumer<MessagingEvent>
+        surface.@connected = true
+
+        expect: 'one active callback and one queued callback fill the bounded executor'
+        surface.enqueue(new MessagingEvent(eventId: 'Ev-1', text: 'one'))
+        entered.await(2, TimeUnit.SECONDS)
+        surface.enqueue(new MessagingEvent(eventId: 'Ev-2', text: 'two'))
+        !surface.enqueue(new MessagingEvent(eventId: 'Ev-3', text: 'three'))
+
+        and: 'the connection probe initially observes readiness'
+        surface.connected
+
+        when: 'the live connection disconnects'
+        live.set(false)
+
+        then:
+        !surface.connected
+
+        when: 'the live connection reconnects'
+        live.set(true)
+
+        then:
+        surface.connected
+
+        cleanup:
+        release.countDown()
+        surface?.close()
+    }
+
+    def 'accepted Slack callback retries a released handler failure internally'() {
+        given:
+        def attempts = new java.util.concurrent.atomic.AtomicInteger()
+        def recovered = new CountDownLatch(1)
+        def callbacks = Executors.newSingleThreadExecutor()
+        def surface = new SlackSocketModeMessagingSurface([channel: 'C123', maxEventTextChars: 4000],
+            null, null, callbacks)
+        surface.@handler = { MessagingEvent ignored ->
+            if (attempts.incrementAndGet() == 1) throw new IOException('injected callback failure')
+            recovered.countDown()
+        } as java.util.function.Consumer<MessagingEvent>
+
+        expect:
+        surface.enqueue(new MessagingEvent(eventId: 'Ev-retry', text: 'status'))
+        recovered.await(2, TimeUnit.SECONDS)
+        attempts.get() == 2
+
+        cleanup:
+        surface?.close()
     }
 
     def 'daemon configuration rejects malformed schedules regex and missing Socket Mode references'() {

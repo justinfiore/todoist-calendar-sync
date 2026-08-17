@@ -197,6 +197,10 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             throw new CalDavGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'INTERRUPTED',
                 "CalDAV ${method} interrupted for ${endpoint.name}", e)
         } catch (CalDavGatewayException e) {
+            if (isMutation(method) && e.classification == 'CONTENT') {
+                throw new CalDavGatewayException('AMBIGUOUS_WRITE',
+                    "CalDAV ${method} response could not be consumed after the mutation was sent", e)
+            }
             throw e
         } catch (Exception e) {
             throw new CalDavGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'TRANSPORT',

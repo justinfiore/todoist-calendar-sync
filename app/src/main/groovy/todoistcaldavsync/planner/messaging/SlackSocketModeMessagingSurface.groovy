@@ -2,6 +2,7 @@ package todoistcaldavsync.planner.messaging
 
 import com.slack.api.bolt.App
 import com.slack.api.bolt.AppConfig
+import com.slack.api.bolt.response.Response
 import com.slack.api.model.event.AppMentionEvent
 import com.slack.api.model.event.MessageEvent
 import com.slack.api.socket_mode.SocketModeClient
@@ -32,11 +33,13 @@ import java.util.function.Consumer
 
 /** Slack Socket Mode inbound events plus channel/thread Web API delivery. */
 final class SlackSocketModeMessagingSurface implements MessagingSurface {
+    private static enum Admission { ACCEPTED, INVALID, BUSY }
     private final Map config
     private final Closure<String> envLookup
     private final Closure<Map> apiTransport
     private final ExecutorService callbacks
     private final DeliveryLedger deliveryLedger
+    private final Closure<Boolean> connectionProbe
     private volatile Consumer<MessagingEvent> handler
     private volatile boolean connected
     private volatile SocketModeApp socketModeApp
@@ -47,11 +50,13 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
                                     Closure<String> envLookup = { String name -> System.getenv(name) },
                                     Closure<Map> apiTransport = null,
                                     ExecutorService callbackExecutor = null,
-                                    DeliveryLedger deliveryLedger = null) {
+                                    DeliveryLedger deliveryLedger = null,
+                                    Closure<Boolean> connectionProbe = null) {
         this.config = Collections.unmodifiableMap(new LinkedHashMap(config ?: [:]))
         this.envLookup = envLookup ?: ({ String name -> System.getenv(name) })
         this.apiTransport = apiTransport
         this.deliveryLedger = deliveryLedger
+        this.connectionProbe = connectionProbe
         int queueCapacity = (config?.eventQueueCapacity ?: 100) as int
         this.callbacks = callbackExecutor ?: new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
             new ArrayBlockingQueue<Runnable>(queueCapacity), { Runnable r ->
@@ -86,26 +91,31 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
         String command = config.command?.toString() ?: '/smartplanner'
         app.command(command) { req, ctx ->
             def p = req.payload
-            enqueue(new MessagingEvent(
+            Admission admission = admit(new MessagingEvent(
                 eventId: firstNonblank(p.triggerId, "command:${p.channelId}:${p.userId}:${System.nanoTime()}"),
                 type: 'command', actorId: p.userId, channelId: p.channelId,
                 messageTs: null, threadTs: null, text: p.text ?: '', bot: false))
-            return ctx.ack("${config.appName ?: 'SmartPlanner'} accepted the request.")
+            String appName = config.appName ?: 'SmartPlanner'
+            return ctx.ack(admission == Admission.ACCEPTED
+                ? "${appName} accepted the request."
+                : admission == Admission.INVALID
+                    ? "${appName} rejected the request because it exceeds the configured event-size limit."
+                    : "${appName} is busy and did not accept the request; retry shortly.")
         }
         app.event(AppMentionEvent) { req, ctx ->
             AppMentionEvent e = req.event
-            enqueue(new MessagingEvent(eventId: req.payload?.eventId ?: req.context?.requestId ?: "mention:${e.channel}:${e.ts}",
+            Admission admission = admit(new MessagingEvent(eventId: req.payload?.eventId ?: req.context?.requestId ?: "mention:${e.channel}:${e.ts}",
                 type: 'app_mention', actorId: e.user, channelId: e.channel,
                 messageTs: e.ts, threadTs: e.threadTs, text: stripLeadingMention(e.text), bot: false))
-            return ctx.ack()
+            return admission == Admission.BUSY ? busyResponse() : ctx.ack()
         }
         app.event(MessageEvent) { req, ctx ->
             MessageEvent e = req.event
-            enqueue(new MessagingEvent(eventId: req.payload?.eventId ?: req.context?.requestId ?: "message:${e.channel}:${e.ts}",
+            Admission admission = admit(new MessagingEvent(eventId: req.payload?.eventId ?: req.context?.requestId ?: "message:${e.channel}:${e.ts}",
                 type: 'thread_reply', actorId: e.user, channelId: e.channel,
                 messageTs: e.ts, threadTs: e.threadTs, text: e.text ?: '',
                 bot: e.botId != null || e.subtype == 'bot_message'))
-            return ctx.ack()
+            return admission == Admission.BUSY ? busyResponse() : ctx.ack()
         }
         this.socketModeApp = new SocketModeApp(appToken, Backend.JavaWebSocket, app)
         this.socketModeApp.startAsync()
@@ -150,7 +160,21 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
         setWorkingStatus(channelId, threadTs, '', [])
     }
 
-    @Override boolean isConnected() { connected }
+    @Override
+    boolean isConnected() {
+        if (!connected) return false
+        if (connectionProbe != null) {
+            try { return connectionProbe.call() == true }
+            catch (Throwable ignored) { return false }
+        }
+        SocketModeApp app = socketModeApp
+        if (app == null) return true // injected outbound-only test seam
+        try {
+            return !app.isClientStopped() && app.client != null && app.client.verifyConnection()
+        } catch (Throwable ignored) {
+            return false
+        }
+    }
 
     @Override
     synchronized void close() {
@@ -163,21 +187,43 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
         try { callbacks.awaitTermination(5, TimeUnit.SECONDS) } catch (InterruptedException e) { Thread.currentThread().interrupt() }
     }
 
-    private void enqueue(MessagingEvent event) {
-        if (event == null) return
+    boolean enqueue(MessagingEvent event) {
+        admit(event) == Admission.ACCEPTED
+    }
+
+    private Admission admit(MessagingEvent event) {
+        if (event == null) return Admission.INVALID
         int maxChars = (config.maxEventTextChars ?: 4000) as int
         if ((event.text ?: '').length() > maxChars) {
             System.err.println("SmartPlanner ignored oversized Slack event ${event.eventId ?: 'unknown'}")
-            return
+            return Admission.INVALID
         }
         try {
             callbacks.submit {
-                try { handler?.accept(event) }
-                catch (Throwable t) { System.err.println("SmartPlanner Slack event failed: ${t.class.simpleName}: ${t.message}") }
+                for (int attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        handler?.accept(event)
+                        return
+                    } catch (Throwable t) {
+                        System.err.println("SmartPlanner Slack event attempt ${attempt} failed: ${t.class.simpleName}: ${t.message}")
+                        if (attempt == 3) return
+                        try { Thread.sleep(100L * attempt) }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt()
+                            return
+                        }
+                    }
+                }
             }
+            return Admission.ACCEPTED
         } catch (java.util.concurrent.RejectedExecutionException ignored) {
             System.err.println("SmartPlanner Slack event queue is full; event ${event.eventId ?: 'unknown'} was not accepted")
+            return Admission.BUSY
         }
+    }
+
+    private static Response busyResponse() {
+        Response.builder().statusCode(503).body('SmartPlanner callback queue is full; retry this event.').build()
     }
 
     private DeliveryReceipt durableSend(Message message) {
@@ -289,7 +335,7 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
     }
 
     private void requireConnected() {
-        if (!connected || outbound == null) throw new IllegalStateException('Slack Socket Mode surface is not connected')
+        if (!isConnected() || outbound == null) throw new IllegalStateException('Slack Socket Mode surface is not connected')
     }
 
     private static String stripLeadingMention(String text) {

@@ -93,6 +93,20 @@ class ProductionHttpGatewaysWireMockSpec extends Specification {
         def oversized = thrown(TodoistRestGateway.TodoistGatewayException)
         oversized.classification == 'CONTENT'
 
+        when: 'a committed POST returns a response larger than the configured bound'
+        server.resetAll()
+        server.stubFor(post(urlEqualTo('/api/v1/tasks/t1'))
+            .willReturn(aResponse().withStatus(200).withBody('x' * 4096)))
+        def boundedWrite = new TodoistRestGateway(baseUrl: "http://localhost:${server.port()}/api/v1",
+            tokenOverride: 'token', allowInsecureHttp: true, includeProjectNames: false, maxResponseBytes: 128)
+        boundedWrite.updateTaskDue('t1', '2026-08-14T14:00:00Z')
+
+        then:
+        def ambiguousOversized = thrown(TodoistRestGateway.TodoistGatewayException)
+        ambiguousOversized.classification == 'AMBIGUOUS_WRITE'
+        ambiguousOversized.cause.classification == 'CONTENT'
+        server.verify(1, postRequestedFor(urlEqualTo('/api/v1/tasks/t1')))
+
         when:
         server.resetAll()
         server.stubFor(post(urlEqualTo('/api/v1/tasks/t1'))
@@ -234,6 +248,24 @@ END:VCALENDAR
         def oversized = thrown(CalDavHttpGateway.CalDavGatewayException)
         oversized.classification == 'CONTENT'
 
+        when: 'a committed PUT returns a response larger than the configured bound'
+        server.resetAll()
+        server.stubFor(put(urlPathMatching('/cal/work/planner-.*\\.ics'))
+            .willReturn(aResponse().withStatus(201).withBody('x' * 4096)))
+        def boundedWrite = new CalDavHttpGateway(calendars: [[name: 'Work',
+            url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
+            managedCalendarName: 'Work', allowInsecureHttp: true, maxResponseBytes: 128)
+        def oversizedOwned = CalendarEvent.builder().id('new').uid(ManagedEventIds.uidForBlock('block-oversized'))
+            .title('Scheduled work').description(ManagedEventIds.buildDescription('block-oversized', 'plan-1'))
+            .calendarName('Work').start(Instant.parse('2026-08-14T13:00:00Z'))
+            .end(Instant.parse('2026-08-14T13:30:00Z')).build()
+        boundedWrite.upsertEvent(oversizedOwned)
+
+        then:
+        def ambiguousOversizedPut = thrown(CalDavHttpGateway.CalDavGatewayException)
+        ambiguousOversizedPut.classification == 'AMBIGUOUS_WRITE'
+        ambiguousOversizedPut.cause.classification == 'CONTENT'
+
         when:
         server.resetAll()
         server.stubFor(put(urlPathMatching('/cal/work/planner-.*\\.ics'))
@@ -263,6 +295,23 @@ END:VCALENDAR
         then:
         def ambiguousDelete = thrown(CalDavHttpGateway.CalDavGatewayException)
         ambiguousDelete.classification == 'AMBIGUOUS_WRITE'
+        server.verify(1, deleteRequestedFor(urlEqualTo('/cal/work/owned.ics')))
+
+        when: 'a DELETE commits but its oversized response cannot be consumed'
+        server.resetAll()
+        stubUidReport('/cal/work', '/cal/work/owned.ics')
+        server.stubFor(get(urlEqualTo('/cal/work/owned.ics')).willReturn(okIcs(fixture('caldav-owned-event.ics'))))
+        server.stubFor(delete(urlEqualTo('/cal/work/owned.ics'))
+            .willReturn(aResponse().withStatus(200).withBody('x' * 4096)))
+        def boundedDelete = new CalDavHttpGateway(calendars: [[name: 'Work',
+            url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
+            managedCalendarName: 'Work', allowInsecureHttp: true, maxResponseBytes: 1024)
+        boundedDelete.deleteOwnedEvent('planner-owned@todoist-planner.local', 'block-1')
+
+        then:
+        def ambiguousOversizedDelete = thrown(CalDavHttpGateway.CalDavGatewayException)
+        ambiguousOversizedDelete.classification == 'AMBIGUOUS_WRITE'
+        ambiguousOversizedDelete.cause.classification == 'CONTENT'
         server.verify(1, deleteRequestedFor(urlEqualTo('/cal/work/owned.ics')))
     }
 

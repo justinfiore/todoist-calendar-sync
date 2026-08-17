@@ -37,7 +37,8 @@ final class SmartPlannerDaemon implements AutoCloseable {
     SmartPlannerDaemon(ProductionPlannerOrchestrator orchestrator,
                        MessagingSurface surface,
                        Supplier<Instant> clock = { Instant.now() },
-                       ScheduledExecutorService scheduler = null) {
+                       ScheduledExecutorService scheduler = null,
+                       ConversationStore conversationStore = null) {
         if (orchestrator == null || surface == null) throw new IllegalArgumentException('orchestrator and messaging surface are required')
         this.orchestrator = orchestrator
         this.config = orchestrator.integrationConfig
@@ -49,7 +50,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
             t.daemon = false
             t
         }
-        this.conversations = new ConversationStore(config.deliveriesDir.resolve('conversations'))
+        this.conversations = conversationStore ?: new ConversationStore(config.deliveriesDir.resolve('conversations'))
         this.regexFeedback = new RegexFeedbackEngine(config.feedbackRules())
         this.allowedActors = Collections.unmodifiableSet(config.feedbackActors().collect { it.toString() } as Set)
         config.planningRuns().each {
@@ -66,6 +67,12 @@ final class SmartPlannerDaemon implements AutoCloseable {
                 orchestrator.verifyConnectivity(clock.get())
             }
             surface.start(this.&handleEvent)
+            conversations.recoverableEventPayloads().each { Map payload ->
+                try { handleEvent(new MessagingEvent(payload)) }
+                catch (Throwable failure) {
+                    System.err.println("SmartPlanner deferred recovered event ${payload.eventId ?: 'unknown'}: ${safeError(failure)}")
+                }
+            }
             config.planningRuns().each { Map run ->
                 long initialMillis = run.runOnStartup == true ? 0L : (run.initialDelay as Duration).toMillis()
                 long intervalMillis = (run.interval as Duration).toMillis()
@@ -112,19 +119,37 @@ final class SmartPlannerDaemon implements AutoCloseable {
 
     void handleEvent(MessagingEvent event) {
         if (!started.get() || event == null || event.bot || !event.channelId || event.channelId != config.slack.channel) return
-        if (!conversations.claimEvent(event.eventId, event.channelId, event.messageTs, clock.get())) return
-        if (!allowedActors.contains(event.actorId)) {
-            if (event.rootThreadTs()) safeReply(event.channelId, event.rootThreadTs(), 'You are not authorized to control SmartPlanner.', "unauthorized:${event.eventId}")
-            return
+        Map payload = [eventId: event.eventId, type: event.type, actorId: event.actorId,
+            channelId: event.channelId, messageTs: event.messageTs, threadTs: event.threadTs,
+            text: event.text, bot: event.bot]
+        if (!conversations.claimEvent(event.eventId, event.channelId, event.messageTs, clock.get(), payload)) return
+        boolean completed = false
+        try {
+            if (!allowedActors.contains(event.actorId)) {
+                if (event.rootThreadTs()) safeReply(event.channelId, event.rootThreadTs(), 'You are not authorized to control SmartPlanner.', "unauthorized:${event.eventId}")
+                completed = true
+                return
+            }
+            if (event.isCommand()) {
+                handleCommand(event)
+                completed = true
+                return
+            }
+            if (!event.threadTs) {
+                completed = true
+                return // feedback is thread-only
+            }
+            ConversationRecord conversation = conversations.find(event.channelId, event.threadTs)
+            if (conversation == null || conversation.status != 'ACTIVE') {
+                completed = true
+                return
+            }
+            handleFeedback(event, conversation)
+            completed = true
+        } finally {
+            if (completed) conversations.completeEvent(event.eventId, clock.get())
+            else conversations.releaseEvent(event.eventId)
         }
-        if (event.isCommand()) {
-            handleCommand(event)
-            return
-        }
-        if (!event.threadTs) return // feedback is thread-only
-        ConversationRecord conversation = conversations.find(event.channelId, event.threadTs)
-        if (conversation == null || conversation.status != 'ACTIVE') return
-        handleFeedback(event, conversation)
     }
 
     private void handleCommand(MessagingEvent event) {
@@ -177,6 +202,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
             }
         } catch (Throwable t) {
             safeReply(event.channelId, requestThread, "Request failed safely: ${safeError(t)}", "command-error:${event.eventId}")
+            if (!(t instanceof IllegalArgumentException)) throw t
         } finally {
             if (requestThread) safeClearStatus(event.channelId, requestThread)
         }
@@ -286,6 +312,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
             }
         } catch (Throwable t) {
             safeReply(event.channelId, event.threadTs, "Feedback failed safely: ${safeError(t)}", "feedback-error:${event.eventId}")
+            if (!(t instanceof IllegalArgumentException)) throw t
         } finally {
             safeClearStatus(event.channelId, event.threadTs)
         }
@@ -298,6 +325,9 @@ final class SmartPlannerDaemon implements AutoCloseable {
         Plan plan = orchestrator.preview(now, now.plus(horizon), prior.planId, overrides)
         Proposal proposal = Proposal.fromPlan(plan)
         Message message = renderer().renderProposal(plan, now)
+        // Fail closed before exposing a new human-visible identity. If delivery or
+        // final persistence fails, the old plan is no longer approvable.
+        conversations.save(prior.withStatus('PUBLISHING_REVISION', now))
         PublishedMessage reply = safeReply(event.channelId, event.threadTs,
             "*Revised proposal — iteration ${prior.iteration + 1}*\n${message.body}",
             "replan:${event.eventId}:${proposal.id}")

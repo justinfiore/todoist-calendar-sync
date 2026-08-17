@@ -67,7 +67,9 @@ the scheduler remains alive. `shutdown_timeout` bounds graceful SIGTERM/SIGINT d
 
 A proposal is a channel-root message. Its channel/thread, run name, exact plan id/version/hash,
 proposal id, iteration lineage, status, and temporary overrides are atomically stored under
-`deliveries_dir/conversations`. Inbound event ids are stored there for restart-safe deduplication.
+`deliveries_dir/conversations`. Inbound event ids and recoverable payloads use durable
+`PENDING`/`PROCESSING`/`COMPLETED` state for restart-safe retry and deduplication; payload content is
+removed after completion.
 Feedback is accepted only from `allowed_actors` in the matching proposal thread.
 
 `feedback.rules` is an ordered list of unique names, Java regex patterns, actions, and optional

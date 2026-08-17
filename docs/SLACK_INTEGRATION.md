@@ -2,7 +2,9 @@
 
 SmartPlanner uses Slack Socket Mode for its long-running Messaging Surface. Socket Mode opens an
 outbound WebSocket from SmartPlanner to Slack, so the operator does **not** expose a public inbound
-port or Request URL. Provider callbacks are acknowledged immediately and queued for daemon work.
+port or Request URL. Provider callbacks are acknowledged only after bounded local queue admission.
+When the queue is saturated, event callbacks return non-success so Socket Mode can redeliver; slash
+commands receive an explicit busy response and can be retried by the operator.
 
 Authoritative references:
 
@@ -133,8 +135,11 @@ unauthorized feedback, or LLM failure is contained and the scheduler remains ali
 SIGTERM/SIGINT stops new work, waits up to `shutdown_timeout`, closes Socket Mode, and exits.
 
 Conversation correlation and event deduplication are atomically persisted below the configured
-`deliveries_dir`; restart restores proposal threads and exact plan identity. Back up all four state
-directories together.
+`deliveries_dir`. Inbound events move through durable `PENDING`/`PROCESSING`/`COMPLETED` states,
+failed callback work is retried locally, and interrupted payloads are recovered after restart. Revised
+proposals block the prior plan identity before the new Slack message is exposed. Socket readiness is
+reported from the live SDK connection probe rather than process-start state. Restart restores proposal
+threads and exact plan identity. Back up all four state directories together.
 
 ## Acceptance test
 

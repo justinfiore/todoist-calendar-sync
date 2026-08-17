@@ -169,6 +169,10 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
             throw new TodoistGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'INTERRUPTED',
                 "Todoist ${method} request interrupted", e)
         } catch (TodoistGatewayException e) {
+            if (isMutation(method) && e.classification == 'CONTENT') {
+                throw new TodoistGatewayException('AMBIGUOUS_WRITE',
+                    "Todoist ${method} response could not be consumed after the mutation was sent", e)
+            }
             throw e
         } catch (Exception e) {
             throw new TodoistGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'TRANSPORT',

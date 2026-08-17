@@ -18,10 +18,14 @@ final class ConversationStore {
     static final int SCHEMA_VERSION = 1
     private static final ConcurrentHashMap<String, Object> PROCESS_LOCKS = new ConcurrentHashMap<>()
     private final Path directory
+    private final String eventOwnerId
+    private final Closure beforeWrite
 
-    ConversationStore(Path directory) {
+    ConversationStore(Path directory, Closure beforeWrite = null, String eventOwnerId = UUID.randomUUID().toString()) {
         if (directory == null) throw new IllegalArgumentException('conversation directory is required')
         this.directory = directory.toAbsolutePath().normalize()
+        this.beforeWrite = beforeWrite
+        this.eventOwnerId = eventOwnerId
     }
 
     ConversationRecord save(ConversationRecord record) {
@@ -44,19 +48,71 @@ final class ConversationStore {
         }
     }
 
-    boolean claimEvent(String eventId, String channelId, String messageTs, Instant at = Instant.now()) {
+    boolean claimEvent(String eventId, String channelId, String messageTs, Instant at = Instant.now(),
+                       Map payload = [:]) {
         String id = eventId ?: (channelId && messageTs ? "${channelId}:${messageTs}" : null)
         if (!id) return false
         withLock {
             Map root = loadUnlocked()
             Map events = root.events instanceof Map ? new LinkedHashMap(root.events as Map) : [:]
-            if (events.containsKey(id)) return false
-            events[id] = [at: (at ?: Instant.now()).toString(), channelId: channelId, messageTs: messageTs]
+            Map existing = events[id] instanceof Map ? events[id] as Map : null
+            String status = existing?.status?.toString() ?: (existing == null ? null : 'COMPLETED')
+            if (status == 'COMPLETED' || (status == 'PROCESSING' && existing.ownerId == eventOwnerId)) return false
+            // A PROCESSING event owned by another store instance is an interrupted
+            // prior-daemon claim and is intentionally reclaimable after restart.
+            Map retainedPayload = payload ? new LinkedHashMap(payload) :
+                (existing?.payload instanceof Map ? new LinkedHashMap(existing.payload as Map) : [:])
+            events[id] = [status: 'PROCESSING', ownerId: eventOwnerId,
+                claimedAt: (at ?: Instant.now()).toString(), channelId: channelId, messageTs: messageTs,
+                payload: retainedPayload]
             // Bound state growth while retaining deterministic newest insertion order.
             while (events.size() > 10_000) events.remove(events.keySet().iterator().next())
             root.events = events
             writeUnlocked(root)
             true
+        }
+    }
+
+    void completeEvent(String eventId, Instant at = Instant.now()) {
+        updateClaim(eventId, true, at)
+    }
+
+    void releaseEvent(String eventId) {
+        updateClaim(eventId, false, null)
+    }
+
+    private void updateClaim(String eventId, boolean completed, Instant at) {
+        if (!eventId) return
+        withLock {
+            Map root = loadUnlocked()
+            Map events = root.events instanceof Map ? new LinkedHashMap(root.events as Map) : [:]
+            Map existing = events[eventId] instanceof Map ? events[eventId] as Map : null
+            if (existing?.status == 'PROCESSING' && existing.ownerId == eventOwnerId) {
+                if (completed) {
+                    Map terminal = new LinkedHashMap(existing)
+                    terminal.remove('payload')
+                    terminal.remove('ownerId')
+                    events[eventId] = terminal + [status: 'COMPLETED', completedAt: (at ?: Instant.now()).toString()]
+                } else {
+                    Map pending = new LinkedHashMap(existing)
+                    pending.remove('ownerId')
+                    events[eventId] = pending + [status: 'PENDING', failedAt: Instant.now().toString()]
+                }
+                root.events = events
+                writeUnlocked(root)
+            }
+            null
+        }
+    }
+
+    List<Map> recoverableEventPayloads() {
+        withLock {
+            Map root = loadUnlocked()
+            Map events = root.events instanceof Map ? root.events as Map : [:]
+            events.values().findAll { value ->
+                value instanceof Map && value.payload instanceof Map &&
+                    (value.status == 'PENDING' || (value.status == 'PROCESSING' && value.ownerId != eventOwnerId))
+            }.collect { new LinkedHashMap((it as Map).payload as Map) }
         }
     }
 
@@ -94,6 +150,7 @@ final class ConversationStore {
             Files.writeString(temp, JsonOutput.prettyPrint(JsonOutput.toJson(root)), StandardCharsets.UTF_8,
                 StandardOpenOption.TRUNCATE_EXISTING)
             try (def ch = Files.newByteChannel(temp, StandardOpenOption.WRITE)) { ch.force(true) }
+            beforeWrite?.call(root)
             try { Files.move(temp, statePath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
             catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
                 Files.move(temp, statePath(), StandardCopyOption.REPLACE_EXISTING)
