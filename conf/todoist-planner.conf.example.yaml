@@ -8,11 +8,93 @@ planner:
   timezone: America/New_York
   output_calendar: Todoist Planned
 
-  planning_runs:
-    - name: daily
-      horizon: P3D
-      schedule: "0 6 * * *"
-      create_concrete_blocks_until: P3D
+  # Phase 7 production composition. Endpoints, credential environment-variable
+  # names, and every durable state path are explicit. Relative paths resolve
+  # against this configuration file's directory.
+  integration:
+    todoist:
+      base_url: https://api.todoist.com/api/v1
+      token_env: TODOIST_ACCESS_TOKEN
+      timeout: PT10S
+      max_pages: 100
+      max_response_bytes: 1048576
+      include_project_names: true
+    caldav:
+      timeout: PT15S
+      max_response_bytes: 2097152
+      calendars:
+        - name: Todoist Planned
+          url: https://caldav.example.com/calendars/me/planned/
+          auth:
+            type: basic               # none | basic | bearer
+            username: me@example.com
+            password_env: CALDAV_PLANNED_PASSWORD
+        - name: Work
+          url: https://caldav.example.com/calendars/me/work/
+          auth:
+            type: bearer
+            token_env: CALDAV_WORK_TOKEN
+    weather:
+      base_url: https://api.open-meteo.com/v1/forecast
+      timeout: PT10S
+      max_response_bytes: 1048576
+    feedback:
+      # Empty/omitted means deny all. Exact Slack user ids only.
+      allowed_actors: []
+      # Ordered Java regular expressions. First full-string match wins.
+      rules:
+        - name: approve
+          pattern: "(?i)^\\s*(yes|approve|looks good)\\s*$"
+          action: approve
+        - name: reject
+          pattern: "(?i)^\\s*(no|reject)(?:\\s+(?<reason>.*))?$"
+          action: reject
+        - name: acknowledge
+          pattern: "(?i)^\\s*(ok|ack|acknowledged)\\s*$"
+          action: acknowledge
+        - name: replan
+          pattern: "(?i)^\\s*(replan|try again)(?:\\s+(?<feedback>.*))?$"
+          action: replan
+          # Optional deterministic conversation-scoped overrides:
+          # overrides:
+          #   horizon: P3D
+          #   priority_overrides: {"todoist-task-id": 4}
+          #   exclude_task_ids: ["todoist-task-id"]
+          #   freeze_task_ids: ["todoist-task-id"]
+    state:
+      plans_dir: ../state/planner/plans
+      applications_dir: ../state/planner/applications
+      decisions_dir: ../state/planner/decisions
+      deliveries_dir: ../state/planner/deliveries
+    # Optional explicit stability baseline; otherwise latest stored plan is used.
+    # previous_plan_id: plan-0123456789abcdef
+
+  # Primary SmartPlanner production lifecycle. Keep disabled for the initial
+  # read-only preview; enable only after isolated Todoist/CalDAV/Slack validation.
+  daemon:
+    enabled: false
+    startup_connectivity_check: true
+    shutdown_timeout: PT20S
+    retry:
+      initial_delay: PT5S
+      max_delay: PT5M
+      multiplier: 2
+    planning_runs:
+      - name: daily
+        horizon: P3D
+        interval: PT6H
+        initial_delay: PT0S
+        run_on_startup: true
+      - name: weekly
+        horizon: P7D
+        interval: P1D
+        initial_delay: PT5M
+        run_on_startup: true
+      - name: medium
+        horizon: P14D
+        interval: P7D
+        initial_delay: PT10M
+        run_on_startup: true
 
   stability:
     freeze_within: PT48H
@@ -112,52 +194,24 @@ planner:
     #       daylight: true
     #       forecast_confidence_min: 0.70
 
-  # Optional Slack delivery (Phase 5). Disabled by default — planning is unaffected.
-  # Secrets are env var *names* only; never put tokens in this file or persisted state.
-  #
-  # Library-only integration (Phase 5): MessagingService + FeedbackParser are library APIs.
-  # There is no CLI/daemon wiring in Phase 5 — host applications construct these services
-  # and drive deliverDue / handleFeedback / applyDecision explicitly.
-  #
-  # Authorization (required for production feedback):
-  # FeedbackParser is fail-closed. Default / null authorization predicates deny ALL actors
-  # (including help/status). Inject an explicit allowlist or policy, e.g.:
-  #   new FeedbackParser(decisionStore, FeedbackParser.allowlist(['alice', 'bob']), clock)
-  # Unknown, null, and blank actors are always denied. No command bypasses authorization.
-  #
-  # Semantics:
-  # - timezone: human 12h times + local day/risk/schedule boundaries (falls back to planner.timezone).
-  # - schedules[].horizon: drives summary range/aggregation (not hardcoded 1/7/14 when set).
-  # - schedules[].kind: normalized at load via the same canonical message-kind normalizer as
-  #   enabled_kinds (daily | weekly | medium | risk | proposal aliases → daily_summary |
-  #   weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal). Case/whitespace
-  #   normalized. Unknown, blank, and null kinds fail config validation with index and value
-  #   (never deferred to render). Duplicate delivery after normalization (same canonical
-  #   kind+schedule+horizon+window+destination) is a config error. Stored/due intents use
-  #   canonical kinds only so daily→risk behavior and renderKind never see aliases.
-  # - enabled_kinds: when explicitly present, exclusive allowlist of message kinds
-  #   (daily_summary | weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal).
-  #   Aliases/case normalize deterministically (e.g. daily, risk, WEEKLY_SUMMARY). Unknown, blank,
-  #   and duplicate-after-normalization entries are config errors. Explicit [] disables all kinds.
-  #   Omitted kinds are false even if legacy per-kind booleans default true. An explicit
-  #   per-kind true boolean for a kind omitted from enabled_kinds is a config conflict error.
-  #   When enabled_kinds is absent, legacy booleans below apply (default true each).
-  # - capacity_risk_alerts: when enabled_kinds is absent, enables the risk kind (default true).
-  #   Does NOT bypass schedules. Risk sends only when an explicit capacity_risk_alert schedule
-  #   is due, or when a due daily_summary intent triggers the documented daily-risk path and
-  #   risk is enabled via allowlist or capacity_risk_alerts. No due intent => zero risk sends.
-  # - risk_deadline_days: include unscheduled risk tasks whose deadline is overdue or within N
-  #   local days of now; tasks without deadline are excluded.
-  # - Delivery ledger atomically claims PENDING (tryClaimPending) before provider send under one
-  #   store lock; concurrent same-key callers yield exactly one provider send. UNKNOWN after
-  #   provider success + ledger failure (no blind resend). FAILED allows retry re-claim.
+  # SmartPlanner daemon uses Slack Socket Mode: an outbound WebSocket, no public
+  # inbound port. One-shot webhook/chat_api delivery remains available for diagnostics.
+  # Secrets are env var *names* only; never put token values in YAML or state.
   messaging:
     enabled: false
     provider: slack
-    # destination: "#todoist-planner"   # channel name or channel id (required when enabled)
-    # slack_mode: webhook               # webhook | chat_api
-    # webhook_url_env: SLACK_WEBHOOK_URL
-    # bot_token_env: SLACK_BOT_TOKEN
+    app_name: SmartPlanner                # operator label; edit the manifest to rename the registered app
+    command: /smartplanner
+    # destination: C0123456789            # channel ID required for planner-daemon
+    # slack_mode: socket_mode             # socket_mode | webhook | chat_api
+    # bot_token_env: SLACK_BOT_TOKEN      # xoxb-* value lives only in this environment variable
+    # app_token_env: SLACK_APP_TOKEN      # xapp-* with connections:write
+    working_status: "is working on your request…"
+    max_event_text_chars: 4000            # 1..40000; oversized inbound events are ignored
+    event_queue_capacity: 100             # 1..10000; bounds callback-to-worker buffering
+    loading_messages:
+      - "is planning…"
+      - "is checking Todoist and calendar capacity…"
     # Prefer exclusive allowlist when enabling a subset of kinds:
     # enabled_kinds: [daily_summary]    # only daily; weekly/medium/risk/proposal off
     # enabled_kinds: []                 # explicit disable-all kinds (messaging may still be enabled)

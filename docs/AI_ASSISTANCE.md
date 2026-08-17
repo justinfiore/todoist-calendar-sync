@@ -1,6 +1,6 @@
-# Phase 6: bounded AI assistance
+# AI Assistance
 
-Phase 6 adds optional, provider-neutral suggestions without adding autonomous planner authority.
+AI Assistance adds optional, provider-neutral suggestions without adding autonomous SmartPlanner authority.
 AI is disabled by default. The deterministic scheduler, plan applier, messaging service, structured
 feedback parser, and baseline CLI neither construct nor invoke an LLM gateway.
 
@@ -55,7 +55,7 @@ Every load and authorization verifies signatures with a constant-time comparison
 duplicate keys, missing/invalid signatures, tampering, and records copied to another store fail closed.
 
 Persistent event rules, config changes, task metadata, or classification suggestions produce only a
-`CONFIRMED_POLICY_SUGGESTION` audit record. Phase 6 never writes policy/config from that record.
+`CONFIRMED_POLICY_SUGGESTION` audit record. AI Assistance never writes policy/config from that record.
 
 A valid, unexpired temporary `duration_minutes` or `context_label` suggestion produces only a persisted
 decision ID after a new exact confirmation. `ConfirmedOverrideApplier` reloads that decision from the
@@ -67,10 +67,10 @@ requires `now < expiresAt`, and its complete range must remain within both the c
 expiry. It never trusts a caller-created confirmation object or mutates the source Plan/config/tasks.
 The normal deterministic scheduler still enforces deadlines and capacity.
 
-Natural-language feedback follows two gates. The request contains the exact expected Phase 5 proposal,
+Natural-language feedback follows two gates. The request contains the exact expected structured-feedback proposal,
 plan ID/version/hash, and allowlisted actions. The model cannot supply a command; the server constructs
-the canonical Phase 5 command from validated expected values and a redacted reason. Explicit confirmation returns that structured command
-string; the host must separately choose to pass it to Phase 5 `FeedbackParser`. Interpretation and
+the canonical feedback command from validated expected values and a redacted reason. Explicit confirmation returns that structured command
+string; the host must separately choose to pass it to `FeedbackParser`. Interpretation and
 confirmation do not call `FeedbackParser`, `DecisionStore`, or `PlanApplier`.
 
 ## Provider composition
@@ -84,5 +84,5 @@ Decision-store composition separately resolves its signing key outside `PlannerC
 directly to `AiSuggestionDecisionStore`. There is no default durable key and an unconfigured store cannot
 record or authorize a confirmation.
 
-The Phase 6 trial is deliberately a non-sensitive fixture trial covering all four schemas. No live LLM
-or network trial occurred, and Phase 6 does not provision production secrets or daemon/CLI wiring.
+The AI Assistance trial is deliberately a non-sensitive fixture trial covering all four schemas. No live LLM
+or network trial occurred, and AI Assistance does not provision production secrets or daemon/CLI wiring.

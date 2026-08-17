@@ -1,9 +1,14 @@
 package todoistcaldavsync.planner.apply
 
+import com.github.tomakehurst.wiremock.WireMockServer
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
 import todoistcaldavsync.planner.adapters.ManagedCalendarWriteGateway
+import todoistcaldavsync.planner.adapters.CalendarWriteGateway
+import todoistcaldavsync.planner.adapters.TodoistWriteGateway
+import todoistcaldavsync.planner.adapters.CalDavHttpGateway
+import todoistcaldavsync.planner.adapters.TodoistRestGateway
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.ApplyItemStatus
 import todoistcaldavsync.planner.domain.Approval
@@ -26,6 +31,9 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicReference
+
+import static com.github.tomakehurst.wiremock.client.WireMock.*
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 
 /**
  * Phase 3 apply matrix: managed calendar writes + Todoist due sync with approval gates,
@@ -761,6 +769,122 @@ class PlanApplierSpec extends Specification {
         todoist.dueUpdates.isEmpty()
         def m = stateStore.loadMapping('t1')
         m == null || m.todoistStatus == ApplyItemStatus.PENDING
+    }
+
+    def "ambiguous Todoist write is durably reconciled from live state without resend"() {
+        given:
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)])
+        def approval = approvalFor(plan)
+        int writeCalls = 0
+        TodoistWriteGateway ambiguous = [
+            updateTaskDue: { String taskId, String due ->
+                writeCalls++
+                todoist.updateTaskDue(taskId, due)
+                throw new TodoistRestGateway.TodoistGatewayException('AMBIGUOUS_WRITE', 'response lost')
+            },
+            updateTaskDeadline: { String taskId, String deadline -> throw new UnsupportedOperationException() }
+        ] as TodoistWriteGateway
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(calendar, MANAGED_CAL),
+            calendar, ambiguous, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approval)
+        def second = subject.apply(plan, approval)
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        first.items[0].todoistStatus == ApplyItemStatus.UNKNOWN
+        first.items[0].needsReconciliation()
+        second.overallStatus == ApplyItemStatus.SKIPPED_IDEMPOTENT
+        writeCalls == 1
+        stateStore.loadMapping('t1').todoistApplied()
+    }
+
+    def "ambiguous calendar PUT is reconciled from live owned event without resend"() {
+        given:
+        def start = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b1', 't1', start)])
+        def approval = approvalFor(plan)
+        int writeCalls = 0
+        CalendarWriteGateway ambiguous = [
+            upsertEvent: { CalendarEvent event ->
+                writeCalls++
+                calendar.upsertEvent(event)
+                throw new CalDavHttpGateway.CalDavGatewayException('AMBIGUOUS_WRITE', 'response lost')
+            },
+            deleteOwnedEvent: { String uid, String blockId -> calendar.deleteOwnedEvent(uid, blockId) }
+        ] as CalendarWriteGateway
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(ambiguous, calendar, MANAGED_CAL),
+            calendar, todoist, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approval)
+        def second = subject.apply(plan, approval)
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        first.items[0].calendarStatus == ApplyItemStatus.UNKNOWN
+        second.overallStatus == ApplyItemStatus.APPLIED
+        writeCalls == 1
+        todoist.dueUpdates.size() == 1
+        stateStore.loadMapping('t1').fullyApplied()
+    }
+
+    def "oversized Todoist mutation response persists UNKNOWN and blocks blind resend"() {
+        given:
+        def server = new WireMockServer(options().dynamicPort())
+        server.start()
+        server.stubFor(post(urlEqualTo('/api/v1/tasks/t1'))
+            .willReturn(aResponse().withStatus(200).withBody('x' * 4096)))
+        def gateway = new TodoistRestGateway(baseUrl: "http://localhost:${server.port()}/api/v1",
+            tokenOverride: 'token', allowInsecureHttp: true, maxResponseBytes: 128,
+            includeProjectNames: false)
+        def plan = planWith([singleBlock('b1', 't1', Instant.parse('2026-08-10T14:00:00Z'))])
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(calendar, MANAGED_CAL),
+            calendar, gateway, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approvalFor(plan))
+        def persistedAfterFirst = new ApplicationStateStore(dir).loadMapping('t1')
+        def second = subject.apply(plan, approvalFor(plan))
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        persistedAfterFirst.todoistStatus == ApplyItemStatus.UNKNOWN
+        second.overallStatus == ApplyItemStatus.UNKNOWN
+        server.verify(1, postRequestedFor(urlEqualTo('/api/v1/tasks/t1')))
+
+        cleanup:
+        server?.stop()
+    }
+
+    def "oversized CalDAV PUT response persists UNKNOWN and blocks blind resend"() {
+        given:
+        def server = new WireMockServer(options().dynamicPort())
+        server.start()
+        server.stubFor(put(urlPathMatching('/cal/work/planner-.*\\.ics'))
+            .willReturn(aResponse().withStatus(201).withBody('x' * 4096)))
+        def gateway = new CalDavHttpGateway(calendars: [[name: MANAGED_CAL,
+            url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
+            managedCalendarName: MANAGED_CAL, allowInsecureHttp: true, maxResponseBytes: 128)
+        def plan = planWith([singleBlock('b1', 't1', Instant.parse('2026-08-10T14:00:00Z'))])
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(gateway, calendar, MANAGED_CAL),
+            calendar, todoist, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approvalFor(plan))
+        def persistedAfterFirst = new ApplicationStateStore(dir).loadMapping('t1')
+        def second = subject.apply(plan, approvalFor(plan))
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        persistedAfterFirst.calendarStatus == ApplyItemStatus.UNKNOWN
+        second.overallStatus == ApplyItemStatus.UNKNOWN
+        server.verify(1, putRequestedFor(urlPathMatching('/cal/work/planner-.*\\.ics')))
+
+        cleanup:
+        server?.stop()
     }
 
     def "failed apply is not skipped as already-applied on retry"() {

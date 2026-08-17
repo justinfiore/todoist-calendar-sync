@@ -1189,8 +1189,8 @@ final class PlannerConfig {
             if (!webhookUrlEnv && !botTokenEnv && !secretEnv) {
                 errors << 'planner.messaging requires webhook_url_env or bot_token_env (secret name, not value)'
             }
-            if (!(slackMode in ['webhook', 'chat_api'] as Set)) {
-                errors << "planner.messaging.slack_mode must be webhook or chat_api, got: ${slackMode}"
+            if (!(slackMode in ['webhook', 'chat_api', 'socket_mode'] as Set)) {
+                errors << "planner.messaging.slack_mode must be webhook, chat_api, or socket_mode, got: ${slackMode}"
             }
         }
         if (enabled && provider && !(provider in ['slack', 'none', 'disabled', 'fixture', 'in_memory'] as Set)) {

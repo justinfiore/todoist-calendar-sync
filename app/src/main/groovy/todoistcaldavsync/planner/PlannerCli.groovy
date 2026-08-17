@@ -11,6 +11,7 @@ import todoistcaldavsync.planner.report.CapacityReportService
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import org.apache.commons.io.output.AppendableWriter
 
 /**
  * Read-only planner CLI. Phase 1 supports --mode capacity-report only.
@@ -29,7 +30,8 @@ class PlannerCli {
      * @return exit code (0 success)
      */
     static int run(String[] args, Appendable out = System.out, Appendable err = System.err) {
-        def cli = new CliBuilder(usage: 'PlannerCli --mode capacity-report --config FILE [options]', stopAtNonOption: false)
+        def cli = new CliBuilder(usage: 'PlannerCli --mode capacity-report --config FILE [options]',
+            stopAtNonOption: false, writer: new PrintWriter(new AppendableWriter(out), true))
         cli.h(longOpt: 'help', 'Show help')
         cli._(longOpt: 'mode', args: 1, argName: 'mode', 'Mode: capacity-report')
         cli._(longOpt: 'format', args: 1, argName: 'format', 'Output format: markdown|json (default markdown)')
@@ -39,19 +41,25 @@ class PlannerCli {
         cli._(longOpt: 'range-start', args: 1, argName: 'instant', 'Range start ISO-8601 instant or date')
         cli._(longOpt: 'range-end', args: 1, argName: 'instant', 'Range end ISO-8601 instant or date (exclusive)')
 
+        // Picocli/Groovy CliAccessor has differed across versions for long-option
+        // aliases. Handle help before validation so both spellings always work.
+        if ((args ?: [] as String[]).any { it == '-h' || it == '--help' }) {
+            cli.usage()
+            return 0
+        }
         def options = cli.parse(args)
         if (!options) {
             return 2
         }
         if (options.h) {
-            cli.usage(out)
+            cli.usage()
             return 0
         }
 
         def mode = options.mode?.toString()
         if (!mode) {
             err.append("Error: --mode is required\n")
-            cli.usage(err)
+            err.append("Usage: PlannerCli --mode capacity-report --config FILE [options]\n")
             return 2
         }
         if (mode != 'capacity-report') {
