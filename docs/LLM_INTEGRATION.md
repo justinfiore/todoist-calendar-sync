@@ -41,8 +41,12 @@ todoist-caldav-sync ... --operation ai-suggest --plan-id ID \
 ```
 
 Allowed types are task suggestions, event-classification suggestions, temporary planning overrides,
-and conversational feedback interpretation, subject to configuration. Output remains a proposal.
-Confirmation/policy workflows are separate AI Assistance APIs; no AI output directly changes a plan,
-calendar, Todoist task, configuration, decision, or Slack message. Test against a mock/approved test
+and conversational feedback interpretation, subject to configuration. In daemon proposal threads,
+unmatched feedback may produce a bounded suggestion that is persisted against the exact current plan
+and expires after 15 minutes. SmartPlanner posts a summary; an allowlisted actor must then use the
+configured deterministic phrase for the same action. Before that confirmation there is no replan,
+decision, Todoist write, or CalDAV write. Stale/expired/mismatched suggestions and unknown or
+out-of-range task overrides are rejected. No AI output directly changes a plan, calendar, Todoist task,
+configuration, or decision. Test against a mock/approved test
 endpoint first and verify redaction, schema rejection, token/body bounds, and unchanged remote/local
 write surfaces.

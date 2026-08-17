@@ -1,0 +1,40 @@
+display_information:
+  name: SmartPlanner
+  description: Capacity-aware Todoist and CalDAV planning assistant
+  background_color: "#2C2D30"
+features:
+  bot_user:
+    display_name: SmartPlanner
+    always_online: true
+  assistant_view:
+    assistant_description: Proposes and iterates capacity-aware plans.
+    suggested_prompts:
+      - title: Plan my day
+        message: plan daily
+      - title: Plan my week
+        message: plan weekly
+  slash_commands:
+    - command: /smartplanner
+      description: Start or inspect SmartPlanner planning runs
+      usage_hint: "plan [run-name] | replan run-name [feedback] | status | help"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - chat:write
+      - commands
+      # Add groups:history only when the configured destination is private.
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      # Add message.groups only when the configured destination is private.
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

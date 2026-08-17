@@ -44,6 +44,9 @@ import java.util.concurrent.TimeUnit
 import groovy.cli.picocli.CliBuilder
 import com.google.api.client.auth.oauth2.Credential;
 import todoistcaldavsync.planner.ProductionPlannerOrchestrator
+import todoistcaldavsync.planner.SmartPlannerDaemon
+import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
+import todoistcaldavsync.planner.state.DeliveryLedger
 import todoistcaldavsync.planner.domain.Approval
 import org.apache.commons.io.output.AppendableWriter
 
@@ -64,7 +67,7 @@ class TodoistCalDavSync {
     static int run(String[] args, Appendable out = System.out, Appendable err = System.err) {
         def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
             writer: new PrintWriter(new AppendableWriter(out), true))
-        cli.setFooter('Operations: legacy-sync (default), capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
+        cli.setFooter('Operations: legacy-sync (default), planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
         cli.h(longOpt: 'help', args: 0, 'Show the help')
@@ -102,7 +105,7 @@ class TodoistCalDavSync {
             log.info('----------------------------------------------------------------')
             File configFile = new File(options.f.toString())
             String operation = optionString(options, 'operation') ?: 'legacy-sync'
-            Set<String> supportedOperations = ['legacy-sync', 'capacity', 'preview', 'apply', 'apply-safe',
+            Set<String> supportedOperations = ['legacy-sync', 'planner-daemon', 'capacity', 'preview', 'apply', 'apply-safe',
                 'deliver', 'feedback', 'apply-decision', 'ai-suggest'] as Set
             if (!supportedOperations.contains(operation)) {
                 throw new IllegalArgumentException("Unsupported operation: ${operation}")
@@ -116,6 +119,24 @@ class TodoistCalDavSync {
             try {
                 def json = { value -> JsonOutput.prettyPrint(JsonOutput.toJson(value)) }
                 switch (operation) {
+                    case 'planner-daemon':
+                        if (orchestrator.integrationConfig.daemon.enabled != true) {
+                            throw new IllegalArgumentException('planner.daemon.enabled must be true for planner-daemon')
+                        }
+                        def surface = new SlackSocketModeMessagingSurface(orchestrator.integrationConfig.slack,
+                            null, null, null, new DeliveryLedger(orchestrator.integrationConfig.deliveriesDir))
+                        def daemon = new SmartPlannerDaemon(orchestrator, surface)
+                        Thread shutdownHook = new Thread({ daemon.close() } as Runnable, 'smartplanner-shutdown')
+                        Runtime.runtime.addShutdownHook(shutdownHook)
+                        try {
+                            daemon.start()
+                            out.append('SmartPlanner daemon started.\n')
+                            daemon.awaitTermination()
+                        } finally {
+                            try { Runtime.runtime.removeShutdownHook(shutdownHook) } catch (IllegalStateException ignored) {}
+                            daemon.close()
+                        }
+                        break
                     case 'capacity':
                         def bounds = requireBounds(options)
                         out.append(orchestrator.capacity(bounds[0], bounds[1], optionString(options, 'format') ?: 'markdown')).append('\n')

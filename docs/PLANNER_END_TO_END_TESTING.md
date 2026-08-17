@@ -69,7 +69,33 @@ Rollback: stop the process, retain receipts/logs, restore the test calendar expo
 values from the backup, and restore all four state directories as one snapshot. Never delete state
 selectively to force a retry after an ambiguous provider success.
 
-## 4. First production crawl / walk / run
+## 4. Isolated Slack daemon gate
+
+Import `conf/smartplanner-slack-app-manifest.example.yaml` as a test Slack App (default name **SmartPlanner**), create
+an app-level `connections:write` token, install/invite the bot to a private test channel, and configure
+that channel ID plus exact test user IDs. Keep the Todoist project and CalDAV calendar isolated.
+
+Start `--operation planner-daemon` and verify:
+
+1. No inbound listener/port is opened; Socket Mode connects outbound and startup completes only after
+   successful read-only Todoist/CalDAV probes.
+2. `/smartplanner plan daily`, `/smartplanner plan weekly`, `status`, and `help` acknowledge promptly.
+3. Each initial proposal is a channel-root message with the configured horizon; thread feedback creates
+   revised iterations in that same thread.
+4. `assistant.threads.setStatus` appears during Slack-requested work and clears after the reply.
+5. Bot, root, unrelated-channel, unauthorized, duplicate, stale, and unknown-thread messages cause zero
+   Todoist/CalDAV writes.
+6. Reject/acknowledge cause zero writes; exact approval applies once through the configured mode;
+   temporary replan overrides affect only that conversation.
+7. Kill/restart the daemon before replying. The persisted channel/thread still resolves to the exact
+   current plan/proposal and duplicate Slack events remain deduplicated.
+8. Simulate one cycle/provider failure. The process remains alive, reports bounded backoff, and a later
+   successful cycle resumes. SIGTERM stops new work and drains within `shutdown_timeout`.
+
+Gate: all eight checks pass and logs/state contain no bot/app token. Retain the channel transcript,
+application/delivery receipts, and before/after Todoist/CalDAV exports as evidence.
+
+## 5. First production crawl / walk / run
 
 ### Crawl — preview
 

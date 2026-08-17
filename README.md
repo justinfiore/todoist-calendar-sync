@@ -3,10 +3,12 @@
 # todoist-calendar-sync
 
 SmartPlanner exposes capacity-aware planning through the existing main executable while retaining
-the original sync as the default operation. Production planning uses real Todoist REST and CalDAV
-adapters, durable deterministic plans, exact approvals, safe-only application, optional Open-Meteo,
-explicit Slack delivery/feedback, and disabled-by-default bounded AI suggestions. `fully_automated`
-remains unavailable and refuses writes.
+the original sync as the default operation. Its primary production operation, `planner-daemon`, is a
+long-running multi-horizon scheduler that publishes proposals and iterates on feedback through Slack
+Socket Mode without an inbound port. Production planning uses real Todoist REST and CalDAV adapters,
+durable deterministic plans/conversations, exact approvals, safe-only application, optional
+Open-Meteo, configurable regex feedback, and disabled-by-default bounded AI interpretation.
+`fully_automated` remains unavailable and refuses writes.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/justinfiore/todoist-calendar-sync)
 
@@ -100,6 +102,7 @@ Every command below also requires `-f CONFIG -l LOG_CONFIG`. Use the installed
 | Operation | Required/optional arguments | Behavior |
 | --- | --- | --- |
 | `legacy-sync` | no planner arguments | Runs the original Todoist-to-CalDAV sync/loop. This is the default when `--operation` is omitted. |
+| `planner-daemon` | `planner.daemon.enabled: true`, configured planning runs, Slack Socket Mode credentials/channel | Primary long-running SmartPlanner lifecycle. Performs startup provider probes, schedules each configured horizon independently, publishes channel proposals, consumes thread feedback/commands, persists conversation state, and remains alive across contained cycle/provider/feedback failures. |
 | `capacity` | `--range-start INSTANT --range-end INSTANT`; optional `--format markdown\|json` | Reads Todoist and CalDAV and reports capacity for the half-open UTC interval. It makes no remote writes. |
 | `preview` | `--range-start INSTANT --range-end INSTANT`; optional `--previous-plan-id ID` | Builds, renders, and locally persists a deterministic plan. It makes no Todoist or CalDAV writes. |
 | `apply` | `--plan-id ID`; optional `--approval FILE` | Applies a stored plan according to its configured safety mode. `approval_required` needs an exact approval file; `preview` and unavailable `fully_automated` refuse writes. |
@@ -112,6 +115,11 @@ Every command below also requires `-f CONFIG -l LOG_CONFIG`. Use the installed
 Examples:
 
 ```bash
+# Primary long-running SmartPlanner process (after isolated rollout validation)
+export SLACK_BOT_TOKEN='xoxb-...'
+export SLACK_APP_TOKEN='xapp-...'
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation planner-daemon
+
 # Read-only capacity report
 todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation capacity \
   --range-start 2026-08-14T00:00:00Z --range-end 2026-08-17T00:00:00Z --format markdown

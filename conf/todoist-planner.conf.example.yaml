@@ -39,8 +39,28 @@ planner:
       timeout: PT10S
       max_response_bytes: 1048576
     feedback:
-      # Empty/omitted means deny all. Exact actor ids only.
+      # Empty/omitted means deny all. Exact Slack user ids only.
       allowed_actors: []
+      # Ordered Java regular expressions. First full-string match wins.
+      rules:
+        - name: approve
+          pattern: "(?i)^\\s*(yes|approve|looks good)\\s*$"
+          action: approve
+        - name: reject
+          pattern: "(?i)^\\s*(no|reject)(?:\\s+(?<reason>.*))?$"
+          action: reject
+        - name: acknowledge
+          pattern: "(?i)^\\s*(ok|ack|acknowledged)\\s*$"
+          action: acknowledge
+        - name: replan
+          pattern: "(?i)^\\s*(replan|try again)(?:\\s+(?<feedback>.*))?$"
+          action: replan
+          # Optional deterministic conversation-scoped overrides:
+          # overrides:
+          #   horizon: P3D
+          #   priority_overrides: {"todoist-task-id": 4}
+          #   exclude_task_ids: ["todoist-task-id"]
+          #   freeze_task_ids: ["todoist-task-id"]
     state:
       plans_dir: ../state/planner/plans
       applications_dir: ../state/planner/applications
@@ -49,11 +69,32 @@ planner:
     # Optional explicit stability baseline; otherwise latest stored plan is used.
     # previous_plan_id: plan-0123456789abcdef
 
-  planning_runs:
-    - name: daily
-      horizon: P3D
-      schedule: "0 6 * * *"
-      create_concrete_blocks_until: P3D
+  # Primary SmartPlanner production lifecycle. Keep disabled for the initial
+  # read-only preview; enable only after isolated Todoist/CalDAV/Slack validation.
+  daemon:
+    enabled: false
+    startup_connectivity_check: true
+    shutdown_timeout: PT20S
+    retry:
+      initial_delay: PT5S
+      max_delay: PT5M
+      multiplier: 2
+    planning_runs:
+      - name: daily
+        horizon: P3D
+        interval: PT6H
+        initial_delay: PT0S
+        run_on_startup: true
+      - name: weekly
+        horizon: P7D
+        interval: P1D
+        initial_delay: PT5M
+        run_on_startup: true
+      - name: medium
+        horizon: P14D
+        interval: P7D
+        initial_delay: PT10M
+        run_on_startup: true
 
   stability:
     freeze_within: PT48H
@@ -153,47 +194,24 @@ planner:
     #       daylight: true
     #       forecast_confidence_min: 0.70
 
-  # Optional Slack delivery (Phase 5 domain capability, production-wired in Phase 7).
-  # The installed launcher exposes explicit `deliver`, `feedback`, and `apply-decision`
-  # operations. Feedback capture never applies; `apply-decision` is a separate command.
-  # Secrets are env var *names* only; never put tokens in this file or persisted state.
-  #
-  # Authorization (required for production feedback) is configured at
-  # planner.integration.feedback.allowed_actors. Empty/omitted denies every actor.
-  #
-  # Semantics:
-  # - timezone: human 12h times + local day/risk/schedule boundaries (falls back to planner.timezone).
-  # - schedules[].horizon: drives summary range/aggregation (not hardcoded 1/7/14 when set).
-  # - schedules[].kind: normalized at load via the same canonical message-kind normalizer as
-  #   enabled_kinds (daily | weekly | medium | risk | proposal aliases → daily_summary |
-  #   weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal). Case/whitespace
-  #   normalized. Unknown, blank, and null kinds fail config validation with index and value
-  #   (never deferred to render). Duplicate delivery after normalization (same canonical
-  #   kind+schedule+horizon+window+destination) is a config error. Stored/due intents use
-  #   canonical kinds only so daily→risk behavior and renderKind never see aliases.
-  # - enabled_kinds: when explicitly present, exclusive allowlist of message kinds
-  #   (daily_summary | weekly_summary | medium_horizon_summary | capacity_risk_alert | proposal).
-  #   Aliases/case normalize deterministically (e.g. daily, risk, WEEKLY_SUMMARY). Unknown, blank,
-  #   and duplicate-after-normalization entries are config errors. Explicit [] disables all kinds.
-  #   Omitted kinds are false even if legacy per-kind booleans default true. An explicit
-  #   per-kind true boolean for a kind omitted from enabled_kinds is a config conflict error.
-  #   When enabled_kinds is absent, legacy booleans below apply (default true each).
-  # - capacity_risk_alerts: when enabled_kinds is absent, enables the risk kind (default true).
-  #   Does NOT bypass schedules. Risk sends only when an explicit capacity_risk_alert schedule
-  #   is due, or when a due daily_summary intent triggers the documented daily-risk path and
-  #   risk is enabled via allowlist or capacity_risk_alerts. No due intent => zero risk sends.
-  # - risk_deadline_days: include unscheduled risk tasks whose deadline is overdue or within N
-  #   local days of now; tasks without deadline are excluded.
-  # - Delivery ledger atomically claims PENDING (tryClaimPending) before provider send under one
-  #   store lock; concurrent same-key callers yield exactly one provider send. UNKNOWN after
-  #   provider success + ledger failure (no blind resend). FAILED allows retry re-claim.
+  # SmartPlanner daemon uses Slack Socket Mode: an outbound WebSocket, no public
+  # inbound port. One-shot webhook/chat_api delivery remains available for diagnostics.
+  # Secrets are env var *names* only; never put token values in YAML or state.
   messaging:
     enabled: false
     provider: slack
-    # destination: "#todoist-planner"   # channel name or channel id (required when enabled)
-    # slack_mode: webhook               # webhook | chat_api
-    # webhook_url_env: SLACK_WEBHOOK_URL
-    # bot_token_env: SLACK_BOT_TOKEN
+    app_name: SmartPlanner                # operator label; edit the manifest to rename the registered app
+    command: /smartplanner
+    # destination: C0123456789            # channel ID required for planner-daemon
+    # slack_mode: socket_mode             # socket_mode | webhook | chat_api
+    # bot_token_env: SLACK_BOT_TOKEN      # xoxb-* value lives only in this environment variable
+    # app_token_env: SLACK_APP_TOKEN      # xapp-* with connections:write
+    working_status: "is working on your request…"
+    max_event_text_chars: 4000            # 1..40000; oversized inbound events are ignored
+    event_queue_capacity: 100             # 1..10000; bounds callback-to-worker buffering
+    loading_messages:
+      - "is planning…"
+      - "is checking Todoist and calendar capacity…"
     # Prefer exclusive allowlist when enabling a subset of kinds:
     # enabled_kinds: [daily_summary]    # only daily; weekly/medium/risk/proposal off
     # enabled_kinds: []                 # explicit disable-all kinds (messaging may still be enabled)

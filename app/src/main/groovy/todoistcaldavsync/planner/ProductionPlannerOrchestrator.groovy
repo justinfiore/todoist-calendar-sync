@@ -40,6 +40,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private final DeliveryLedger deliveryLedger
     private final Supplier<Instant> clock
     private final Closure<WeatherReadGateway> weatherGatewayFactory
+    private final Closure aiSuggestionProvider
 
     ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock = { Instant.now() }) {
         if (configFile == null || !configFile.isFile()) throw new IllegalArgumentException("Config file not found: ${configFile}")
@@ -48,6 +49,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.integrationConfig = ProductionIntegrationConfig.fromMap(root, configFile.absoluteFile.parentFile.toPath())
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
         this.weatherGatewayFactory = null
+        this.aiSuggestionProvider = null
         this.planStore = new PlanStore(integrationConfig.plansDir)
         this.applicationState = new ApplicationStateStore(integrationConfig.applicationsDir)
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
@@ -74,7 +76,8 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
                                   CalendarReadGateway calendarRead,
                                   CalendarWriteGateway calendarWrite,
                                   Supplier<Instant> clock = { Instant.now() },
-                                  Closure<WeatherReadGateway> weatherGatewayFactory = null) {
+                                  Closure<WeatherReadGateway> weatherGatewayFactory = null,
+                                  Closure aiSuggestionProvider = null) {
         if ([plannerConfig, integrationConfig, todoistRead, todoistWrite, calendarRead, calendarWrite].any { it == null }) {
             throw new IllegalArgumentException('planner/integration config and all read/write gateways are required')
         }
@@ -82,6 +85,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.integrationConfig = integrationConfig
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
         this.weatherGatewayFactory = weatherGatewayFactory
+        this.aiSuggestionProvider = aiSuggestionProvider
         this.planStore = new PlanStore(integrationConfig.plansDir)
         this.applicationState = new ApplicationStateStore(integrationConfig.applicationsDir)
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
@@ -105,8 +109,13 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
      * for stability, deterministically propose, and atomically persist the snapshot.
      */
     Plan preview(Instant rangeStart, Instant rangeEnd, String previousPlanId = null) {
+        return preview(rangeStart, rangeEnd, previousPlanId, [:])
+    }
+
+    /** Deterministic preview with conversation-scoped, non-persisted planning overrides. */
+    Plan preview(Instant rangeStart, Instant rangeEnd, String previousPlanId, Map overrides) {
         Instant now = clock.get()
-        List<Task> tasks = normalizedEligibleTasks()
+        List<Task> tasks = applyTemporaryOverrides(normalizedEligibleTasks(), overrides ?: [:])
         List<CalendarEvent> events = calendarRead.fetchEvents(rangeStart, rangeEnd)
         List<CalendarEvent> classified = new EventClassifier(plannerConfig).classifyAll(events)
         def availability = new AvailabilityCalculator(plannerConfig).calculate(rangeStart, rangeEnd, classified)
@@ -121,10 +130,33 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
                 forecast = null
             }
         }
+        Set<String> frozen = overrides.freeze_task_ids instanceof Collection
+            ? (overrides.freeze_task_ids as Collection).collect { it.toString() } as Set : [] as Set
         Plan plan = new DeterministicScheduler(plannerConfig).propose(
-            tasks, availability.slots, rangeStart, rangeEnd, now, previous, [] as Set, forecast)
+            tasks, availability.slots, rangeStart, rangeEnd, now, previous, frozen, forecast)
         planStore.save(plan)
         return plan
+    }
+
+    /** Startup probe: authenticate and perform bounded Todoist and CalDAV reads without writes. */
+    void verifyConnectivity(Instant now = clock.get()) {
+        normalizedEligibleTasks()
+        calendarRead.fetchEvents(now, now.plusSeconds(300))
+    }
+
+    private static List<Task> applyTemporaryOverrides(List<Task> tasks, Map overrides) {
+        Set<String> excluded = overrides.exclude_task_ids instanceof Collection
+            ? (overrides.exclude_task_ids as Collection).collect { it.toString() } as Set : [] as Set
+        Map priorities = overrides.priority_overrides instanceof Map ? overrides.priority_overrides as Map : [:]
+        tasks.findAll { !excluded.contains(it.id) }.collect { Task task ->
+            if (!priorities.containsKey(task.id)) return task
+            int priority = Integer.parseInt(priorities[task.id].toString())
+            if (priority < 1 || priority > 4) throw new IllegalArgumentException("priority override for ${task.id} must be 1..4")
+            Task.builder().id(task.id).content(task.content).projectId(task.projectId).projectName(task.projectName)
+                .labels(task.labels).priority(priority).deadline(task.deadline).dueTime(task.dueTime)
+                .nativeDuration(task.nativeDuration).effectiveDuration(task.effectiveDuration)
+                .durationSource(task.durationSource).manual(task.manual).allDayDue(task.allDayDue).build()
+        }
     }
 
     private WeatherReadGateway weatherGateway() {
@@ -178,6 +210,9 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
                       String correlationId, String feedbackText = null) {
         if (!plannerConfig.ai.enabled) throw new IllegalStateException('AI is disabled; set planner.ai.enabled explicitly')
         Plan plan = requirePlan(planId)
+        if (aiSuggestionProvider != null) {
+            return aiSuggestionProvider.call(plan, type, correlationId, feedbackText)
+        }
         Instant start = plan.slots ? plan.slots*.start.min() : plan.createdAt
         Instant end = plan.slots ? plan.slots*.end.max() : plan.createdAt.plusSeconds(86400)
         List<CalendarEvent> events = calendarRead.fetchEvents(start, end)
@@ -234,18 +269,19 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
 
     private MessagingService messagingService(boolean requireDeliveryGateway) {
         MessagingGateway gateway = null
-        if (plannerConfig.messaging.enabled) {
+        if (plannerConfig.messaging.enabled && requireDeliveryGateway) {
             if (plannerConfig.messaging.provider != 'slack') {
                 throw new IllegalStateException("Messaging provider must be explicitly slack, got ${plannerConfig.messaging.provider}")
             }
             Map opts = [
-                mode         : plannerConfig.messaging.slackMode,
+                // Socket Mode is inbound transport; outbound messages still use chat.postMessage.
+                mode         : plannerConfig.messaging.slackMode == 'socket_mode' ? 'chat_api' : plannerConfig.messaging.slackMode,
                 destination  : plannerConfig.messaging.destination,
                 webhookUrlEnv: plannerConfig.messaging.webhookUrlEnv ?: plannerConfig.messaging.secretEnv,
                 botTokenEnv  : plannerConfig.messaging.botTokenEnv ?: plannerConfig.messaging.secretEnv
             ]
             gateway = new SlackMessagingGateway(opts)
-        } else if (requireDeliveryGateway) {
+        } else if (!plannerConfig.messaging.enabled && requireDeliveryGateway) {
             throw new IllegalStateException('Messaging is disabled; refusing delivery')
         }
         def parser = new FeedbackParser(decisionStore,

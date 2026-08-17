@@ -104,10 +104,12 @@ If using `GOOGLE_OAUTH2` auth:
 
 ## SmartPlanner quick start
 
-Copy `conf/todoist-planner.conf.example.yaml`, set the explicit Todoist/CalDAV endpoints,
-credential environment-variable names, managed `output_calendar`, and four state directories.
-Keep `planner.mode: preview`, `planner.messaging.enabled: false`, `planner.ai.enabled: false`, and
-`planner.weather.enabled: false` for the first crawl.
+SmartPlanner production is a long-running daemon; `preview`, `capacity`, and other one-shot operations
+remain rollout and diagnostic controls. Copy `conf/todoist-planner.conf.example.yaml`, set the explicit
+Todoist/CalDAV endpoints, credential environment-variable names, managed `output_calendar`, and four
+state directories. Keep `planner.mode: preview`, `planner.daemon.enabled: false`,
+`planner.messaging.enabled: false`, `planner.ai.enabled: false`, and `planner.weather.enabled: false`
+for the first crawl.
 
 ```bash
 export TODOIST_ACCESS_TOKEN='<isolated-test-token>'
@@ -171,5 +173,21 @@ todoist-caldav-sync -f conf/todoist-planner.conf.yaml -l conf/log4j.groovy \
 
 Inspect the receipt to confirm that only ordinary changes were applied and all protected changes were
 withheld. Back up Todoist, the managed calendar, and all four SmartPlanner state directories together
-before either write-capable mode. The complete command reference, including delivery, feedback,
-decision application, and AI suggestions, is in `README.md`.
+before either write-capable mode.
+
+#### Start the long-running daemon
+
+After the isolated preview/apply gates pass, import `conf/smartplanner-slack-app-manifest.example.yaml`, invite the
+app to the configured channel, enable `planner.daemon` plus Slack `socket_mode`, and run:
+
+```bash
+export SLACK_BOT_TOKEN='xoxb-...'
+export SLACK_APP_TOKEN='xapp-...'
+todoist-caldav-sync -f conf/todoist-planner.conf.yaml -l conf/log4j.groovy \
+  --operation planner-daemon
+```
+
+Use `/smartplanner plan daily`, `/smartplanner status`, or `/smartplanner help`. Proposals appear as
+channel messages; approvals, rejection, and iterative feedback belong in each proposal thread. See
+`docs/SLACK_INTEGRATION.md` for scopes, events, regex actions, bot status, and restart tests. The
+complete one-shot command reference remains in `README.md`.
