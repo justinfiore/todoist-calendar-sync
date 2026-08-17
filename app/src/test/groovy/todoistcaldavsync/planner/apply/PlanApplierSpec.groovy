@@ -1,5 +1,6 @@
 package todoistcaldavsync.planner.apply
 
+import com.github.tomakehurst.wiremock.WireMockServer
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
@@ -30,6 +31,9 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicReference
+
+import static com.github.tomakehurst.wiremock.client.WireMock.*
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 
 /**
  * Phase 3 apply matrix: managed calendar writes + Todoist due sync with approval gates,
@@ -825,6 +829,62 @@ class PlanApplierSpec extends Specification {
         writeCalls == 1
         todoist.dueUpdates.size() == 1
         stateStore.loadMapping('t1').fullyApplied()
+    }
+
+    def "oversized Todoist mutation response persists UNKNOWN and blocks blind resend"() {
+        given:
+        def server = new WireMockServer(options().dynamicPort())
+        server.start()
+        server.stubFor(post(urlEqualTo('/api/v1/tasks/t1'))
+            .willReturn(aResponse().withStatus(200).withBody('x' * 4096)))
+        def gateway = new TodoistRestGateway(baseUrl: "http://localhost:${server.port()}/api/v1",
+            tokenOverride: 'token', allowInsecureHttp: true, maxResponseBytes: 128,
+            includeProjectNames: false)
+        def plan = planWith([singleBlock('b1', 't1', Instant.parse('2026-08-10T14:00:00Z'))])
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(calendar, MANAGED_CAL),
+            calendar, gateway, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approvalFor(plan))
+        def persistedAfterFirst = new ApplicationStateStore(dir).loadMapping('t1')
+        def second = subject.apply(plan, approvalFor(plan))
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        persistedAfterFirst.todoistStatus == ApplyItemStatus.UNKNOWN
+        second.overallStatus == ApplyItemStatus.UNKNOWN
+        server.verify(1, postRequestedFor(urlEqualTo('/api/v1/tasks/t1')))
+
+        cleanup:
+        server?.stop()
+    }
+
+    def "oversized CalDAV PUT response persists UNKNOWN and blocks blind resend"() {
+        given:
+        def server = new WireMockServer(options().dynamicPort())
+        server.start()
+        server.stubFor(put(urlPathMatching('/cal/work/planner-.*\\.ics'))
+            .willReturn(aResponse().withStatus(201).withBody('x' * 4096)))
+        def gateway = new CalDavHttpGateway(calendars: [[name: MANAGED_CAL,
+            url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
+            managedCalendarName: MANAGED_CAL, allowInsecureHttp: true, maxResponseBytes: 128)
+        def plan = planWith([singleBlock('b1', 't1', Instant.parse('2026-08-10T14:00:00Z'))])
+        def subject = new PlanApplier(config, new ManagedCalendarWriteGateway(gateway, calendar, MANAGED_CAL),
+            calendar, todoist, todoist, stateStore, { clock.get() })
+
+        when:
+        def first = subject.apply(plan, approvalFor(plan))
+        def persistedAfterFirst = new ApplicationStateStore(dir).loadMapping('t1')
+        def second = subject.apply(plan, approvalFor(plan))
+
+        then:
+        first.overallStatus == ApplyItemStatus.UNKNOWN
+        persistedAfterFirst.calendarStatus == ApplyItemStatus.UNKNOWN
+        second.overallStatus == ApplyItemStatus.UNKNOWN
+        server.verify(1, putRequestedFor(urlPathMatching('/cal/work/planner-.*\\.ics')))
+
+        cleanup:
+        server?.stop()
     }
 
     def "failed apply is not skipped as already-applied on retry"() {
