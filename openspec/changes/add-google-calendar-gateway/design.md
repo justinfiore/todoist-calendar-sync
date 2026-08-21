@@ -61,7 +61,7 @@ Create a narrow Google OAuth component that:
 5. refreshes before expiry and exposes only a short-lived authorized Google Calendar service/client to the gateway;
 6. redacts client IDs, client secrets, authorization codes, access tokens, refresh tokens, and Bearer headers from every exception and log message.
 
-The legacy `GoogleAuthProvider` is reference material only. The new component may reuse the existing OAuth client JSON but must not silently reuse the legacy config shape, generic datastore name, or token location. The intended QA client JSON originates from Justin's existing TodoistCalDavSync desktop OAuth app, is retrieved from Bitwarden CLI into the ignored `oauth_client_secret_file` path before bootstrap, and is never copied into the repository. The alternative of passing a static access token through `token_env` is rejected because it expires and cannot support a long-running daemon.
+The legacy `GoogleAuthProvider` is reference material only. The new component may reuse the existing OAuth client JSON but must not silently reuse the legacy config shape, generic datastore name, or token location. The intended QA client JSON and legacy datastore artifacts from Justin's existing TodoistCalDavSync desktop OAuth app are already staged in ignored local QA paths and are never copied into the repository. The alternative of passing a static access token through `token_env` is rejected because it expires and cannot support a long-running daemon.
 
 The installed launcher command contract is:
 
@@ -101,7 +101,7 @@ Use fake/in-memory OAuth token stores and clocks so expiry/refresh tests do not 
 
 ## Risks / Trade-offs
 
-- **OAuth desktop consent needs interactive login/2FA** → defer it until after implementation review; use only the dedicated Google account and Bitwarden CLI access provided by Justin. Reuse the existing TodoistCalDavSync desktop OAuth client, but authorize it only as that dedicated account.
+- **OAuth desktop consent needs interactive login/2FA** → first attempt the audited import/validation of the already staged dedicated-account credential after implementation review. If Google requires re-consent, obtain Justin's separate authorization before interactive login/2FA; reuse the existing TodoistCalDavSync desktop OAuth client and authorize it only as that dedicated account.
 - **Google API client dependency drift** → pin/test a mutually compatible dependency set and inspect Gradle resolution before code composition.
 - **API event semantics differ from iCalendar** → isolate conversion in one adapter and test timed, all-day, recurrence-instance, missing-end, and metadata cases.
 - **Event update creates duplicate or overwrites external data** → global `iCalUID` lookup, ownership marker checks, managed-output checks, and live reread before delete.
@@ -116,13 +116,13 @@ Use fake/in-memory OAuth token stores and clocks so expiry/refresh tests do not 
 4. Implement the Google Calendar gateway, conversion, and WireMock contracts.
 5. Add explicit QA-only provisioning/bootstrap commands and documentation.
 6. Run focused tests, full `:app:test --rerun-tasks`, `build`, `installDist`, installed launcher help, OpenSpec validation, and security review.
-7. After Justin approves implementation, retrieve the existing OAuth-client JSON from Bitwarden into `.qa/secrets/google-oauth-client.json` with owner-only permissions, run `--operation google-oauth-bootstrap`, complete consent only as the dedicated account (using loopback SSH tunneling if needed), provision QA calendars, and resume the isolated QA plan.
+7. After Justin approves implementation, use the already staged ignored local OAuth client/legacy credential material to run the audited import/validation path. If re-consent is required, obtain separate authorization and complete it only as the dedicated account (using loopback SSH tunneling if needed), then provision QA calendars and resume the isolated QA plan.
 8. Roll back by selecting `provider: caldav` for non-Google deployments and removing ignored local Google OAuth/token material; no tracked migration of live calendar data is required.
 
 ## Resolved Decisions
 
 - Google Calendar uses a dedicated Google Calendar API gateway and renewable OAuth 2.0; it does not use SmartPlanner's static CalDAV Basic/Bearer path.
-- OAuth/2FA setup will use the dedicated agent-owned Google account and Bitwarden CLI access after implementation review, reusing Justin's existing TodoistCalDavSync desktop OAuth client rather than creating a new Google Cloud client.
+- Existing ignored local OAuth material will be validated/imported after implementation review, reusing Justin's existing TodoistCalDavSync desktop OAuth client rather than creating a new Google Cloud client. Interactive re-consent requires separate authorization.
 - OAuth bootstrap is a documented `google-oauth-bootstrap` operation bound only to loopback port `8787` by default; remote-browser consent uses an SSH loopback tunnel.
 - The CalDAV adapter remains supported for non-Google providers.
 - The change is implementation-planning only; no live Google authentication, Google Cloud app creation, or provider mutation occurs before Justin reviews and authorizes implementation.

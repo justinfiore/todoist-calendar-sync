@@ -13,7 +13,7 @@
 - [ ] 2.4 Implement the credential provider/bootstrap service around the existing compatible Google client libraries, requesting the exact Calendar scopes required by gateway reads/writes and QA calendar provisioning, with refresh-before-use behavior.
 - [ ] 2.5 Add `--operation google-oauth-bootstrap`, require `provider: google_calendar_api`, bind a configurable callback receiver to `127.0.0.1` only (default port `8787`), print the one-time consent URL only to the invoking terminal (not logs/receipts), and exit after refresh-capable token persistence without running planner/provisioning work.
 - [ ] 2.6 Add deterministic noninteractive bootstrap seams plus tests for fixed/configured loopback port, non-Google refusal before listener/secret resolution, SSH-tunneled callback completion, and all hermetic tests avoiding browser/network calls; leave real consent as an explicit post-review operator operation.
-- [ ] 2.7 Document Bitwarden retrieval of the existing OAuth client JSON to ignored `.qa/secrets/google-oauth-client.json`, owner-only permissions, the bootstrap launcher command, remote-browser SSH forwarding, and the prohibition on pasting codes/tokens/passwords into Slack.
+- [ ] 2.7 Document validation/import of the already staged local OAuth client JSON and legacy credential-store artifacts, ignored `.qa/secrets/` permissions, the bootstrap launcher command, remote-browser SSH forwarding if re-consent is required, and the prohibition on pasting codes/tokens/passwords into Slack.
 - [ ] 2.8 Run focused OAuth/redaction tests and inspect test output to confirm no representative secret reaches errors or reports.
 
 ## 3. Implement Google Calendar API read semantics
@@ -42,7 +42,7 @@
 ## 6. Documentation, examples, and review-ready validation
 
 - [ ] 6.1 Update `conf/todoist-planner.conf.example.yaml` and `docs/SMART_PLANNER_CONFIGURATION.md` with explicit Google-vs-CalDAV provider routing, OAuth secret references, calendar IDs, startup errors, and Google-specific safety boundaries.
-- [ ] 6.2 Update `docs/PLANNER_END_TO_END_TESTING.md`, `QUICK_START.md`, and the QA runbook with the post-review dedicated-account OAuth bootstrap, Bitwarden CLI boundary, QA calendar provisioning, preview-first gates, evidence requirements, and rollback/token-revocation procedure.
+- [ ] 6.2 Update `docs/PLANNER_END_TO_END_TESTING.md`, `QUICK_START.md`, and the QA runbook with the post-review dedicated-account OAuth import/validation/bootstrap path, QA calendar provisioning, preview-first gates, evidence requirements, and rollback/token-revocation procedure.
 - [ ] 6.3 Add regression coverage that parses the example configuration and asserts it contains no inline Google secrets or normal-password/app-password guidance for the Google provider.
 - [ ] 6.4 Run focused new specs, `./gradlew :app:test --rerun-tasks`, `./gradlew build`, `./gradlew installDist`, installed launcher help, `openspec validate add-google-calendar-gateway --strict`, `git diff --check`, and a secret scan of tracked files.
 - [ ] 6.5 Review the complete diff against the three new OpenSpec specs; commit implementation/tests/docs separately from this proposal artifact commit, then wait for Justin’s approval before any live Google authentication, Google Cloud OAuth-client creation, or QA calendar mutation.

@@ -1,5 +1,23 @@
 # SmartPlanner Phase 7 Manual QA and Evidence Plan
 
+## Remaining Justin setup/access checklist (current)
+
+### Nothing further is needed for Todoist and Google QA at this time
+
+- [x] **Todoist QA credential:** `TODOIST_ACCESS_TOKEN` is securely staged in the ignored local `creds.txt`; I will create the disposable Todoist project, labels, tasks, and fixtures after the Google gateway implementation is approved.
+- [x] **Google OAuth material:** the existing TodoistCalDavSync desktop OAuth client JSON plus legacy credential-store artifacts are securely staged in ignored local `.qa/secrets/` paths. No Bitwarden access, Google normal password, Google app password, or manual token copy is needed.
+- [ ] **Google QA boundary confirmation:** when implementation is complete, confirm that the account represented by the staged Google credential is the dedicated disposable agent-owned Google account and authorize its use for the explicit OAuth validation/bootstrap and QA calendar provisioning. I will create all QA calendars and events.
+
+### Still required only for optional Phase F Slack Socket Mode QA
+
+- [ ] Provide a private QA Slack channel ID, the approved QA-user Slack ID(s), and the test SmartPlanner app's bot (`xoxb-`) and Socket Mode (`xapp-`) tokens through a secure local mechanism. If workspace policy prevents me from creating/installing the app or channel, create/install the test app from `conf/smartplanner-slack-app-manifest.example.yaml` and invite it to that private channel.
+
+### Approval gates that remain intentionally manual
+
+- [ ] Review and approve the implemented `add-google-calendar-gateway` change before I use any live Google API credential.
+- [ ] Review the Phase C read-only evidence package before I enable any write-capable mode.
+- [ ] Approve each separately scoped Phase E write/rollback case and any Phase F Slack approval case.
+
 > **For Hermes:** Once Justin securely provides access to dedicated QA Todoist and Google accounts, provision the entire disposable provider fixture inventory in this plan. Preserve `preview` as the initial mode; do not use Justin’s personal Todoist projects or personal/work calendars. Do not begin any live provider call until the credential boundary and target accounts have been positively identified.
 
 **Goal:** Produce repeatable, account-isolated proof that Phase 7 SmartPlanner behaves correctly with real Todoist, Google Calendar/CalDAV, and Slack Socket Mode integrations before any production write is attempted.
@@ -98,7 +116,7 @@ Every test case is assigned a stable identifier, e.g. `LIVE-TOD-01`.
 
 1. [ ] Positively identify the dedicated Todoist account and confirm the dedicated Google account’s email/username from securely staged nonsecret configuration; record only redacted aliases/fingerprints. Stop if either account appears to contain non-QA data or cannot be unambiguously identified.
 2. [ ] Confirm the `add-google-calendar-gateway` implementation has passed its hermetic OAuth, token-refresh, Calendar API pagination, calendar-provisioning, event read/write, ownership, and no-cross-calendar-write tests before staging any Google credential.
-3. [ ] Using the new gateway’s documented one-time OAuth bootstrap, authenticate only to the dedicated Google QA account. Store the OAuth client credential and refresh token in Bitwarden/local protected secret storage; record only aliases/fingerprints in `.qa/` artifacts.
+3. [ ] Using the new gateway’s documented OAuth validation/bootstrap, authenticate only to the dedicated Google QA account using the already staged ignored local OAuth client/credential material; record only aliases/fingerprints in `.qa/` artifacts.
 4. [ ] Create and document aliases for the `SmartPlanner QA` Todoist project, planner labels, the `SmartPlanner QA Output` and `SmartPlanner QA Blockers` Google calendars, any input/availability calendar required by the test matrix, Slack test app/channel, and authorized test Slack user.
 5. [ ] Create the additional QA calendars through the Google Calendar API gateway, persist their returned calendar IDs only in ignored `.qa/` configuration, and configure explicit provider routing so only `SmartPlanner QA Output` is writable.
 6. [ ] Seed all disposable Todoist and Google fixture data listed below, assigning each created resource a stable QA alias and preserving its returned provider ID only in ignored local state.
@@ -182,11 +200,10 @@ Every test case is assigned a stable identifier, e.g. `LIVE-TOD-01`.
 ### One-time access setup
 
 - [ ] **Todoist:** create or designate a standalone disposable QA Todoist account for SmartPlanner (not linked to Justin’s main account) and securely stage its API token on this host—not in Slack or a repository file. I will create the `SmartPlanner QA` project, labels, tasks, and all other test fixtures.
-- [ ] **Google Calendar — dedicated boundary:** provide access to the dedicated Google account only; it contains no personal/work calendars. Reuse Justin's existing TodoistCalDavSync desktop OAuth client for QA, but authorize it only as the dedicated account. I will complete the OAuth flow and create every QA calendar/event fixture after the gateway implementation is reviewed and approved.
-- [ ] **Google Calendar — secure automation access:** provide access to the account’s 2FA token through Bitwarden CLI and authorize use of that dedicated account for Google Cloud/OAuth setup. Do not provide or store a normal Google password in Slack, Git, reports, screenshots, or plan artifacts.
+- [ ] **Google Calendar — dedicated boundary:** confirm that the already staged legacy OAuth credential represents the dedicated agent-owned Google account containing no personal/work calendars. I will reuse its existing TodoistCalDavSync desktop OAuth client/material, validate or import the OAuth state through the implemented gateway, and create every QA calendar/event fixture after implementation review/approval.
 - [ ] **Google Calendar — confirm the boundary:** tell me the account is approved as the disposable Google boundary. I will create `SmartPlanner QA Output`, `SmartPlanner QA Blockers`, and every other QA calendar/event fixture using the new OAuth-authenticated Google Calendar API gateway, retaining IDs only in ignored `.qa/` configuration.
 - [ ] **Slack (only for Phase F):** securely stage the test-app bot and Socket Mode tokens and provide the QA channel ID plus authorized QA Slack user ID(s). I will configure the local integration and create the test messages. If workspace permissions require Justin to create/install the app or channel, that is the only remaining manual Slack setup; Phases A–E do not depend on it.
-- [ ] **Secure secrets:** choose the delivery mechanism for `TODOIST_ACCESS_TOKEN`, Google OAuth client/refresh-token material, `SLACK_BOT_TOKEN`, and `SLACK_APP_TOKEN` when Slack testing begins. Bitwarden CLI is the intended provider for Google-account/2FA and OAuth setup material. Do not paste secret values into Slack, plans, issue comments, commits, screenshots, or video.
+- [ ] **Secure secrets:** Todoist and Google material are already staged locally. Only `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` remain to be securely staged when Slack testing begins. Do not paste secret values into Slack, plans, issue comments, commits, screenshots, or video.
 - [ ] **Boundary authorization:** confirm that the supplied Todoist and Google accounts are the approved disposable boundary. I will derive and store resource IDs/URLs only in ignored `.qa/` configuration after preflight confirms that boundary.
 
 ### During execution

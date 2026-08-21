@@ -27,6 +27,6 @@ None. The repository has no baseline OpenSpec capability specs; the active `plan
 
 - Runtime/configuration: `ProductionIntegrationConfig`, `ProductionPlannerOrchestrator`, planner example configuration, and QA configuration/runbook.
 - Adapters: new Google OAuth and Google Calendar API gateway classes implementing `CalendarReadGateway` and `CalendarWriteGateway`; existing `CalDavHttpGateway` remains supported for non-Google providers.
-- Security: Justin's existing desktop OAuth-client JSON is retrieved from Bitwarden into an ignored local file; a separate SmartPlanner QA token store holds only the dedicated account's credentials. No Google normal password, app password, static long-lived access token, or secrets appear in YAML/logs/evidence.
+- Security: Justin's existing desktop OAuth-client JSON and legacy credential-store artifacts are already staged in ignored local QA paths; a separate SmartPlanner QA token store holds only the dedicated account's credentials. No Google normal password, app password, static long-lived access token, or secrets appear in YAML/logs/evidence.
 - Tests: Spock unit tests and WireMock Google OAuth/Calendar API contracts, including refresh, pagination, ownership, collision, ambiguous writes, and no cross-calendar mutation.
 - Dependencies: consolidate the already-present Google client, OAuth, HTTP, and Calendar service dependencies at mutually compatible versions.
