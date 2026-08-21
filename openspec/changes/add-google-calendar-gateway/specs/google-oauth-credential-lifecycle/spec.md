@@ -40,3 +40,7 @@ The installed launcher SHALL expose `--operation google-oauth-bootstrap` only wh
 #### Scenario: Bootstrap uses only loopback
 - **WHEN** `google-oauth-bootstrap` starts with valid Google provider configuration
 - **THEN** its callback receiver SHALL bind only to `127.0.0.1` on the configured callback port
+
+#### Scenario: Bootstrap precedes calendar provisioning
+- **WHEN** `google-oauth-bootstrap` has valid Google OAuth configuration but no configured Google calendar IDs
+- **THEN** it SHALL complete bootstrap validation and SHALL not require a managed output calendar or construct the calendar gateway

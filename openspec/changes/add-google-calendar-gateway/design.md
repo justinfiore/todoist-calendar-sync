@@ -70,7 +70,7 @@ todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
   --operation google-oauth-bootstrap
 ```
 
-The command must refuse unless `provider: google_calendar_api` is selected, must listen only on loopback, and must exit with a redacted result after persisting refresh-capable credentials. For a browser on another machine, the documented path is `ssh -N -L 8787:127.0.0.1:8787 hermes@<host>` before opening the consent URL; the authorization-code callback travels through that SSH tunnel and is never pasted into Slack or a terminal.
+The command must refuse unless `provider: google_calendar_api` is selected, must listen only on loopback, and must exit with a redacted result after persisting refresh-capable credentials. Bootstrap validates only the Google provider, OAuth client-file reference, token-store reference, account email, and callback port; it deliberately does not require calendar IDs because it precedes the explicit QA calendar-provisioning operation. For a browser on another machine, the documented path is `ssh -N -L 8787:127.0.0.1:8787 hermes@<host>` before opening the consent URL; the authorization-code callback travels through that SSH tunnel and is never pasted into Slack or a terminal.
 
 ### 3. Implement Google Calendar API semantics behind existing ports
 

@@ -1,6 +1,6 @@
 ## 1. Establish the Google provider configuration boundary
 
-- [ ] 1.1 Write failing `ProductionIntegrationConfigSpec` cases for explicit `calendar.provider`, provider-specific required fields, mixed-provider rejection, duplicate Google calendar IDs/names, managed-output mapping, secret-reference validation, and zero provider construction on invalid config.
+- [ ] 1.1 Write failing `ProductionIntegrationConfigSpec` cases for explicit `calendar.provider`, provider-specific required fields, mixed-provider rejection, duplicate Google calendar IDs/names, managed-output mapping, secret-reference validation, bootstrap-only Google configuration without calendar IDs, and zero provider construction on invalid config.
 - [ ] 1.2 Extend `ProductionIntegrationConfig` with a validated immutable calendar-provider model that selects exactly `caldav` or `google_calendar_api` and preserves existing CalDAV configuration semantics.
 - [ ] 1.3 Update `ProductionPlannerOrchestrator` composition to instantiate only the selected gateway and preserve the existing `CalendarReadGateway` / `CalendarWriteGateway` ports plus `ManagedCalendarWriteGateway` enforcement.
 - [ ] 1.4 Run the focused configuration/composition specs and verify the new cases fail before implementation and pass after it.

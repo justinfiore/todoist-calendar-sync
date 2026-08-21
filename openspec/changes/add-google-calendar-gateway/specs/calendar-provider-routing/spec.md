@@ -15,6 +15,10 @@ The system SHALL require an explicit validated calendar provider selection for p
 - **WHEN** configuration mixes Google and CalDAV provider fields, selects an unknown provider, duplicates configured calendar names/IDs, or omits the selected provider's managed output mapping
 - **THEN** validation SHALL fail before any provider credential is resolved or network request is sent
 
+#### Scenario: OAuth bootstrap validates the pre-provisioning subset
+- **WHEN** the `google-oauth-bootstrap` operation is invoked with Google provider, OAuth client-file, token-store, account-email, and callback-port configuration but no Google calendar IDs
+- **THEN** operation-specific validation SHALL allow bootstrap while normal capacity, preview, apply, and daemon operations SHALL continue to require a complete managed-output calendar mapping
+
 ### Requirement: Provider routing preserves planner safety contracts
 Provider selection SHALL not weaken preview no-write behavior, Todoist due-only/deadline-invariance behavior, exact approval requirements, safe-only withholding, managed-calendar ownership checks, global UID collision detection, or fully-automated refusal.
 
