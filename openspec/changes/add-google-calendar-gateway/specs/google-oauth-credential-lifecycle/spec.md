@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Renewable Google OAuth credentials
-The system SHALL provide a Google OAuth 2.0 credential lifecycle for the Google Calendar API provider that loads the existing TodoistCalDavSync desktop OAuth client material from an ignored local secret reference, obtains and persists a refresh token through an explicit installed-app bootstrap, refreshes expired access credentials before Google API use, and never accepts a static access token as the durable Google credential.
+The system SHALL provide separate Google OAuth 2.0 credential lifecycles for normal event operations and explicit QA calendar provisioning. Both SHALL load the existing TodoistCalDavSync desktop OAuth client material from an ignored local secret reference, obtain and persist refresh tokens through explicit installed-app bootstraps, refresh expired access credentials before Google API use, and never accept a static access token as the durable Google credential.
 
 #### Scenario: Bootstrap creates renewable credential state
 - **WHEN** an operator explicitly invokes the documented Google OAuth bootstrap for the dedicated QA account and completes consent
@@ -30,8 +30,8 @@ The system SHALL reject inline OAuth secrets, SHALL keep OAuth client and token-
 - **WHEN** configuration contains a raw OAuth client secret, authorization code, access token, or refresh token
 - **THEN** configuration validation SHALL fail before any Google network client is constructed
 
-### Requirement: OAuth bootstrap is explicit and loopback-only
-The installed launcher SHALL expose `--operation google-oauth-bootstrap` only when the selected provider is `google_calendar_api`. It SHALL bind its callback receiver to `127.0.0.1` at configurable `oauth_callback_port` with default `8787`, SHALL print the one-time consent URL directly to the invoking terminal without persisting it to logs or receipts, and SHALL not start calendar provisioning or planner operations.
+### Requirement: Normal OAuth bootstrap is event-only, loopback-only, and exits
+The installed launcher SHALL expose `--operation google-oauth-bootstrap` only when the selected provider is `google_calendar_api`. It SHALL request only the event read/write OAuth scope required by normal planner calendar operations, bind its callback receiver to `127.0.0.1` at configurable `oauth_callback_port` with default `8787`, print the one-time consent URL directly to the invoking terminal without persisting it to logs or receipts, persist credentials only in the normal token store, and exit without starting calendar provisioning or planner operations.
 
 #### Scenario: Bootstrap refuses a non-Google provider
 - **WHEN** `google-oauth-bootstrap` is invoked with `provider: caldav` or invalid provider configuration
@@ -44,3 +44,18 @@ The installed launcher SHALL expose `--operation google-oauth-bootstrap` only wh
 #### Scenario: Bootstrap precedes calendar provisioning
 - **WHEN** `google-oauth-bootstrap` has valid Google OAuth configuration but no configured Google calendar IDs
 - **THEN** it SHALL complete bootstrap validation and SHALL not require a managed output calendar or construct the calendar gateway
+
+#### Scenario: Normal bootstrap exits after event-only credential setup
+- **WHEN** the operator completes normal OAuth consent successfully
+- **THEN** the launcher SHALL persist only normal event-operation credentials, SHALL exit successfully, and SHALL not create/list/rename/delete a Google calendar
+
+### Requirement: QA OAuth bootstrap grants calendar-management scope separately
+The installed launcher SHALL expose `--operation google-oauth-bootstrap-qa` only when the selected provider is `google_calendar_api`. It SHALL request the additional Google Calendar management scope needed solely for explicit QA calendar provisioning, persist that credential only in a distinct QA token store, bind only to loopback, and exit without provisioning calendars.
+
+#### Scenario: QA bootstrap does not broaden normal credentials
+- **WHEN** the operator completes QA OAuth consent successfully
+- **THEN** the launcher SHALL persist the elevated credential only in the QA token store and SHALL not overwrite the normal event-only token store
+
+#### Scenario: QA bootstrap exits without provisioning
+- **WHEN** the operator completes QA OAuth consent successfully
+- **THEN** the launcher SHALL exit successfully without creating, listing, renaming, or deleting any Google calendar

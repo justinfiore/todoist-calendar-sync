@@ -5,11 +5,11 @@ SmartPlanner currently composes a direct CalDAV adapter that accepts only Basic 
 ## What Changes
 
 - Add a Google Calendar API implementation of SmartPlanner's existing calendar read/write ports.
-- Add a renewable Google OAuth 2.0 credential lifecycle for the dedicated Google QA account, reusing Justin's existing TodoistCalDavSync desktop OAuth client for QA, with no raw credentials committed or logged.
+- Add renewable Google OAuth 2.0 credential lifecycles for the dedicated Google QA account: a normal event-only bootstrap and a separately invoked QA calendar-provisioning bootstrap, reusing Justin's existing TodoistCalDavSync desktop OAuth client with no raw credentials committed or logged.
 - Add explicit configuration-driven calendar-provider selection so Google Calendar API and non-Google CalDAV remain separate, fail-closed integration paths.
 - Add Google Calendar API calendar discovery/provisioning support for the disposable `SmartPlanner QA Output` and test-input calendars.
 - Preserve all existing planner ownership, collision, approval, due-date, ambiguity, and preview-no-write safety controls.
-- Add hermetic OAuth/Google Calendar HTTP-contract tests plus configuration, documentation, and QA-runbook updates. Live Google testing remains blocked until Justin reviews and approves implementation.
+- Add thorough WireMock OAuth/Google Calendar HTTP-contract tests grounded in the official Google Calendar API documentation, plus README, QUICK_START, configuration, and QA-runbook updates. Live Google testing remains blocked until Justin reviews and approves implementation.
 
 ## Capabilities
 

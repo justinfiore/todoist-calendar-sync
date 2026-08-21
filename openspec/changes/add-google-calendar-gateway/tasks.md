@@ -10,15 +10,16 @@
 - [ ] 2.1 Write failing unit tests for ignored-file loading of Justin's existing TodoistCalDavSync desktop OAuth client JSON, injected clock/token-store expiry decisions, successful refresh, revoked/invalid refresh, malformed response, atomic token persistence, and token/header redaction.
 - [ ] 2.2 Introduce a narrow Google OAuth client-material loader that resolves only configured local secret-file references, rejects inline secret fields, and produces secret-free validation errors.
 - [ ] 2.3 Introduce a Google OAuth token-store abstraction with private local-file implementation and in-memory fake; enforce atomic writes and owner-only file permissions where the host supports them.
-- [ ] 2.4 Implement the credential provider/bootstrap service around the existing compatible Google client libraries, requesting the exact Calendar scopes required by gateway reads/writes and QA calendar provisioning, with refresh-before-use behavior.
-- [ ] 2.5 Add `--operation google-oauth-bootstrap`, require `provider: google_calendar_api`, bind a configurable callback receiver to `127.0.0.1` only (default port `8787`), print the one-time consent URL only to the invoking terminal (not logs/receipts), and exit after refresh-capable token persistence without running planner/provisioning work.
-- [ ] 2.6 Add deterministic noninteractive bootstrap seams plus tests for fixed/configured loopback port, non-Google refusal before listener/secret resolution, SSH-tunneled callback completion, and all hermetic tests avoiding browser/network calls; leave real consent as an explicit post-review operator operation.
-- [ ] 2.7 Document validation/import of the already staged local OAuth client JSON and legacy credential-store artifacts, ignored `.qa/secrets/` permissions, the bootstrap launcher command, remote-browser SSH forwarding if re-consent is required, and the prohibition on pasting codes/tokens/passwords into Slack.
-- [ ] 2.8 Run focused OAuth/redaction tests and inspect test output to confirm no representative secret reaches errors or reports.
+- [ ] 2.4 Implement distinct normal event-only and QA calendar-management OAuth scope sets/token stores around the existing compatible Google client libraries, with refresh-before-use behavior and no normal-token overwrite by QA consent.
+- [ ] 2.5 Add `--operation google-oauth-bootstrap`, require `provider: google_calendar_api`, bind a configurable callback receiver to `127.0.0.1` only (default port `8787`), request event-only scope, print the one-time consent URL only to the invoking terminal (not logs/receipts), persist only the normal token store, and exit without planner/provisioning work.
+- [ ] 2.6 Add `--operation google-oauth-bootstrap-qa`, require `provider: google_calendar_api`, bind loopback-only, request the separate calendar-management QA scope, persist only the QA token store, and exit without planner/provisioning work.
+- [ ] 2.7 Add deterministic noninteractive bootstrap seams plus tests for fixed/configured loopback port, normal-vs-QA scope/token-store separation, non-Google refusal before listener/secret resolution, SSH-tunneled callback completion, and all hermetic tests avoiding browser/network calls; leave real consent as an explicit post-review operator operation.
+- [ ] 2.8 Document validation/import of the already staged local OAuth client JSON and legacy credential-store artifacts, ignored `.qa/secrets/` permissions, both bootstrap launcher commands and exit behavior, remote-browser SSH forwarding if re-consent is required, and the prohibition on pasting codes/tokens/passwords into Slack in `README.md` and `QUICK_START.md`.
+- [ ] 2.9 Run focused OAuth/redaction tests and inspect test output to confirm no representative secret reaches errors or reports.
 
 ## 3. Implement Google Calendar API read semantics
 
-- [ ] 3.1 Write WireMock tests for Google Calendar event-list request parameters, page-token traversal, bounded page/result behavior, configured calendar-name retention, timed/all-day conversion, and malformed/oversized responses.
+- [ ] 3.1 Build WireMock stubs from the official Google Calendar API documentation and write contract tests for event-list request parameters, page-token traversal, bounded page/result behavior, configured calendar-name retention, timed/all-day conversion, and malformed/oversized responses.
 - [ ] 3.2 Add `GoogleCalendarApiGateway` implementing `CalendarReadGateway`, with injectable authorized service/HTTP client, clock, limits, and exception classifier seams.
 - [ ] 3.3 Implement `fetchEvents` using the Google Calendar API across every configured calendar, explicit range bounds, single-event expansion, bounded pagination, and domain conversion.
 - [ ] 3.4 Write and implement global `findEventByUid` tests/behavior for absent, one matching event, API failure, and duplicate UID across configured calendars; duplicate/missing lookup ambiguity must fail closed.
@@ -34,7 +35,7 @@
 
 ## 5. Add explicit QA calendar provisioning
 
-- [ ] 5.1 Write failing tests for an explicit QA-only provision/list operation: dedicated-account preflight, create-or-reuse named QA calendars, returned-ID persistence limited to ignored QA state, and refusal from normal planner operations.
+- [ ] 5.1 Write failing WireMock tests from the official Google Calendar API documentation for an explicit QA-only provision/list operation: separate QA-token-store requirement, dedicated-account preflight, create-or-reuse named QA calendars, returned-ID persistence limited to ignored QA state, and refusal from normal planner operations.
 - [ ] 5.2 Add a narrow Google calendar-provisioning service/command that uses the authorized Google gateway only when explicitly invoked and never from `capacity`, `preview`, `apply`, `apply-safe`, or `planner-daemon`.
 - [ ] 5.3 Add a safe ignored `.qa/` configuration template and fixture inventory documenting aliases, output/blocker calendars, client-secret/token-store references, and no secret values.
 - [ ] 5.4 Run provisioning tests and verify normal planner operation dispatch cannot reach the provisioning service.
@@ -42,7 +43,7 @@
 ## 6. Documentation, examples, and review-ready validation
 
 - [ ] 6.1 Update `conf/todoist-planner.conf.example.yaml` and `docs/SMART_PLANNER_CONFIGURATION.md` with explicit Google-vs-CalDAV provider routing, OAuth secret references, calendar IDs, startup errors, and Google-specific safety boundaries.
-- [ ] 6.2 Update `docs/PLANNER_END_TO_END_TESTING.md`, `QUICK_START.md`, and the QA runbook with the post-review dedicated-account OAuth import/validation/bootstrap path, QA calendar provisioning, preview-first gates, evidence requirements, and rollback/token-revocation procedure.
+- [ ] 6.2 Update `README.md`, `QUICK_START.md`, `docs/PLANNER_END_TO_END_TESTING.md`, and the QA runbook with normal bootstrap exit behavior, separately scoped QA bootstrap/QA calendar provisioning, preview-first gates, evidence requirements, and rollback/token-revocation procedure.
 - [ ] 6.3 Add regression coverage that parses the example configuration and asserts it contains no inline Google secrets or normal-password/app-password guidance for the Google provider.
 - [ ] 6.4 Run focused new specs, `./gradlew :app:test --rerun-tasks`, `./gradlew build`, `./gradlew installDist`, installed launcher help, `openspec validate add-google-calendar-gateway --strict`, `git diff --check`, and a secret scan of tracked files.
 - [ ] 6.5 Review the complete diff against the three new OpenSpec specs; commit implementation/tests/docs separately from this proposal artifact commit, then wait for Justin’s approval before any live Google authentication, Google Cloud OAuth-client creation, or QA calendar mutation.

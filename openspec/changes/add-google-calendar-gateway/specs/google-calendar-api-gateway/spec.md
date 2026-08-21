@@ -35,12 +35,12 @@ The Google Calendar API gateway SHALL create, update, or delete events only in t
 - **THEN** the gateway SHALL classify the result as ambiguous and SHALL not retry the mutation automatically
 
 ### Requirement: QA-only Google calendar provisioning is explicit
-The system SHALL provide an explicit QA-only operation or helper that lists and creates named Google calendars through the authenticated Google Calendar API and SHALL not invoke that operation from normal capacity, preview, apply, or daemon flows.
+The system SHALL provide an explicit QA-only operation or helper that lists and creates named Google calendars through the authenticated Google Calendar API using only the separate QA token store and SHALL not invoke that operation from normal capacity, preview, apply, apply-safe, deliver, feedback, or daemon flows.
 
 #### Scenario: Provision isolated QA calendars
 - **WHEN** the explicit QA provisioning operation runs after dedicated-account preflight
 - **THEN** it SHALL create or reuse only the named QA calendars and persist their returned calendar IDs only in ignored local QA configuration/state
 
 #### Scenario: Normal planning cannot provision calendars
-- **WHEN** capacity, preview, apply, apply-safe, or planner-daemon runs
+- **WHEN** capacity, preview, apply, apply-safe, deliver, feedback, or planner-daemon runs
 - **THEN** it SHALL not create, delete, or rename any Google calendar
