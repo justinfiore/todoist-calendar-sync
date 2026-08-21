@@ -94,6 +94,7 @@ class SmartPlannerDaemonSpec extends Specification {
             ai: [enabled: false],
             integration: [
                 todoist: [base_url: 'https://api.todoist.com/api/v1', token_env: 'TEST_TOKEN'],
+                calendar: [provider: 'caldav'],
                 caldav: [calendars: [[name: 'Planned', url: 'https://calendar.example.test/planned', auth: [type: 'none']]]],
                 feedback: [allowed_actors: ['U1'], rules: [
                     [name: 'approve', pattern: '(?i)^\\s*(yes|approve)\\s*$', action: 'approve'],

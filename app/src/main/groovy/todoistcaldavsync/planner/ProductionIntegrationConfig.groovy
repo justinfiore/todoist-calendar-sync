@@ -1,6 +1,8 @@
 package todoistcaldavsync.planner
 
 import java.net.URI
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.time.Duration
 import java.util.regex.Pattern
@@ -15,6 +17,7 @@ final class ProductionIntegrationConfig {
     final Map todoist
     final List<Map> calendars
     final Map caldav
+    final CalendarProviderConfig calendarProvider
     final Map weather
     final Map feedback
     final Map daemon
@@ -25,9 +28,36 @@ final class ProductionIntegrationConfig {
     final Path deliveriesDir
     final String previousPlanId
 
-    private ProductionIntegrationConfig(Map root, Path configDir) {
+    private ProductionIntegrationConfig(Map root, Path configDir, boolean googleBootstrapOnly) {
         Map planner = root.planner instanceof Map ? root.planner as Map : [:]
         Map integration = planner.integration instanceof Map ? planner.integration as Map : [:]
+        if (googleBootstrapOnly) {
+            Map calendarRaw = integration.calendar instanceof Map ? integration.calendar as Map : [:]
+            String provider = calendarRaw.provider?.toString()?.trim()
+            if (provider != CalendarProviderConfig.GOOGLE_CALENDAR_API) {
+                throw new IllegalArgumentException('planner.integration.calendar.provider must be exactly google_calendar_api for OAuth bootstrap')
+            }
+            Set<String> calendarKeys = calendarRaw.keySet().collect { it.toString() } as Set
+            if (calendarKeys.any { !(it in ['provider', 'google_calendar_api']) } || integration.containsKey('caldav')) {
+                throw new IllegalArgumentException('mixed or unsupported calendar provider fields are not allowed for Google OAuth bootstrap')
+            }
+            Map googleRaw = calendarRaw.google_calendar_api instanceof Map ? calendarRaw.google_calendar_api as Map : [:]
+            def google = parseGoogleCalendarApi(googleRaw, configDir, null, true)
+            this.todoist = Collections.emptyMap()
+            this.calendars = google.calendars
+            this.caldav = null
+            this.calendarProvider = new CalendarProviderConfig(provider, null, google)
+            this.weather = Collections.emptyMap()
+            this.feedback = Collections.emptyMap()
+            this.daemon = Collections.emptyMap()
+            this.slack = Collections.emptyMap()
+            this.plansDir = null
+            this.applicationsDir = null
+            this.decisionsDir = null
+            this.deliveriesDir = null
+            this.previousPlanId = null
+            return
+        }
         Map todoistRaw = integration.todoist instanceof Map ? integration.todoist as Map : [:]
         String todoistBase = todoistRaw.base_url?.toString()
         String tokenEnv = todoistRaw.token_env?.toString()
@@ -46,44 +76,42 @@ final class ProductionIntegrationConfig {
                 'planner.integration.todoist.max_response_bytes')
         ])
 
-        Map caldavRaw = integration.caldav instanceof Map ? integration.caldav as Map : [:]
-        if (!(caldavRaw.calendars instanceof Collection) || caldavRaw.calendars.isEmpty()) {
-            throw new IllegalArgumentException('planner.integration.caldav.calendars must be a non-empty list')
+        Map calendarRaw = integration.calendar instanceof Map ? integration.calendar as Map : [:]
+        String provider = calendarRaw.provider?.toString()?.trim()
+        if (!(provider in [CalendarProviderConfig.CALDAV, CalendarProviderConfig.GOOGLE_CALENDAR_API])) {
+            throw new IllegalArgumentException('planner.integration.calendar.provider must be exactly caldav or google_calendar_api')
         }
-        List<Map> parsedCalendars = []
-        (caldavRaw.calendars as Collection).eachWithIndex { row, int idx ->
-            if (!(row instanceof Map)) throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}] must be a map")
-            Map copy = new LinkedHashMap(row as Map)
-            String calendarName = copy.name?.toString()?.trim()
-            String calendarUrl = copy.url?.toString()
-            if (!calendarName || !calendarUrl) {
-                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}] requires name and url")
-            }
-            validateHttpsUri(calendarUrl, "planner.integration.caldav.calendars[${idx}].url")
-            Map auth = copy.auth instanceof Map ? copy.auth as Map : [:]
-            rejectInlineSecrets(auth, "planner.integration.caldav.calendars[${idx}].auth")
-            String authType = (auth.type ?: auth.scheme ?: 'none').toString().toLowerCase(Locale.ROOT)
-            if (authType == 'basic' && (!auth.username?.toString()?.trim() || !auth.password_env?.toString()?.trim())) {
-                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}].auth basic requires username and password_env")
-            }
-            if (authType in ['bearer', 'oauth2'] && !auth.token_env?.toString()?.trim()) {
-                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}].auth bearer requires token_env")
-            }
-            parsedCalendars << Collections.unmodifiableMap(copy)
-        }
-        if (parsedCalendars*.name.collect { it.toString() }.toSet().size() != parsedCalendars.size()) {
-            throw new IllegalArgumentException('planner.integration.caldav calendar names must be unique')
+        Set<String> calendarKeys = calendarRaw.keySet().collect { it.toString() } as Set
+        if (calendarKeys.any { !(it in ['provider', 'google_calendar_api']) }) {
+            throw new IllegalArgumentException('planner.integration.calendar contains mixed or unsupported provider fields')
         }
         String outputCalendar = planner.output_calendar?.toString()
-        if (!outputCalendar || !parsedCalendars*.name.collect { it.toString() }.contains(outputCalendar)) {
-            throw new IllegalArgumentException('planner.output_calendar must name one configured integration CalDAV calendar')
+        if (provider == CalendarProviderConfig.CALDAV) {
+            if (calendarRaw.containsKey('google_calendar_api')) {
+                throw new IllegalArgumentException('mixed calendar provider sections are not allowed when provider is caldav')
+            }
+            Map parsed = parseCalDav(integration.caldav, outputCalendar)
+            Map providerCalDav = Collections.unmodifiableMap([
+                calendars: parsed.calendars,
+                timeout: parsed.settings.timeout,
+                maxResponseBytes: parsed.settings.maxResponseBytes
+            ])
+            this.calendarProvider = new CalendarProviderConfig(provider, providerCalDav, null)
+            this.calendars = this.calendarProvider.caldav.calendars as List<Map>
+            this.caldav = Collections.unmodifiableMap([
+                timeout: this.calendarProvider.caldav.timeout,
+                maxResponseBytes: this.calendarProvider.caldav.maxResponseBytes
+            ])
+        } else {
+            if (integration.containsKey('caldav')) {
+                throw new IllegalArgumentException('mixed CalDAV and Google calendar provider sections are not allowed')
+            }
+            Map googleRaw = calendarRaw.google_calendar_api instanceof Map ? calendarRaw.google_calendar_api as Map : [:]
+            def google = parseGoogleCalendarApi(googleRaw, configDir, outputCalendar, googleBootstrapOnly)
+            this.calendars = google.calendars
+            this.caldav = null
+            this.calendarProvider = new CalendarProviderConfig(provider, null, google)
         }
-        this.calendars = Collections.unmodifiableList(parsedCalendars)
-        this.caldav = Collections.unmodifiableMap([
-            timeout         : parseDuration(caldavRaw.timeout, Duration.ofSeconds(15), 'planner.integration.caldav.timeout'),
-            maxResponseBytes: positiveLong(caldavRaw.max_response_bytes, 2_097_152L,
-                'planner.integration.caldav.max_response_bytes')
-        ])
 
         Map weatherRaw = integration.weather instanceof Map ? integration.weather as Map : [:]
         this.weather = Collections.unmodifiableMap([
@@ -111,7 +139,11 @@ final class ProductionIntegrationConfig {
     }
 
     static ProductionIntegrationConfig fromMap(Map root, Path configDir) {
-        new ProductionIntegrationConfig(root ?: [:], configDir)
+        new ProductionIntegrationConfig(root ?: [:], configDir, false)
+    }
+
+    static ProductionIntegrationConfig fromMapForGoogleOAuthBootstrap(Map root, Path configDir) {
+        new ProductionIntegrationConfig(root ?: [:], configDir, true)
     }
 
     Collection<String> feedbackActors() {
@@ -121,6 +153,118 @@ final class ProductionIntegrationConfig {
 
     List<Map> planningRuns() { daemon.planningRuns as List<Map> }
     List<Map> feedbackRules() { feedback.rules as List<Map> }
+
+    private static Map parseCalDav(def raw, String outputCalendar) {
+        Map caldavRaw = raw instanceof Map ? raw as Map : [:]
+        if (caldavRaw.keySet().any { it.toString() in [
+            'google_calendar_api', 'oauth_client_secret_file', 'token_store_dir',
+            'account_email', 'oauth_callback_port'
+        ] }) {
+            throw new IllegalArgumentException('planner.integration.caldav contains mixed Google provider fields')
+        }
+        if (!(caldavRaw.calendars instanceof Collection) || caldavRaw.calendars.isEmpty()) {
+            throw new IllegalArgumentException('planner.integration.caldav.calendars must be a non-empty list')
+        }
+        List<Map> parsedCalendars = []
+        (caldavRaw.calendars as Collection).eachWithIndex { row, int idx ->
+            if (!(row instanceof Map)) throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}] must be a map")
+            Map copy = new LinkedHashMap(row as Map)
+            if (copy.containsKey('id') || copy.containsKey('role')) {
+                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}] contains mixed Google provider fields")
+            }
+            String calendarName = copy.name?.toString()?.trim()
+            String calendarUrl = copy.url?.toString()
+            if (!calendarName || !calendarUrl) {
+                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}] requires name and url")
+            }
+            validateHttpsUri(calendarUrl, "planner.integration.caldav.calendars[${idx}].url")
+            Map auth = copy.auth instanceof Map ? new LinkedHashMap(copy.auth as Map) : [:]
+            rejectInlineSecrets(auth, "planner.integration.caldav.calendars[${idx}].auth")
+            String authType = (auth.type ?: auth.scheme ?: 'none').toString().toLowerCase(Locale.ROOT)
+            if (authType == 'basic' && (!auth.username?.toString()?.trim() || !auth.password_env?.toString()?.trim())) {
+                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}].auth basic requires username and password_env")
+            }
+            if (authType in ['bearer', 'oauth2'] && !auth.token_env?.toString()?.trim()) {
+                throw new IllegalArgumentException("planner.integration.caldav.calendars[${idx}].auth bearer requires token_env")
+            }
+            copy.name = calendarName
+            copy.auth = Collections.unmodifiableMap(auth)
+            parsedCalendars << Collections.unmodifiableMap(copy)
+        }
+        if (parsedCalendars*.name.toSet().size() != parsedCalendars.size()) {
+            throw new IllegalArgumentException('planner.integration.caldav calendar names must be unique')
+        }
+        if (!outputCalendar || !parsedCalendars*.name.contains(outputCalendar)) {
+            throw new IllegalArgumentException('planner.output_calendar must name one configured integration CalDAV calendar')
+        }
+        Map settings = Collections.unmodifiableMap([
+            timeout         : parseDuration(caldavRaw.timeout, Duration.ofSeconds(15), 'planner.integration.caldav.timeout'),
+            maxResponseBytes: positiveLong(caldavRaw.max_response_bytes, 2_097_152L,
+                'planner.integration.caldav.max_response_bytes')
+        ])
+        [calendars: Collections.unmodifiableList(parsedCalendars), settings: settings]
+    }
+
+    private static CalendarProviderConfig.GoogleCalendarApiConfig parseGoogleCalendarApi(
+        Map raw, Path configDir, String outputCalendar, boolean bootstrapOnly) {
+        rejectInlineSecrets(raw, 'planner.integration.calendar.google_calendar_api')
+        Set<String> allowed = ['oauth_client_secret_file', 'token_store_dir', 'account_email',
+                               'oauth_callback_port', 'calendars'] as Set
+        if (raw.keySet().any { !allowed.contains(it.toString()) }) {
+            throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api contains mixed or unsupported provider fields')
+        }
+        Path clientFile = requiredContainedPath(raw.oauth_client_secret_file, configDir,
+            'planner.integration.calendar.google_calendar_api.oauth_client_secret_file')
+        Path tokenStore = requiredContainedPath(raw.token_store_dir, configDir,
+            'planner.integration.calendar.google_calendar_api.token_store_dir')
+        String accountEmail = raw.account_email?.toString()?.trim()
+        if (!accountEmail || !(accountEmail ==~ /[^\s@]+@[^\s@]+\.[^\s@]+/)) {
+            throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api.account_email must be a valid email address')
+        }
+        int callbackPort = positiveInt(raw.oauth_callback_port, 8787, 65535,
+            'planner.integration.calendar.google_calendar_api.oauth_callback_port')
+        List<Map> calendars = parseGoogleCalendars(raw.calendars, outputCalendar, bootstrapOnly)
+        new CalendarProviderConfig.GoogleCalendarApiConfig(
+            clientFile, tokenStore, accountEmail, callbackPort, calendars)
+    }
+
+    private static List<Map> parseGoogleCalendars(def raw, String outputCalendar, boolean bootstrapOnly) {
+        if (bootstrapOnly) return Collections.emptyList()
+        if (!(raw instanceof Collection) || (raw as Collection).isEmpty()) {
+            throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api.calendars must be a non-empty list')
+        }
+        List<Map> calendars = []
+        (raw as Collection).eachWithIndex { row, int idx ->
+            if (!(row instanceof Map)) {
+                throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}] must be a map")
+            }
+            Set<String> keys = (row as Map).keySet().collect { it.toString() } as Set
+            if (keys.any { !(it in ['name', 'id', 'role']) }) {
+                throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}] contains mixed or unsupported fields")
+            }
+            String name = row.name?.toString()?.trim()
+            String id = row.id?.toString()?.trim()
+            String role = row.role?.toString()?.trim()?.toLowerCase(Locale.ROOT)
+            if (!name || !id || !role) {
+                throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}] requires name, id, and role")
+            }
+            if (!(role in ['hard_blocker', 'soft_blocker', 'informational', 'managed_output'])) {
+                throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}].role is unsupported")
+            }
+            calendars << Collections.unmodifiableMap([name: name, id: id, role: role])
+        }
+        if (calendars*.name.toSet().size() != calendars.size() || calendars*.id.toSet().size() != calendars.size()) {
+            throw new IllegalArgumentException('Google calendar names and IDs must be unique')
+        }
+        List<Map> managed = calendars.findAll { it.role == 'managed_output' }
+        if (managed.size() != 1) {
+            throw new IllegalArgumentException('Google calendars require exactly one managed_output mapping')
+        }
+        if (!outputCalendar || managed[0].name != outputCalendar) {
+            throw new IllegalArgumentException('planner.output_calendar must match the Google managed_output calendar name')
+        }
+        Collections.unmodifiableList(calendars)
+    }
 
     private static Map parseFeedback(Map raw) {
         def actors = raw.allowed_actors ?: raw.allowedActors ?: []
@@ -303,6 +447,29 @@ final class ProductionIntegrationConfig {
         path.toAbsolutePath().normalize()
     }
 
+    private static Path requiredContainedPath(def value, Path configDir, String name) {
+        if (configDir == null) throw new IllegalArgumentException('configuration directory is required')
+        Path base = configDir.toAbsolutePath().normalize()
+        Path path = requiredPath(value, base, name)
+        if (!path.startsWith(base)) {
+            throw new IllegalArgumentException("${name} must resolve within the configuration directory")
+        }
+        Path realBase = Files.exists(base, LinkOption.NOFOLLOW_LINKS) ? base.toRealPath() : base
+        Path current = base
+        for (Path component : base.relativize(path)) {
+            current = current.resolve(component)
+            if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) break
+            try {
+                if (!current.toRealPath().startsWith(realBase)) {
+                    throw new IllegalArgumentException("${name} must resolve within the configuration directory")
+                }
+            } catch (IOException ignored) {
+                throw new IllegalArgumentException("${name} must resolve within the configuration directory")
+            }
+        }
+        path
+    }
+
     private static Duration parseDuration(def raw, Duration fallback, String name, boolean allowZero = false) {
         if (raw == null) {
             if (fallback == null) throw new IllegalArgumentException("${name} is required")
@@ -345,9 +512,9 @@ final class ProductionIntegrationConfig {
     private static void rejectInlineSecrets(Map map, String path) {
         map.keySet().each { key ->
             String k = key.toString().toLowerCase(Locale.ROOT)
-            if (k in ['token', 'access_token', 'api_key', 'password', 'secret', 'password_override',
+            if (k in ['token', 'access_token', 'refresh_token', 'client_secret', 'api_key', 'password', 'secret', 'password_override',
                       'token_override', 'app_token', 'bot_token', 'webhook_url']) {
-                throw new IllegalArgumentException("${path}.${key} must not contain an inline secret; use an *_env reference")
+                throw new IllegalArgumentException("${path}.${key} must not contain an inline secret; use an environment or file reference")
             }
         }
     }

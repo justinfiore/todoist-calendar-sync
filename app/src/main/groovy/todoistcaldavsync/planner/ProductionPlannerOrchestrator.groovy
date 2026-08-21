@@ -43,6 +43,14 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private final Closure aiSuggestionProvider
 
     ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock = { Instant.now() }) {
+        this(configFile, clock,
+            { Map options -> new CalDavHttpGateway(options) },
+            { Map options -> new GoogleCalendarApiGateway(options) })
+    }
+
+    /** Provider-factory seam for hermetic composition tests; factories must not perform provider calls. */
+    ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock,
+                                  Closure calDavGatewayFactory, Closure googleGatewayFactory) {
         if (configFile == null || !configFile.isFile()) throw new IllegalArgumentException("Config file not found: ${configFile}")
         Map root = new YamlSlurper().parse(configFile) as Map
         this.plannerConfig = PlannerConfig.fromMap(root)
@@ -55,13 +63,28 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
         this.deliveryLedger = new DeliveryLedger(integrationConfig.deliveriesDir)
         def todoistGateway = new TodoistRestGateway(integrationConfig.todoist)
-        def calendarGateway = new CalDavHttpGateway([
-            calendars          : integrationConfig.calendars,
-            managedCalendarName: plannerConfig.outputCalendar,
-            timezone           : plannerConfig.timezone,
-            timeout            : integrationConfig.caldav.timeout,
-            maxResponseBytes   : integrationConfig.caldav.maxResponseBytes
-        ])
+        if (calDavGatewayFactory == null || googleGatewayFactory == null) {
+            throw new IllegalArgumentException('both calendar provider factories are required')
+        }
+        def calendarGateway
+        if (integrationConfig.calendarProvider.isCalDav()) {
+            calendarGateway = calDavGatewayFactory.call([
+                calendars          : integrationConfig.calendars,
+                managedCalendarName: plannerConfig.outputCalendar,
+                timezone           : plannerConfig.timezone,
+                timeout            : integrationConfig.caldav.timeout,
+                maxResponseBytes   : integrationConfig.caldav.maxResponseBytes
+            ])
+        } else {
+            calendarGateway = googleGatewayFactory.call([
+                config             : integrationConfig.calendarProvider.googleCalendarApi,
+                managedCalendarName: plannerConfig.outputCalendar,
+                timezone           : plannerConfig.timezone
+            ])
+        }
+        if (!(calendarGateway instanceof CalendarReadGateway) || !(calendarGateway instanceof CalendarWriteGateway)) {
+            throw new IllegalArgumentException('selected calendar provider must implement CalendarReadGateway and CalendarWriteGateway')
+        }
         this.todoistRead = todoistGateway
         this.todoistWrite = todoistGateway
         this.calendarRead = calendarGateway
