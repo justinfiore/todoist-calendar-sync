@@ -6,7 +6,7 @@
 
 **Architecture:** QA proceeds through three trust levels: hermetic automated regression tests; real-provider tests against dedicated disposable Todoist/Google Calendar/Slack resources; and an optional, narrow production crawl/walk/run. A test runner records command output, redacted logs, exported before/after provider state, and screenshots/video. A generated static HTML report links every assertion to its evidence and clearly distinguishes "automated proof," "live isolated proof," "manual observation," and "not yet tested."
 
-**Tech Stack:** Gradle/Spock/WireMock; installed `todoist-caldav-sync` distribution; Todoist REST API v1 for QA-resource inventory/provisioning and snapshots; SmartPlanner’s direct CalDAV HTTP adapter for all planner calendar reads/writes; isolated Slack test channel and SmartPlanner test app; Playwright/browser capture (or an equivalent local browser recorder); static HTML/CSS/JavaScript; filesystem JSON state/receipts.
+**Tech Stack:** Gradle/Spock/WireMock; installed `todoist-caldav-sync` distribution; Todoist REST API v1 for QA-resource inventory/provisioning and snapshots; a new Google Calendar API gateway with renewable OAuth 2.0 credentials for Google calendars; existing CalDAV adapter retained for non-Google providers; isolated Slack test channel and SmartPlanner test app; Playwright/browser capture (or an equivalent local browser recorder); static HTML/CSS/JavaScript; filesystem JSON state/receipts.
 
 ---
 
@@ -20,23 +20,23 @@
 - [ ] Each write test must have a precise expected mutation, a before/after diff, and a cleanup/rollback step. Any unexplained mutation stops the test campaign and returns configuration to `preview`.
 - [ ] `fully_automated` remains explicitly out of scope because the implementation is designed to refuse it with zero writes.
 - [ ] Credential use is limited to a dedicated QA Todoist account and dedicated QA Google account. API tokens, OAuth refresh tokens, app passwords, and authorization headers must be redacted before any evidence is written.
-- [ ] The Phase 7 planner must not be configured with Google Calendar API OAuth client secrets or a refresh token: its live calendar adapter is direct CalDAV and accepts only per-calendar Basic (`username` + `password_env`) or static Bearer (`token_env`) credentials.
+- [ ] Until the `add-google-calendar-gateway` change is implemented and independently verified, Phase 7 must not connect to Google Calendar. The existing static CalDAV Basic/Bearer path is not an approved Google QA route.
 
 ## External API references
 
 - Todoist API v1: <https://developer.todoist.com/api/v1/>. Use this as the authoritative source for dedicated Todoist QA project, label, task, and snapshot operations.
 - Google Calendar API overview: <https://developers.google.com/workspace/calendar/api/guides/overview>. This is useful background and may be used by an external QA-provisioning helper only if separately implemented; it is **not** the Phase 7 planner authentication contract.
 
-## Verified Phase 7 Google Calendar authentication contract
+## Superseded Phase 7 Google Calendar authentication finding and approved direction
 
-Repository inspection establishes the following for `feat/planner-main-integration`:
+Repository inspection establishes the following current limitation for `feat/planner-main-integration`:
 
 - `ProductionPlannerOrchestrator` composes `CalDavHttpGateway`, not the Google Calendar REST API client.
 - `ProductionIntegrationConfig` requires every configured calendar to have an HTTPS collection URL and accepts only `auth.type: basic` (`username` + `password_env`) or `auth.type: bearer`/`oauth2` (`token_env`).
 - `CalDavHttpGateway` sends either HTTP Basic authentication or a static `Authorization: Bearer …` header. It has no Google OAuth authorization-code flow, no refresh-token handling, and no Calendar API client-secret consumption.
 - The older `GoogleAuthProvider`/`client_secret.json` code is for the legacy sync path, not the Phase 7 planner composition. It must not be used as evidence that SmartPlanner can refresh Google OAuth credentials.
 
-**QA decision:** use the dedicated Google account’s CalDAV-compatible **Basic** credential if Google accepts it (normally a dedicated app password, never the normal account password). A static OAuth bearer access token is not acceptable for this campaign because SmartPlanner cannot refresh it; it may expire during a long-running test. If the dedicated Google account does not support CalDAV Basic/app-password access, pause live Google QA and record the incompatibility as a product gap; do not substitute an unverified OAuth credential or alter the account’s security posture.
+**Approved decision:** implement `add-google-calendar-gateway` before live Google QA. The new gateway will use Google Calendar API OAuth 2.0 with durable refresh-token support, create/list the disposable QA calendars through the Google API, and satisfy the existing calendar read/write ports. The existing CalDAV adapter remains available for non-Google CalDAV providers. No Google app password, static OAuth access token, or legacy `GoogleAuthProvider` setup is needed for the SmartPlanner Google path.
 
 ## Current implementation baseline to preserve
 
@@ -46,7 +46,7 @@ The live branch is `feat/planner-main-integration` at `09ad541` (`test(planner):
 - `docs/SLACK_INTEGRATION.md` defines Socket Mode setup, command/thread behavior, durable event recovery, and working-status evidence.
 - `conf/todoist-planner.conf.example.yaml` provides safe preview defaults, four distinct state stores, mode controls, and daemon/Slack settings.
 - `conf/smartplanner-slack-app-manifest.example.yaml` creates the default SmartPlanner test Slack app.
-- The supplied Todoist API v1 documentation governs Todoist QA provisioning/snapshot calls. SmartPlanner’s CalDAV adapter and its supported authentication remain the calendar execution contract; Google Calendar API documentation does not override that contract.
+- The supplied Todoist API v1 documentation governs Todoist QA provisioning/snapshot calls. Google Calendar API documentation and the `add-google-calendar-gateway` OpenSpec change will govern the Google execution/authentication path once implemented.
 - Existing test coverage includes WireMock provider boundaries and `SmartPlannerDaemonSpec`; it is necessary but not sufficient proof of actual Todoist/Google/Slack credentials, permissions, server semantics, or browser-visible Slack behavior.
 
 ## Artifacts to create during execution
@@ -97,10 +97,10 @@ Every test case is assigned a stable identifier, e.g. `LIVE-TOD-01`.
 **Objective:** Prove the test boundary is isolated before SmartPlanner is allowed to read anything.
 
 1. [ ] Positively identify the dedicated Todoist account and confirm the dedicated Google account’s email/username from securely staged nonsecret configuration; record only redacted aliases/fingerprints. Stop if either account appears to contain non-QA data or cannot be unambiguously identified.
-2. [ ] Run a **CalDAV Basic compatibility probe** against the Google account using the approved app password, restricted to CalDAV service discovery/read-only requests. Record HTTP status and redacted response headers only. Do not create or modify any calendar until this probe succeeds.
-3. [ ] Discover the Google account’s CalDAV calendar collection URLs through standard DAV discovery, then save those URLs only in ignored `.qa/` configuration. Do not guess or hand-construct collection URLs.
+2. [ ] Confirm the `add-google-calendar-gateway` implementation has passed its hermetic OAuth, token-refresh, Calendar API pagination, calendar-provisioning, event read/write, ownership, and no-cross-calendar-write tests before staging any Google credential.
+3. [ ] Using the new gateway’s documented one-time OAuth bootstrap, authenticate only to the dedicated Google QA account. Store the OAuth client credential and refresh token in Bitwarden/local protected secret storage; record only aliases/fingerprints in `.qa/` artifacts.
 4. [ ] Create and document aliases for the `SmartPlanner QA` Todoist project, planner labels, the `SmartPlanner QA Output` and `SmartPlanner QA Blockers` Google calendars, any input/availability calendar required by the test matrix, Slack test app/channel, and authorized test Slack user.
-5. [ ] Use a separate, ignored QA-provisioning helper (not SmartPlanner itself) to attempt standard CalDAV collection provisioning for the additional disposable calendars, then rediscover their collection URLs and configure the same Basic credential using `password_env` for every calendar. SmartPlanner only reads/writes events in pre-existing collections; it does not create calendar collections. Stop and preserve evidence if the Google CalDAV service does not support the required create/list semantics.
+5. [ ] Create the additional QA calendars through the Google Calendar API gateway, persist their returned calendar IDs only in ignored `.qa/` configuration, and configure explicit provider routing so only `SmartPlanner QA Output` is writable.
 6. [ ] Seed all disposable Todoist and Google fixture data listed below, assigning each created resource a stable QA alias and preserving its returned provider ID only in ignored local state.
 7. [ ] Verify that the QA config resolves to those aliases only. Add a preflight guard that refuses execution unless `output_calendar == SmartPlanner QA Output`, destination is the QA Slack channel ID, and account identifiers match the approved test inventory.
 8. [ ] Capture initial exports and browser screenshots. Review them with Justin before starting tests that could write.
@@ -182,12 +182,11 @@ Every test case is assigned a stable identifier, e.g. `LIVE-TOD-01`.
 ### One-time access setup
 
 - [ ] **Todoist:** create or designate a standalone disposable QA Todoist account for SmartPlanner (not linked to Justin’s main account) and securely stage its API token on this host—not in Slack or a repository file. I will create the `SmartPlanner QA` project, labels, tasks, and all other test fixtures.
-- [ ] **Google Calendar — create the isolated account:** create or designate a dedicated Google account containing no personal/work calendars. Do not create any calendars or events for this campaign; I will create every fixture after connectivity succeeds.
-- [ ] **Google Calendar — enable app passwords:** while signed in to that dedicated account, enable 2-Step Verification at <https://myaccount.google.com/security>. Then open **App passwords**, create one named `SmartPlanner QA`, and generate its one-time app password. If the account is managed and **App passwords** is absent/blocked, stop there and tell me; do not weaken the account, disable security controls, or use the normal password.
-- [ ] **Google Calendar — stage exactly the material Phase 7 consumes:** securely place (a) the dedicated account email address in the ignored QA configuration as the Basic `username`, and (b) the generated app password in a local protected environment variable named `CALDAV_QA_PASSWORD`. Do **not** provide a Google Calendar API OAuth client JSON, OAuth authorization code, refresh token, or normal account password for Phase 7; this branch does not consume them.
-- [ ] **Google Calendar — confirm the boundary:** tell me the dedicated account is approved as the disposable calendar boundary. I will run the read-only CalDAV compatibility/discovery probe, create `SmartPlanner QA Output`, `SmartPlanner QA Blockers`, and every other QA calendar/event fixture, then use the discovered HTTPS collection URLs in ignored `.qa/smartplanner-qa.yaml` rows such as `auth: { type: basic, username: <qa-email>, password_env: CALDAV_QA_PASSWORD }`.
+- [ ] **Google Calendar — dedicated boundary:** provide access to the dedicated Google account only; it contains no personal/work calendars. I will create every OAuth test client, complete the OAuth flow, and create every QA calendar/event fixture after the gateway implementation is reviewed and approved.
+- [ ] **Google Calendar — secure automation access:** provide access to the account’s 2FA token through Bitwarden CLI and authorize use of that dedicated account for Google Cloud/OAuth setup. Do not provide or store a normal Google password in Slack, Git, reports, screenshots, or plan artifacts.
+- [ ] **Google Calendar — confirm the boundary:** tell me the account is approved as the disposable Google boundary. I will create `SmartPlanner QA Output`, `SmartPlanner QA Blockers`, and every other QA calendar/event fixture using the new OAuth-authenticated Google Calendar API gateway, retaining IDs only in ignored `.qa/` configuration.
 - [ ] **Slack (only for Phase F):** securely stage the test-app bot and Socket Mode tokens and provide the QA channel ID plus authorized QA Slack user ID(s). I will configure the local integration and create the test messages. If workspace permissions require Justin to create/install the app or channel, that is the only remaining manual Slack setup; Phases A–E do not depend on it.
-- [ ] **Secure secrets:** choose the delivery mechanism and place the named environment variables on this host: `TODOIST_ACCESS_TOKEN`, `CALDAV_QA_PASSWORD`, `SLACK_BOT_TOKEN`, and `SLACK_APP_TOKEN` when Slack testing begins. Do not paste secret values into Slack, plans, issue comments, commits, screenshots, or video.
+- [ ] **Secure secrets:** choose the delivery mechanism for `TODOIST_ACCESS_TOKEN`, Google OAuth client/refresh-token material, `SLACK_BOT_TOKEN`, and `SLACK_APP_TOKEN` when Slack testing begins. Bitwarden CLI is the intended provider for Google-account/2FA and OAuth setup material. Do not paste secret values into Slack, plans, issue comments, commits, screenshots, or video.
 - [ ] **Boundary authorization:** confirm that the supplied Todoist and Google accounts are the approved disposable boundary. I will derive and store resource IDs/URLs only in ignored `.qa/` configuration after preflight confirms that boundary.
 
 ### During execution
@@ -218,7 +217,7 @@ Every test case is assigned a stable identifier, e.g. `LIVE-TOD-01`.
 
 ## Risks, decisions, and open questions
 
-1. **Google Calendar test access:** Phase 7 uses only direct CalDAV with Basic or static Bearer authentication; it cannot refresh Google OAuth tokens. The first live Google gate is therefore a read-only Basic/app-password compatibility probe plus DAV discovery. If Google does not accept that narrowly scoped credential, live Google QA is blocked pending an explicit product change that adds renewable OAuth support.
+1. **Google Calendar test access:** Current Phase 7 CalDAV authentication is insufficient for durable Google OAuth. Live Google QA is blocked until the reviewed `add-google-calendar-gateway` change provides renewable OAuth and API-based calendar provisioning.
 2. **Todoist test tenancy:** the supplied dedicated Todoist account is the required safety boundary. I will create the project, labels, and every task fixture after preflight; a separate project in Justin’s main account is not an equivalent boundary.
 3. **Slack workspace permissions:** app creation/install and Socket Mode may require a Slack administrator. If blocked, Phase F waits; Phases A–E can still prove Todoist/Calendar functionality.
 4. **Video capture:** browser automation can capture screenshots reliably. A short screen recording should be included for the Slack interaction if the installed browser/host supports it; otherwise the report will transparently use sequenced screenshots plus timestamped logs rather than claiming a video exists.
