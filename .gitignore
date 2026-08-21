@@ -10,3 +10,6 @@ conf/client_secret.json
 
 # Ignore Gradle build output directory
 build
+
+# Local QA configuration, OAuth credentials, tokens, fixtures, and evidence.
+.qa/
