@@ -6,7 +6,7 @@
 
 - [x] **Todoist QA credential:** `TODOIST_ACCESS_TOKEN` is securely staged in the ignored local `creds.txt`; I will create the disposable Todoist project, labels, tasks, and fixtures after the Google gateway implementation is approved.
 - [x] **Google OAuth material:** the existing TodoistCalDavSync desktop OAuth client JSON plus legacy credential-store artifacts are securely staged in ignored local `.qa/secrets/` paths. No Bitwarden access, Google normal password, Google app password, or manual token copy is needed. The legacy credential is not accepted as normal planner auth because it may include broad calendar-management scope.
-- [ ] **Google QA boundary confirmation and consent:** when implementation is complete, confirm that the account is the dedicated disposable agent-owned Google account and authorize a fresh normal event-only OAuth bootstrap. Separately authorize either validated import of the legacy credential into the QA-only token store or the explicit QA bootstrap before QA calendar provisioning. I will create all QA calendars and events.
+- [x] **Google QA boundary and initial credential authorization:** Justin confirmed the staged legacy credential was generated today for the dedicated disposable agent-owned Google account. After implementation, I am authorized to validate/import it into the QA-only token store, provision the QA calendars, and begin isolated QA without additional credential setup. A future fresh normal event-only bootstrap and live `google-oauth-bootstrap-qa` exercise remain separate documented tests when Justin is available.
 
 ### Still required only for optional Phase F Slack Socket Mode QA
 

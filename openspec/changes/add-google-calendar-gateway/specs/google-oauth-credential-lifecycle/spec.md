@@ -64,6 +64,10 @@ The installed launcher SHALL expose `--operation google-oauth-bootstrap-qa` only
 - **WHEN** the operator completes QA OAuth consent successfully
 - **THEN** the launcher SHALL exit successfully without creating, listing, renaming, or deleting any Google calendar
 
-#### Scenario: Legacy credential imports only into QA store after validation
-- **WHEN** an operator explicitly requests import of a legacy credential and account/scope validation proves it belongs to the dedicated QA account and includes the required calendar-management grant
-- **THEN** the system SHALL import it only into the distinct QA token store and SHALL not overwrite normal event-only credentials
+#### Scenario: Confirmed legacy credential imports initially into QA store
+- **WHEN** the staged legacy credential has been confirmed by the operator as newly generated for the dedicated QA account and account/scope validation succeeds
+- **THEN** the system SHALL import it only into the distinct QA token store, SHALL not overwrite normal event-only credentials, and SHALL make the explicit QA provisioning operation available without a new consent flow
+
+#### Scenario: Legacy QA import validation fails
+- **WHEN** the staged legacy credential does not validate for the expected dedicated account or calendar-management grant
+- **THEN** the system SHALL not send a Google Calendar request, SHALL not write either token store, and SHALL report the redacted validation failure before the operator chooses QA bootstrap
