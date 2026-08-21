@@ -5,7 +5,7 @@ SmartPlanner currently composes a direct CalDAV adapter that accepts only Basic 
 ## What Changes
 
 - Add a Google Calendar API implementation of SmartPlanner's existing calendar read/write ports.
-- Add a renewable Google OAuth 2.0 credential lifecycle for the dedicated Google QA account, with no raw credentials committed or logged.
+- Add a renewable Google OAuth 2.0 credential lifecycle for the dedicated Google QA account, reusing Justin's existing TodoistCalDavSync desktop OAuth client for QA, with no raw credentials committed or logged.
 - Add explicit configuration-driven calendar-provider selection so Google Calendar API and non-Google CalDAV remain separate, fail-closed integration paths.
 - Add Google Calendar API calendar discovery/provisioning support for the disposable `SmartPlanner QA Output` and test-input calendars.
 - Preserve all existing planner ownership, collision, approval, due-date, ambiguity, and preview-no-write safety controls.
@@ -27,6 +27,6 @@ None. The repository has no baseline OpenSpec capability specs; the active `plan
 
 - Runtime/configuration: `ProductionIntegrationConfig`, `ProductionPlannerOrchestrator`, planner example configuration, and QA configuration/runbook.
 - Adapters: new Google OAuth and Google Calendar API gateway classes implementing `CalendarReadGateway` and `CalendarWriteGateway`; existing `CalDavHttpGateway` remains supported for non-Google providers.
-- Security: ignored OAuth client material and token store; no Google normal password, app password, static long-lived access token, or secrets in YAML/logs/evidence.
+- Security: Justin's existing desktop OAuth-client JSON is retrieved from Bitwarden into an ignored local file; a separate SmartPlanner QA token store holds only the dedicated account's credentials. No Google normal password, app password, static long-lived access token, or secrets appear in YAML/logs/evidence.
 - Tests: Spock unit tests and WireMock Google OAuth/Calendar API contracts, including refresh, pagination, ownership, collision, ambiguous writes, and no cross-calendar mutation.
 - Dependencies: consolidate the already-present Google client, OAuth, HTTP, and Calendar service dependencies at mutually compatible versions.
