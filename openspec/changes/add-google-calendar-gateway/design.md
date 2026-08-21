@@ -61,7 +61,7 @@ Create a narrow Google OAuth component that:
 5. refreshes before expiry and exposes only a short-lived authorized Google Calendar service/client to the gateway;
 6. redacts client IDs, client secrets, authorization codes, access tokens, refresh tokens, and Bearer headers from every exception and log message.
 
-The legacy `GoogleAuthProvider` is reference material only. The new component may reuse the existing OAuth client JSON but must not silently reuse the legacy config shape, generic datastore name, or token location. The intended QA client JSON and legacy datastore artifacts from Justin's existing TodoistCalDavSync desktop OAuth app are already staged in ignored local QA paths and are never copied into the repository. The alternative of passing a static access token through `token_env` is rejected because it expires and cannot support a long-running daemon.
+The legacy `GoogleAuthProvider` is reference material only. The new component may reuse the existing OAuth client JSON but must not silently reuse the legacy config shape, generic datastore name, or token location. The legacy helper requested both event and broad calendar-management scopes, so its stored credential SHALL never be imported into the normal event-only token store. The intended QA client JSON and legacy datastore artifacts from Justin's existing TodoistCalDavSync desktop OAuth app are already staged in ignored local QA paths and are never copied into the repository. The alternative of passing a static access token through `token_env` is rejected because it expires and cannot support a long-running daemon.
 
 The installed launcher command contracts are:
 
@@ -120,13 +120,13 @@ Use fake/in-memory OAuth token stores and clocks so expiry/refresh tests do not 
 4. Implement the Google Calendar gateway, conversion, and WireMock contracts.
 5. Add normal event-only OAuth bootstrap, separately scoped QA OAuth bootstrap, explicit QA-only calendar provisioning commands, and README/QUICK_START documentation.
 6. Run focused tests, full `:app:test --rerun-tasks`, `build`, `installDist`, installed launcher help, OpenSpec validation, and security review.
-7. After Justin approves implementation, use the already staged ignored local OAuth client/legacy credential material to run the audited import/validation path. If re-consent is required, obtain separate authorization and complete it only as the dedicated account (using loopback SSH tunneling if needed), then provision QA calendars and resume the isolated QA plan.
+7. After Justin approves implementation, use the already staged OAuth client JSON to run a fresh normal event-only bootstrap for the dedicated account. The legacy credential may be inspected/imported only into the separate QA token store after scope/account validation; otherwise run the separately scoped QA bootstrap. Obtain separate authorization for each consent operation and use loopback SSH tunneling if needed; then provision QA calendars and resume the isolated QA plan.
 8. Roll back by selecting `provider: caldav` for non-Google deployments and removing ignored local Google OAuth/token material; no tracked migration of live calendar data is required.
 
 ## Resolved Decisions
 
 - Google Calendar uses a dedicated Google Calendar API gateway and renewable OAuth 2.0; it does not use SmartPlanner's static CalDAV Basic/Bearer path.
-- Existing ignored local OAuth material will be validated/imported after implementation review, reusing Justin's existing TodoistCalDavSync desktop OAuth client rather than creating a new Google Cloud client. Interactive re-consent requires separate authorization.
+- Existing ignored OAuth client material will be reused after implementation review, without creating a new Google Cloud client. Because the legacy credential may carry broad calendar-management scope, normal event-only operation requires fresh consent; the legacy credential is eligible only for audited separate-QA-store validation/import. Interactive consent requires separate authorization.
 - OAuth bootstrap is a documented `google-oauth-bootstrap` operation bound only to loopback port `8787` by default; remote-browser consent uses an SSH loopback tunnel.
 - `google-oauth-bootstrap` exits after persisting normal event-only credentials. `google-oauth-bootstrap-qa` is separately invoked, exits after persisting a distinct QA-only calendar-management credential, and is the only bootstrap path that may grant calendar-provisioning scope.
 - The CalDAV adapter remains supported for non-Google providers.

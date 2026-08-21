@@ -49,6 +49,10 @@ The installed launcher SHALL expose `--operation google-oauth-bootstrap` only wh
 - **WHEN** the operator completes normal OAuth consent successfully
 - **THEN** the launcher SHALL persist only normal event-operation credentials, SHALL exit successfully, and SHALL not create/list/rename/delete a Google calendar
 
+#### Scenario: Legacy broad credential cannot become normal credential
+- **WHEN** an operator supplies a legacy TodoistCalDavSync credential that includes calendar-management scope for import
+- **THEN** the system SHALL refuse to import it into the normal event-only token store and SHALL direct the operator to normal event-only bootstrap
+
 ### Requirement: QA OAuth bootstrap grants calendar-management scope separately
 The installed launcher SHALL expose `--operation google-oauth-bootstrap-qa` only when the selected provider is `google_calendar_api`. It SHALL request the additional Google Calendar management scope needed solely for explicit QA calendar provisioning, persist that credential only in a distinct QA token store, bind only to loopback, and exit without provisioning calendars.
 
@@ -59,3 +63,7 @@ The installed launcher SHALL expose `--operation google-oauth-bootstrap-qa` only
 #### Scenario: QA bootstrap exits without provisioning
 - **WHEN** the operator completes QA OAuth consent successfully
 - **THEN** the launcher SHALL exit successfully without creating, listing, renaming, or deleting any Google calendar
+
+#### Scenario: Legacy credential imports only into QA store after validation
+- **WHEN** an operator explicitly requests import of a legacy credential and account/scope validation proves it belongs to the dedicated QA account and includes the required calendar-management grant
+- **THEN** the system SHALL import it only into the distinct QA token store and SHALL not overwrite normal event-only credentials

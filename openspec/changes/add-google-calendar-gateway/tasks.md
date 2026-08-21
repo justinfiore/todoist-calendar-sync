@@ -7,14 +7,14 @@
 
 ## 2. Implement secure renewable Google OAuth credentials
 
-- [ ] 2.1 Write failing unit tests for ignored-file loading of Justin's existing TodoistCalDavSync desktop OAuth client JSON, injected clock/token-store expiry decisions, successful refresh, revoked/invalid refresh, malformed response, atomic token persistence, and token/header redaction.
+- [ ] 2.1 Write failing unit tests for ignored-file loading of Justin's existing TodoistCalDavSync desktop OAuth client JSON, injected clock/token-store expiry decisions, successful refresh, revoked/invalid refresh, malformed response, atomic token persistence, token/header redaction, legacy-scope validation, normal-store rejection of legacy broad credentials, and QA-store-only legacy import.
 - [ ] 2.2 Introduce a narrow Google OAuth client-material loader that resolves only configured local secret-file references, rejects inline secret fields, and produces secret-free validation errors.
 - [ ] 2.3 Introduce a Google OAuth token-store abstraction with private local-file implementation and in-memory fake; enforce atomic writes and owner-only file permissions where the host supports them.
 - [ ] 2.4 Implement distinct normal event-only and QA calendar-management OAuth scope sets/token stores around the existing compatible Google client libraries, with refresh-before-use behavior and no normal-token overwrite by QA consent.
 - [ ] 2.5 Add `--operation google-oauth-bootstrap`, require `provider: google_calendar_api`, bind a configurable callback receiver to `127.0.0.1` only (default port `8787`), request event-only scope, print the one-time consent URL only to the invoking terminal (not logs/receipts), persist only the normal token store, and exit without planner/provisioning work.
 - [ ] 2.6 Add `--operation google-oauth-bootstrap-qa`, require `provider: google_calendar_api`, bind loopback-only, request the separate calendar-management QA scope, persist only the QA token store, and exit without planner/provisioning work.
 - [ ] 2.7 Add deterministic noninteractive bootstrap seams plus tests for fixed/configured loopback port, normal-vs-QA scope/token-store separation, non-Google refusal before listener/secret resolution, SSH-tunneled callback completion, and all hermetic tests avoiding browser/network calls; leave real consent as an explicit post-review operator operation.
-- [ ] 2.8 Document validation/import of the already staged local OAuth client JSON and legacy credential-store artifacts, ignored `.qa/secrets/` permissions, both bootstrap launcher commands and exit behavior, remote-browser SSH forwarding if re-consent is required, and the prohibition on pasting codes/tokens/passwords into Slack in `README.md` and `QUICK_START.md`.
+- [ ] 2.8 Document reuse of the already staged local OAuth client JSON, fresh normal event-only bootstrap, QA-store-only conditional legacy credential import, ignored `.qa/secrets/` permissions, both bootstrap launcher commands and exit behavior, remote-browser SSH forwarding, and the prohibition on pasting codes/tokens/passwords into Slack in `README.md` and `QUICK_START.md`.
 - [ ] 2.9 Run focused OAuth/redaction tests and inspect test output to confirm no representative secret reaches errors or reports.
 
 ## 3. Implement Google Calendar API read semantics
