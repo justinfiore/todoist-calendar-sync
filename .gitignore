@@ -13,3 +13,6 @@ build
 
 # Local QA configuration, OAuth credentials, tokens, fixtures, and evidence.
 .qa/
+
+# Private provider material referenced by the tracked planner example.
+conf/planner-private/

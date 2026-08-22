@@ -19,6 +19,31 @@ planner:
       max_pages: 100
       max_response_bytes: 1048576
       include_project_names: true
+    # Calendar routing is mandatory and fail-closed. Select exactly one provider.
+    # The active example selects CalDAV, so planner.integration.caldav below is
+    # required and planner.integration.calendar.google_calendar_api must be absent.
+    calendar:
+      provider: caldav               # caldav | google_calendar_api
+
+    # Mutually exclusive Google Calendar API alternative (uncomment this block,
+    # remove planner.integration.caldav, and keep all referenced material ignored):
+    # calendar:
+    #   provider: google_calendar_api
+    #   google_calendar_api:
+    #     oauth_client_secret_file: planner-private/google-oauth-client.json
+    #     token_store_dir: planner-private/normal-event-only
+    #     qa_token_store_dir: planner-private/qa-calendar-management
+    #     account_email: dedicated-qa-account@example.test
+    #     oauth_callback_port: 8787
+    #     calendars:
+    #       - name: Todoist Planned
+    #         id: <provider-returned-managed-calendar-id>
+    #         role: managed_output
+    #       - name: Work
+    #         id: <provider-returned-blocker-calendar-id>
+    #         role: hard_blocker
+    # Google uses renewable OAuth and Calendar API IDs. It never falls back to
+    # the CalDAV section, and normal planner operations never provision calendars.
     caldav:
       timeout: PT15S
       max_response_bytes: 2097152

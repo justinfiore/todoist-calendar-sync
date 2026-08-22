@@ -5,7 +5,8 @@
 SmartPlanner exposes capacity-aware planning through the existing main executable while retaining
 the original sync as the default operation. Its primary production operation, `planner-daemon`, is a
 long-running multi-horizon scheduler that publishes proposals and iterates on feedback through Slack
-Socket Mode without an inbound port. Production planning uses real Todoist REST and CalDAV adapters,
+Socket Mode without an inbound port. Production planning uses real Todoist REST plus an explicitly
+selected CalDAV or Google Calendar API adapter,
 durable deterministic plans/conversations, exact approvals, safe-only application, optional
 Open-Meteo, configurable regex feedback, and disabled-by-default bounded AI interpretation.
 `fully_automated` remains unavailable and refuses writes.
@@ -102,9 +103,14 @@ Every command below also requires `-f CONFIG -l LOG_CONFIG`. Use the installed
 | Operation | Required/optional arguments | Behavior |
 | --- | --- | --- |
 | `legacy-sync` | no planner arguments | Runs the original Todoist-to-CalDAV sync/loop. This is the default when `--operation` is omitted. |
+| `google-oauth-bootstrap` | Google provider OAuth references and expected account; calendar IDs are not required | Binds `127.0.0.1` on the configured callback port (default `8787`), requests normal event-only access, prints the one-time consent URL to the invoking terminal, persists only the normal refresh-capable token store, and exits without planning or provisioning. |
+| `google-oauth-bootstrap-qa` | Google provider plus distinct `qa_token_store_dir`; calendar IDs are not required | Requests the separate calendar-management QA grant, persists only the QA token store, and exits without listing or creating calendars. |
+| `google-oauth-import-legacy-qa` | `--confirm-legacy-qa-import --input-reference FILE` | Validates the explicitly referenced bounded legacy credential for the configured dedicated account and exact QA scope, imports it only to the QA token store, and exits. It cannot populate the normal store. |
+| `google-qa-calendars-list` | `--confirm-dedicated-qa-account` | Uses only the QA credential, verifies the primary calendar matches the configured dedicated account, and prints the calendar inventory. |
+| `google-qa-calendars-provision` | `--confirm-dedicated-qa-account --qa-calendar 'alias\|role\|name[;...]'` | Explicitly creates or exactly reuses named disposable calendars and persists returned IDs only under ignored `.qa/state/calendar-ids.json`. |
 | `planner-daemon` | `planner.daemon.enabled: true`, configured planning runs, Slack Socket Mode credentials/channel | Primary long-running SmartPlanner lifecycle. Performs startup provider probes, schedules each configured horizon independently, publishes channel proposals, consumes thread feedback/commands, persists conversation state, and remains alive across contained cycle/provider/feedback failures. |
-| `capacity` | `--range-start INSTANT --range-end INSTANT`; optional `--format markdown\|json` | Reads Todoist and CalDAV and reports capacity for the half-open UTC interval. It makes no remote writes. |
-| `preview` | `--range-start INSTANT --range-end INSTANT`; optional `--previous-plan-id ID` | Builds, renders, and locally persists a deterministic plan. It makes no Todoist or CalDAV writes. |
+| `capacity` | `--range-start INSTANT --range-end INSTANT`; optional `--format markdown\|json` | Reads Todoist and the selected calendar provider and reports capacity for the half-open UTC interval. It makes no remote writes. |
+| `preview` | `--range-start INSTANT --range-end INSTANT`; optional `--previous-plan-id ID` | Builds, renders, and locally persists a deterministic plan. It makes no Todoist or calendar-provider writes. |
 | `apply` | `--plan-id ID`; optional `--approval FILE` | Applies a stored plan according to its configured safety mode. `approval_required` needs an exact approval file; `preview` and unavailable `fully_automated` refuse writes. |
 | `apply-safe` | `--plan-id ID` | Applies only ordinary safe changes from a stored plan. Protected, frozen, manual, drifted, and approval-required changes remain withheld. |
 | `deliver` | `--plan-id ID`; optional `--kind KIND` | Delivers one enabled message kind when `--kind` is supplied, or evaluates configured due schedules when it is omitted. The durable ledger prevents blind duplicate sends. |
@@ -150,6 +156,89 @@ todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
 todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation ai-suggest \
   --plan-id PLAN_ID --ai-type task_suggestions --correlation-id CORRELATION_ID
 ```
+
+### SmartPlanner Google OAuth and isolated QA setup
+
+SmartPlanner requires `planner.integration.calendar.provider` to be exactly `caldav` or
+`google_calendar_api`; it never infers a provider or falls back between them. The annotated planner
+example keeps CalDAV active and contains a mutually exclusive commented Google block. Google uses an
+ignored desktop OAuth client-file reference, separate normal and QA token-store references, a pinned
+account email, provider-returned calendar IDs, and exactly one `managed_output` mapping matching
+`planner.output_calendar`. Inline OAuth values, static durable access tokens, Google account
+passwords, and app passwords are not accepted for the Google provider.
+
+After implementation review and explicit authorization for live credential use, run a fresh normal
+event-only bootstrap when normal Google planner operations are needed:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-oauth-bootstrap
+```
+
+This command allows the bootstrap-only configuration subset without calendar IDs, binds only
+`127.0.0.1:<oauth_callback_port>` (default `8787`), prints the one-time consent URL only to that
+terminal, persists only the normal token store, and exits. It does not construct the planner, list or
+provision calendars, or start the daemon. For a browser on another machine, establish the tunnel
+first and leave it running while completing consent:
+
+```bash
+ssh -N -L 8787:127.0.0.1:8787 hermes@<host>
+```
+
+Use the configured port on both sides, then open the printed URL in the local browser. The callback
+returns through SSH; never copy an authorization code into Slack or a terminal.
+
+The initially confirmed legacy broad credential may be validated/imported only into the isolated QA
+calendar-management store. The input reference is a local bounded credential JSON file; do not print
+or attach it:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-oauth-import-legacy-qa \
+  --confirm-legacy-qa-import --input-reference .qa/secrets/legacy-qa-credential.json
+```
+
+The import validates the configured account and exact QA scope before writing, sends no Calendar API
+request, never writes the normal token store, and exits. If validation fails, stop without
+provisioning and use the separately authorized QA bootstrap only when an operator is available:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-oauth-bootstrap-qa
+```
+
+QA bootstrap uses the same loopback/tunnel behavior, writes only the distinct QA token store, and
+exits without listing or creating calendars. After either successful QA credential path, explicitly
+preflight and provision only the dedicated disposable account:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-qa-calendars-list --confirm-dedicated-qa-account
+
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-qa-calendars-provision --confirm-dedicated-qa-account \
+  --qa-calendar 'output|managed_output|SmartPlanner QA Output;blockers|hard_blocker|SmartPlanner QA Blockers'
+```
+
+Provisioning refuses an account whose primary calendar does not match `account_email`, reuses only an
+exact unique name, and retains returned IDs only in ignored `.qa/state/calendar-ids.json`. Copy those
+IDs into the ignored complete QA configuration; normal planner operations never provision calendars.
+Keep `.qa/secrets/`, `.qa/tokens/`, and `.qa/state/` owner-private.
+
+Approval remains preview-first: run `capacity`, run `preview`, inspect the plan identity/hash/diff and
+prove zero remote writes, then exercise missing/stale approval refusal before any exact approved or
+safe-only write. On an unexplained or indeterminate mutation, stop, preserve logs/receipts/state,
+reconcile live provider state, restore the matching Todoist/calendar export and all four planner state
+directories together, and return to `preview`; never delete state to force a retry. To retire Google
+access, stop the planner, revoke the app grant in the dedicated Google account, remove the ignored
+normal and QA token stores plus client material, and select a fully configured `caldav` provider only
+if that is the intended rollback. Revocation/removal invalidates local Google access but does not undo
+calendar mutations, so restore provider backups separately.
+
+No secret belongs in Slack: never paste Todoist tokens, Slack `xoxb-`/`xapp-` values, OAuth client
+material, consent URLs, authorization codes, access/refresh tokens, credential documents, account
+passwords, app passwords, or `Authorization` headers into a channel, thread, ticket, screenshot, log,
+receipt, or committed evidence.
 
 Google OAuth credential helper:
 

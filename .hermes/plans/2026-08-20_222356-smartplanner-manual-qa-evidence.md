@@ -45,9 +45,10 @@
 - Todoist API v1: <https://developer.todoist.com/api/v1/>. Use this as the authoritative source for dedicated Todoist QA project, label, task, and snapshot operations.
 - Google Calendar API overview: <https://developers.google.com/workspace/calendar/api/guides/overview>. This is useful background and may be used by an external QA-provisioning helper only if separately implemented; it is **not** the Phase 7 planner authentication contract.
 
-## Superseded Phase 7 Google Calendar authentication finding and approved direction
+## Superseded Phase 7 Google Calendar authentication finding and reviewed execution direction
 
-Repository inspection establishes the following current limitation for `feat/planner-main-integration`:
+The following findings describe the pre-`add-google-calendar-gateway` baseline and must not be used as
+instructions for the reviewed Google path:
 
 - `ProductionPlannerOrchestrator` composes `CalDavHttpGateway`, not the Google Calendar REST API client.
 - `ProductionIntegrationConfig` requires every configured calendar to have an HTTPS collection URL and accepts only `auth.type: basic` (`username` + `password_env`) or `auth.type: bearer`/`oauth2` (`token_env`).
@@ -55,6 +56,32 @@ Repository inspection establishes the following current limitation for `feat/pla
 - The older `GoogleAuthProvider`/`client_secret.json` code is for the legacy sync path, not the Phase 7 planner composition. It must not be used as evidence that SmartPlanner can refresh Google OAuth credentials.
 
 **Approved decision:** implement `add-google-calendar-gateway` before live Google QA. The new gateway will use Google Calendar API OAuth 2.0 with durable refresh-token support, create/list the disposable QA calendars through the Google API, and satisfy the existing calendar read/write ports. The existing CalDAV adapter remains available for non-Google CalDAV providers. No Google app password, static OAuth access token, or legacy `GoogleAuthProvider` setup is needed for the SmartPlanner Google path.
+
+The implementation-review command contract is now documented in
+`docs/SMARTPLANNER_QA_RUNBOOK.md`. During this review task, do not inspect real `.qa` contents, use a
+credential, contact a provider, provision calendars, run staging, or commit. After review and separate
+live authorization, the order is:
+
+1. Run fresh normal event-only `--operation google-oauth-bootstrap` when normal planner access is
+   needed. It accepts the Google pre-provisioning subset, binds only loopback (default port `8787`),
+   persists only the normal token store, and exits without planning or provisioning.
+2. Initially validate/import the confirmed legacy credential only with
+   `--operation google-oauth-import-legacy-qa --confirm-legacy-qa-import --input-reference FILE`.
+   Account/scope mismatch stops the campaign without a Calendar API request or token-store write.
+3. If required, later exercise `--operation google-oauth-bootstrap-qa` with Justin available. It uses
+   the separate calendar-management scope/store and exits without provisioning.
+4. Run explicit `google-qa-calendars-list` and `google-qa-calendars-provision`, both with
+   `--confirm-dedicated-qa-account`; persist returned IDs only beneath ignored `.qa/state/`.
+5. Run capacity and repeatable preview, prove zero remote writes, and obtain evidence approval before
+   any refusal or scoped-write case.
+
+For a remote browser, establish
+`ssh -N -L 8787:127.0.0.1:8787 hermes@<host>` using the configured port before opening the printed
+consent URL. No consent URL/code, OAuth material, credential/token/password/header, Todoist secret, or
+Slack secret may be pasted into Slack or evidence. Rollback stops activity, returns to `preview`,
+preserves/reconciles state, and restores provider exports plus all four planner state stores together.
+Credential retirement additionally revokes the Google app grant and removes both ignored token stores
+and client material; revocation does not undo calendar mutations.
 
 ## Current implementation baseline to preserve
 
@@ -73,7 +100,7 @@ All live-test material stays ignored from Git unless Justin explicitly elects to
 
 | Artifact | Proposed path | Purpose / acceptance content |
 | --- | --- | --- |
-| QA runbook | `docs/SMARTPLANNER_QA_RUNBOOK.md` | Operator-neutral, checkbox-based instructions derived from this plan; includes safe setup, command lines, expected results, stop conditions, cleanup, and rollback. |
+| QA runbook | `docs/SMARTPLANNER_QA_RUNBOOK.md` | Tracked operator-neutral checklist with exact bootstrap/import/provision commands, preview-first evidence gates, stop conditions, cleanup, rollback, and token revocation. |
 | Test config template | `.qa/smartplanner-qa.yaml.example` | Safe isolated resource names and env-var references; no values/secrets. |
 | Local secrets/config | `.qa/smartplanner-qa.yaml`, `.qa/qa.env` | Ignored; mode starts as `preview`; contains test-account references only. |
 | Fixture inventory | `.qa/fixtures/README.md` | Exact test tasks/events/Slack messages to create, expected IDs redacted or aliased. |

@@ -1,0 +1,24 @@
+# Non-secret inventory. Calendar IDs are intentionally absent until Google returns them.
+calendars:
+  - alias: output
+    role: managed_output
+    name: SmartPlanner QA Output
+  - alias: blockers
+    role: hard_blocker
+    name: SmartPlanner QA Blockers
+  - alias: soft-blockers
+    role: soft_blocker
+    name: SmartPlanner QA Soft Blockers
+  - alias: context
+    role: informational
+    name: SmartPlanner QA Context
+
+fixtures:
+  - alias: empty-window
+    calendar_aliases: [output, blockers]
+  - alias: hard-blocker-overlap
+    calendar_aliases: [output, blockers]
+  - alias: soft-blocker-overlap
+    calendar_aliases: [output, soft-blockers]
+  - alias: informational-context
+    calendar_aliases: [output, context]

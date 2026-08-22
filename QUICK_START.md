@@ -106,7 +106,8 @@ If using `GOOGLE_OAUTH2` auth:
 
 SmartPlanner production is a long-running daemon; `preview`, `capacity`, and other one-shot operations
 remain rollout and diagnostic controls. Copy `conf/todoist-planner.conf.example.yaml`, set the explicit
-Todoist/CalDAV endpoints, credential environment-variable names, managed `output_calendar`, and four
+Todoist endpoint, select exactly one `calendar.provider`, set that provider's references and managed
+`output_calendar`, and configure four
 state directories. Keep `planner.mode: preview`, `planner.daemon.enabled: false`,
 `planner.messaging.enabled: false`, `planner.ai.enabled: false`, and `planner.weather.enabled: false`
 for the first crawl.
@@ -123,9 +124,62 @@ export CALDAV_PLANNED_PASSWORD='<isolated-test-calendar-password>'
   --range-end 2026-08-17T00:00:00Z
 ```
 
-Preview performs Todoist/CalDAV reads and local plan persistence only. Inspect the emitted plan ID,
+Preview performs Todoist/selected-calendar-provider reads and local plan persistence only. Inspect the emitted plan ID,
 hash/diff, calendar classification, unscheduled tasks, and plan file before enabling a write-capable
 mode.
+
+### Optional: SmartPlanner Google Calendar API bootstrap
+
+For Google, select `planner.integration.calendar.provider: google_calendar_api`, remove the CalDAV
+provider section, and use ignored local references for the desktop OAuth client, normal event-only
+token store, distinct QA calendar-management token store, and returned calendar IDs. Google account
+passwords, app passwords, inline OAuth values, and static access tokens are not SmartPlanner Google
+configuration. Keep `.qa/secrets/`, `.qa/tokens/`, and `.qa/state/` owner-private.
+
+Only after implementation review and authorization for live credential use, normal event operations
+use a fresh event-only bootstrap:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-oauth-bootstrap
+```
+
+It accepts Google OAuth configuration before calendar IDs exist, listens only on
+`127.0.0.1:8787` by default, writes only the normal token store, and exits without planner,
+provisioning, or daemon work. For a remote browser, first run
+`ssh -N -L 8787:127.0.0.1:8787 hermes@<host>` (substitute the configured callback port), then open
+the printed URL locally. Do not copy a callback code into Slack or a terminal.
+
+The initial confirmed legacy credential is eligible only for the QA store:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-oauth-import-legacy-qa \
+  --confirm-legacy-qa-import --input-reference .qa/secrets/legacy-qa-credential.json
+```
+
+It validates account and exact QA scope, writes neither the normal store nor calendar resources, and
+exits. On validation failure, stop. With an operator available, the separate consent alternative is:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-oauth-bootstrap-qa
+```
+
+QA bootstrap writes only the QA token store and exits without provisioning. Then explicitly list and
+provision the dedicated account:
+
+```bash
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-qa-calendars-list --confirm-dedicated-qa-account
+todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
+  --operation google-qa-calendars-provision --confirm-dedicated-qa-account \
+  --qa-calendar 'output|managed_output|SmartPlanner QA Output;blockers|hard_blocker|SmartPlanner QA Blockers'
+```
+
+Returned IDs are written only to ignored `.qa/state/calendar-ids.json`; add them to the ignored QA
+config before normal planner operations. Never paste OAuth material, consent URLs/codes, tokens,
+passwords, Slack secrets, or authorization headers into Slack, logs, screenshots, or evidence.
 
 ### SmartPlanner modes
 
@@ -174,6 +228,12 @@ todoist-caldav-sync -f conf/todoist-planner.conf.yaml -l conf/log4j.groovy \
 Inspect the receipt to confirm that only ordinary changes were applied and all protected changes were
 withheld. Back up Todoist, the managed calendar, and all four SmartPlanner state directories together
 before either write-capable mode.
+
+If a write is unexplained or indeterminate, stop, preserve evidence, reconcile live state, restore the
+matching provider exports and all four state directories together, and return to `preview`; do not
+delete state and retry. To retire Google access, stop the process, revoke the app grant in the
+dedicated Google account, remove both ignored token stores/client material, and separately restore any
+calendar data because token revocation does not roll back provider mutations.
 
 #### Start the long-running daemon
 

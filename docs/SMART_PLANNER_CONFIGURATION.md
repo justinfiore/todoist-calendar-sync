@@ -6,7 +6,7 @@ or state paths are missing. Relative state paths resolve from the config file di
 
 ## Safety and modes
 
-- `preview` is the default and makes no Todoist or CalDAV writes.
+- `preview` is the default and makes no Todoist or calendar writes.
 - `approval_required` writes only with an approval whose plan id, version, and full semantic hash
   exactly match the stored plan.
 - `apply_safe_changes` may write only ordinary blocks. Frozen, manual-override, and
@@ -26,11 +26,59 @@ are errors. Todoist writes send only `due_datetime`; the production adapter refu
 - `token_env`: environment-variable name containing the bearer token.
 - `timeout`, `max_pages`, `max_response_bytes`, `include_project_names`: bounded transport/read controls.
 
-`planner.integration.caldav` also accepts positive `timeout` and `max_response_bytes` controls.
-`planner.integration.caldav.calendars` is the complete read scope. Every row requires unique `name`
-and absolute HTTPS `url`. Auth is `none`, `basic` (`username` + `password_env`), or `bearer`
-(`token_env`). Raw secrets are rejected. The calendar named by `planner.output_calendar` is the only
-write target; all listed calendars participate in availability and UID collision checks.
+`planner.integration.calendar.provider` is required and must be exactly `caldav` or
+`google_calendar_api`. Provider inference and fallback are intentionally unavailable. Mixed sections,
+unknown provider fields, incomplete selected-provider configuration, duplicate calendar mappings, or
+a managed-output mismatch fail startup before credentials are resolved or a network client is built.
+
+For `provider: caldav`, configure `planner.integration.caldav`. It accepts positive `timeout` and
+`max_response_bytes` controls, and `calendars` is the complete read scope. Every row requires a unique
+`name` and absolute HTTPS `url`. Auth is `none`, `basic` (`username` + `password_env`), or `bearer`
+(`token_env`). Raw secrets are rejected. Do not include `google_calendar_api` fields.
+
+For `provider: google_calendar_api`, omit `planner.integration.caldav` and configure:
+
+```yaml
+planner:
+  output_calendar: Todoist Planned
+  integration:
+    calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/google-oauth-client.json
+        token_store_dir: tokens/normal-event-only
+        qa_token_store_dir: tokens/qa-calendar-management
+        account_email: dedicated-qa-account@example.test
+        oauth_callback_port: 8787
+        calendars:
+          - name: Todoist Planned
+            id: <provider-returned-managed-calendar-id>
+            role: managed_output
+          - name: Work
+            id: <provider-returned-blocker-calendar-id>
+            role: hard_blocker
+```
+
+This snippet assumes the configuration itself is in ignored `.qa/`. All paths are references resolved
+within the configuration directory boundary; keep the referenced
+client material and the two distinct token stores in ignored, owner-private local storage. Inline
+client secrets, authorization codes, access/refresh tokens, authorization headers, static durable
+tokens, and CalDAV authentication fields are rejected for this provider. Google account passwords and
+app passwords are not part of this flow and must not be requested, stored, or shared.
+
+`account_email` pins consent and QA preflight to the expected dedicated account.
+`oauth_callback_port` defaults to `8787`; bootstrap binds only `127.0.0.1`. Normal production
+configuration requires unique `name` and `id` values, supported roles (`managed_output`,
+`hard_blocker`, `soft_blocker`, or `informational`), exactly one `managed_output`, and an exact match
+between that row's name and `planner.output_calendar`. Bootstrap-specific validation deliberately
+permits no `calendars` rows because consent precedes provisioning. Normal `capacity`, `preview`,
+`apply`, `apply-safe`, and `planner-daemon` still require the complete mapping.
+
+For either provider, every configured calendar participates in availability and global UID collision
+checks, while `planner.output_calendar` is the only write target. The Google gateway additionally
+enforces the managed-output role, planner UID/ownership metadata, live ownership/block revalidation
+before delete, and no blind retry after an indeterminate mutation. Normal planner operations cannot
+list, create, rename, or delete calendars.
 
 `planner.integration.state` requires four independent paths:
 
@@ -60,7 +108,7 @@ already-active duplicate run trigger is coalesced/skipped. Retry delay is expone
 `initial_delay <= PT1H`, `initial_delay <= max_delay <= P1D`, and multiplier 1..10. The graceful
 `shutdown_timeout` is positive and at most PT10M.
 
-Startup validates the complete configuration and performs bounded read-only Todoist/CalDAV probes.
+Startup validates the complete configuration and performs bounded read-only Todoist/calendar probes.
 Configuration or startup provider/authentication failure terminates startup. After readiness, failed
 cycles, Slack interruptions, malformed feedback, status API failures, and LLM failures are contained;
 the scheduler remains alive. `shutdown_timeout` bounds graceful SIGTERM/SIGINT drain.
@@ -94,6 +142,19 @@ side service with no direct mutation port. See `SLACK_INTEGRATION.md` and the ot
 All operations use `TodoistCalDavSync`/the installed `todoist-caldav-sync` launcher:
 
 - `legacy-sync` (default): unchanged original sync/loop.
+- `google-oauth-bootstrap`: Google-only, event-read/write consent into the normal token store. It
+  accepts the pre-provisioning Google subset, prints the one-time URL only to the invoking terminal,
+  persists a refresh-capable credential, and exits without planner or provisioning work.
+- `google-oauth-bootstrap-qa`: Google-only, separate calendar-management consent into the QA token
+  store. It exits without listing or provisioning calendars and never broadens the normal store.
+- `google-oauth-import-legacy-qa`: requires `--confirm-legacy-qa-import --input-reference FILE`;
+  validates the bounded referenced credential document for the configured account and exact QA scope,
+  writes only the QA token store, and exits. It can never populate the normal store.
+- `google-qa-calendars-list`: requires `--confirm-dedicated-qa-account`; uses only the QA credential,
+  verifies the configured account against its primary calendar, and returns the calendar inventory.
+- `google-qa-calendars-provision`: additionally requires `--qa-calendar
+  'alias|role|name[;alias|role|name]'`; creates or exactly reuses named calendars and writes returned
+  IDs only beneath ignored `.qa/state/calendar-ids.json`.
 - `planner-daemon`: primary long-running multi-horizon planning, Slack proposal/thread feedback, and graceful shutdown.
 - `capacity`: live read-only capacity report; requires explicit start/end instants.
 - `preview`: live deterministic proposal + local persistence; requires explicit start/end.
@@ -102,3 +163,10 @@ All operations use `TodoistCalDavSync`/the installed `todoist-caldav-sync` launc
 - `feedback`: parse/persist only; never applies.
 - `apply-decision`: explicit, exact revalidated decision application.
 - `ai-suggest`: bounded suggestion request; no mutation or automatic confirmation.
+
+The OAuth and QA operations are explicit one-shot launcher paths; they never start the daemon or run
+planning. Use `capacity` and `preview` before any apply. Do not paste consent URLs, authorization
+codes, credential documents, tokens, account passwords, or Slack secrets into Slack, tickets, logs,
+receipts, screenshots, or evidence. For a remote browser, start
+`ssh -N -L 8787:127.0.0.1:8787 hermes@<host>` (substitute the configured port), then open the URL
+printed by the launcher locally; the callback returns through the tunnel without copying a code.

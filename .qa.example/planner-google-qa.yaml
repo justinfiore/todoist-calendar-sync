@@ -1,0 +1,14 @@
+# Copy to an ignored local .qa/ directory before use. Placeholder references only.
+planner:
+  integration:
+    calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/google-oauth-client.json
+        token_store_dir: tokens/normal-event-only
+        qa_token_store_dir: tokens/qa-calendar-management
+        account_email: dedicated-qa-account@example.test
+        oauth_callback_port: 8787
+
+# The explicit provision command persists provider-returned IDs only to:
+# .qa/state/calendar-ids.json.
