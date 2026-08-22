@@ -9,7 +9,7 @@ SmartPlanner currently composes a direct CalDAV adapter that accepts only Basic 
 - Add explicit configuration-driven calendar-provider selection so Google Calendar API and non-Google CalDAV remain separate, fail-closed integration paths.
 - Add Google Calendar API calendar discovery/provisioning support for the disposable `SmartPlanner QA Output` and test-input calendars.
 - Preserve all existing planner ownership, collision, approval, due-date, ambiguity, and preview-no-write safety controls.
-- Add thorough WireMock OAuth/Google Calendar HTTP-contract tests grounded in the official Google Calendar API documentation, plus README, QUICK_START, configuration, and QA-runbook updates. Live Google testing remains blocked until Justin reviews and approves implementation.
+- Add thorough WireMock OAuth/Google Calendar HTTP-contract tests grounded in the official Google Calendar API documentation, plus README, QUICK_START, configuration, and QA-runbook updates. Google Event `iCalUID` is server-generated/read-only, so planner-owned identity uses the writable private `plannerUid` extended property while still globally checking provider iCalUID collisions. Live Google testing remains blocked until Justin reviews and approves implementation.
 
 ## Capabilities
 

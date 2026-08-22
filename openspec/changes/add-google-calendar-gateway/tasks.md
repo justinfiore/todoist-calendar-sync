@@ -22,13 +22,13 @@
 - [ ] 3.1 Build WireMock stubs from the official Google Calendar API documentation and write contract tests for event-list request parameters, page-token traversal, bounded page/result behavior, configured calendar-name retention, timed/all-day conversion, and malformed/oversized responses.
 - [ ] 3.2 Add `GoogleCalendarApiGateway` implementing `CalendarReadGateway`, with injectable authorized service/HTTP client, clock, limits, and exception classifier seams.
 - [ ] 3.3 Implement `fetchEvents` using the Google Calendar API across every configured calendar, explicit range bounds, single-event expansion, bounded pagination, and domain conversion.
-- [ ] 3.4 Write and implement global `findEventByUid` tests/behavior for absent, one matching event, API failure, and duplicate UID across configured calendars; duplicate/missing lookup ambiguity must fail closed.
+- [ ] 3.4 Write and implement global `findEventByUid` tests/behavior for absent, one matching event, API failure, and duplicate provider-iCalUID/private-plannerUID matches across configured calendars; Google `iCalUID` remains read-only and planner identity uses private extended properties; duplicate/missing lookup ambiguity must fail closed.
 - [ ] 3.5 Run focused gateway read/WireMock tests and verify the adapter does not issue mutations during reads.
 
 ## 4. Implement guarded Google event writes and reconciliation behavior
 
-- [ ] 4.1 Write WireMock tests proving create/update request shapes, managed-output-only enforcement, planner UID/ownership checks, live ownership/block revalidation before delete, and static field conversion to/from Google events.
-- [ ] 4.2 Implement `upsertEvent` with global iCalendar UID lookup, deterministic create-or-update behavior, and no mutation outside the configured managed output calendar.
+- [ ] 4.1 Write WireMock tests proving create/update request shapes (including no write of read-only `iCalUID` and private planner UID persistence), managed-output-only enforcement, planner UID/ownership checks, live ownership/block revalidation before delete, and static field conversion to/from Google events.
+- [ ] 4.2 Implement `upsertEvent` with global provider iCalendar-UID collision and private planner-UID lookup, deterministic create-or-update behavior, and no mutation outside the configured managed output calendar.
 - [ ] 4.3 Implement `deleteOwnedEvent` using global live lookup, managed-output/ownership/block checks, and the live Google provider event ID.
 - [ ] 4.4 Add classified handling/tests for 401/403, 404, 409, 429, 5xx, timeout/interruption, malformed response, and post-dispatch indeterminate mutation; prove ambiguous mutations are never automatically retried.
 - [ ] 4.5 Exercise existing planner apply/idempotency/approval/safe-only tests with the new adapter seam and add regressions for deadline invariance and no cross-calendar writes.
@@ -42,8 +42,8 @@
 
 ## 6. Documentation, examples, and review-ready validation
 
-- [ ] 6.1 Update `conf/todoist-planner.conf.example.yaml` and `docs/SMART_PLANNER_CONFIGURATION.md` with explicit Google-vs-CalDAV provider routing, OAuth secret references, calendar IDs, startup errors, and Google-specific safety boundaries.
-- [ ] 6.2 Update `README.md`, `QUICK_START.md`, `docs/PLANNER_END_TO_END_TESTING.md`, and the QA runbook with normal bootstrap exit behavior, separately scoped QA bootstrap/QA calendar provisioning, preview-first gates, evidence requirements, and rollback/token-revocation procedure.
-- [ ] 6.3 Add regression coverage that parses the example configuration and asserts it contains no inline Google secrets or normal-password/app-password guidance for the Google provider.
-- [ ] 6.4 Run focused new specs, `./gradlew :app:test --rerun-tasks`, `./gradlew build`, `./gradlew installDist`, installed launcher help, `openspec validate add-google-calendar-gateway --strict`, `git diff --check`, and a secret scan of tracked files.
+- [x] 6.1 Update `conf/todoist-planner.conf.example.yaml` and `docs/SMART_PLANNER_CONFIGURATION.md` with explicit Google-vs-CalDAV provider routing, OAuth secret references, calendar IDs, startup errors, and Google-specific safety boundaries.
+- [x] 6.2 Update `README.md`, `QUICK_START.md`, `docs/PLANNER_END_TO_END_TESTING.md`, and the QA runbook with normal bootstrap exit behavior, separately scoped QA bootstrap/QA calendar provisioning, preview-first gates, evidence requirements, and rollback/token-revocation procedure.
+- [x] 6.3 Add regression coverage that parses the example configuration and asserts it contains no inline Google secrets or normal-password/app-password guidance for the Google provider.
+- [x] 6.4 Run focused new specs, `./gradlew :app:test --rerun-tasks`, `./gradlew build`, `./gradlew installDist`, installed launcher help, `openspec validate add-google-calendar-gateway --strict`, `git diff --check`, and a secret scan of tracked files.
 - [ ] 6.5 Review the complete diff against the three new OpenSpec specs; commit implementation/tests/docs separately from this proposal artifact commit, then wait for Justin’s approval before any live Google authentication, Google Cloud OAuth-client creation, or QA calendar mutation.

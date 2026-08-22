@@ -81,8 +81,8 @@ Each bootstrap command must refuse unless `provider: google_calendar_api` is sel
 `GoogleCalendarApiGateway` will translate API `Event` resources into `CalendarEvent` domain objects and implement:
 
 - `fetchEvents(rangeStart, rangeEnd)`: list events from every configured calendar using bounded pagination, single-event expansion, and explicit time range; preserve configured calendar display names.
-- `findEventByUid(uid)`: query every configured calendar by `iCalUID`; return null when absent and refuse with a classified collision error when more than one accessible event has that UID.
-- `upsertEvent(event)`: refuse any calendar other than the configured managed output; require existing planner UID/ownership metadata, then create or update only the matching owned event. Use the Google event `iCalUID` for collision-safe lookup rather than assuming the provider event ID is stable.
+- `findEventByUid(uid)`: query every configured calendar by `iCalUID` as a provider-level collision barrier and by `privateExtendedProperty=plannerUid=<uid>` for the writable planner-owned identity; return null when absent and refuse with a classified collision error when more than one accessible event matches. Google Event `iCalUID` is server-generated/read-only and is never written by SmartPlanner.
+- `upsertEvent(event)`: refuse any calendar other than the configured managed output; require existing planner UID/ownership metadata, then create or update only the matching owned event. Persist the deterministic planner UID in `extendedProperties.private.plannerUid`; use the live Google event ID for update/delete and retain global provider `iCalUID` collision checks rather than attempting to write an iCalUID.
 - `deleteOwnedEvent(uid, expectedBlockId)`: re-read globally, require managed-calendar ownership and matching block metadata, then delete by the live provider event ID.
 - QA provisioning helper/port: list and create explicitly named disposable calendars; it is not called by normal planner capacity/preview/apply operations.
 
@@ -97,7 +97,7 @@ Google errors will be normalized into a new typed gateway exception. Timeouts, i
 Use WireMock to emulate the official Google Calendar API HTTP contract, with request paths, methods, query parameters, pagination fields, response fields, and error semantics cross-checked against the Google Calendar API documentation at implementation time. Cover:
 
 - OAuth token refresh success, invalid grant, malformed/oversized response, and redaction;
-- event-only OAuth bootstrap/refresh; QA-scope OAuth bootstrap/refresh into a separate store; calendar-list/create only through QA service; event list pagination, `iCalUID` lookup across calendars, create/update/delete request shapes, 401/403/404/409/429/5xx responses, and timeouts;
+- event-only OAuth bootstrap/refresh; QA-scope OAuth bootstrap/refresh into a separate store; calendar-list/create only through QA service; event list pagination, provider `iCalUID` collision lookup plus private `plannerUid` lookup across calendars, create/update/delete request shapes that never write read-only `iCalUID`, 401/403/404/409/429/5xx responses, and timeouts;
 - global UID collision, managed-only write, live ownership/block recheck before delete, and ambiguous mutation classification;
 - provider-routing/config validation and no construction of CalDAV when Google is selected (and vice versa).
 
@@ -108,7 +108,7 @@ Use fake/in-memory OAuth token stores and clocks so expiry/refresh tests do not 
 - **OAuth desktop consent needs interactive login/2FA** → first attempt the audited import/validation of the already staged dedicated-account credential after implementation review. If Google requires re-consent, obtain Justin's separate authorization before interactive login/2FA; reuse the existing TodoistCalDavSync desktop OAuth client and authorize it only as that dedicated account.
 - **Google API client dependency drift** → pin/test a mutually compatible dependency set and inspect Gradle resolution before code composition.
 - **API event semantics differ from iCalendar** → isolate conversion in one adapter and test timed, all-day, recurrence-instance, missing-end, and metadata cases.
-- **Event update creates duplicate or overwrites external data** → global `iCalUID` lookup, ownership marker checks, managed-output checks, and live reread before delete.
+- **Event update creates duplicate or overwrites external data** → global provider `iCalUID` collision lookup, private planner-UID lookup, ownership marker checks, managed-output checks, and live reread before delete.
 - **Refresh token or OAuth errors leak** → centralized redaction and tests that assert raw secret substrings are absent from thrown/loggable messages.
 - **Calendar provisioning becomes an accidental production operation** → require QA-scoped credentials in a separate token store and expose provisioning only through an explicit QA-only command/helper with a dedicated-account preflight; normal planner operations cannot call it.
 
