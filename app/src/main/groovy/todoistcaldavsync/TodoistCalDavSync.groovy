@@ -41,6 +41,7 @@ import com.github.caldav4j.CalDAVConstants;
 import com.github.caldav4j.exceptions.ResourceNotFoundException
 import com.github.caldav4j.exceptions.BadStatusException
 import java.util.concurrent.TimeUnit
+import java.nio.file.Path
 import groovy.cli.picocli.CliBuilder
 import com.google.api.client.auth.oauth2.Credential;
 import todoistcaldavsync.planner.ProductionPlannerOrchestrator
@@ -48,6 +49,15 @@ import todoistcaldavsync.planner.SmartPlannerDaemon
 import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
 import todoistcaldavsync.planner.state.DeliveryLedger
 import todoistcaldavsync.planner.domain.Approval
+import todoistcaldavsync.planner.ProductionIntegrationConfig
+import todoistcaldavsync.planner.oauth.GoogleOAuthBootstrapMode
+import todoistcaldavsync.planner.oauth.GoogleOAuthBootstrapService
+import todoistcaldavsync.planner.oauth.GoogleTokenInfoLegacyOAuthCredentialVerifier
+import todoistcaldavsync.planner.oauth.JsonFileLegacyGoogleOAuthCredentialSource
+import todoistcaldavsync.planner.oauth.LegacyGoogleOAuthQaImportOperation
+import todoistcaldavsync.planner.qa.QaCalendarProvisioningService
+import todoistcaldavsync.planner.qa.QaCalendarSpec
+import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport
 import org.apache.commons.io.output.AppendableWriter
 
 
@@ -64,10 +74,21 @@ class TodoistCalDavSync {
     }
 
     /** Main command dispatcher retained on the legacy entry point; composition lives elsewhere. */
-    static int run(String[] args, Appendable out = System.out, Appendable err = System.err) {
+    static int run(String[] args, Appendable out = System.out, Appendable err = System.err,
+                   Closure oauthBootstrapFactory = { googleConfig -> GoogleOAuthBootstrapService.production() },
+                   Closure legacyQaImportFactory = { googleConfig ->
+                       def transport = GoogleNetHttpTransport.newTrustedTransport()
+                       LegacyGoogleOAuthQaImportOperation.production(googleConfig.accountEmail,
+                           googleConfig.tokenStoreDir, googleConfig.qaTokenStoreDir,
+                           new JsonFileLegacyGoogleOAuthCredentialSource(),
+                           new GoogleTokenInfoLegacyOAuthCredentialVerifier(transport))
+                   },
+                   Closure qaCalendarProvisioningFactory = { googleConfig, qaRoot, stateFile ->
+                       new QaCalendarProvisioningService(config: googleConfig, qaRoot: qaRoot, stateFile: stateFile)
+                   }) {
         def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
             writer: new PrintWriter(new AppendableWriter(out), true))
-        cli.setFooter('Operations: legacy-sync (default), planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
+        cli.setFooter('Operations: legacy-sync (default), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
         cli.h(longOpt: 'help', args: 0, 'Show the help')
@@ -85,6 +106,10 @@ class TodoistCalDavSync {
         cli._(longOpt: 'message-id', args: 1, argName: 'id', 'Provider message id for idempotency')
         cli._(longOpt: 'decision-id', args: 1, argName: 'id', 'Stored decision id')
         cli._(longOpt: 'ai-type', args: 1, argName: 'type', 'Allowed bounded AI suggestion type')
+        cli._(longOpt: 'confirm-legacy-qa-import', args: 0, 'Explicitly confirm operator-only legacy import to QA')
+        cli._(longOpt: 'input-reference', args: 1, argName: 'reference', 'Explicit legacy OAuth credential input reference')
+        cli._(longOpt: 'confirm-dedicated-qa-account', args: 0, 'Confirm the configured account is dedicated to isolated QA')
+        cli._(longOpt: 'qa-calendar', args: 1, argName: 'alias|role|name[;...]', 'Semicolon-separated named QA calendars to provision')
         def options = cli.parse(args)
         if (!options) return 2
         if (options.h || options.help) {
@@ -106,13 +131,71 @@ class TodoistCalDavSync {
             File configFile = new File(options.f.toString())
             String operation = optionString(options, 'operation') ?: 'legacy-sync'
             Set<String> supportedOperations = ['legacy-sync', 'planner-daemon', 'capacity', 'preview', 'apply', 'apply-safe',
-                'deliver', 'feedback', 'apply-decision', 'ai-suggest'] as Set
+                'deliver', 'feedback', 'apply-decision', 'ai-suggest',
+                'google-oauth-bootstrap', 'google-oauth-bootstrap-qa', 'google-oauth-import-legacy-qa',
+                'google-qa-calendars-list', 'google-qa-calendars-provision'] as Set
             if (!supportedOperations.contains(operation)) {
                 throw new IllegalArgumentException("Unsupported operation: ${operation}")
+            }
+            if (!(operation in ['google-qa-calendars-list', 'google-qa-calendars-provision']) &&
+                (options.hasOption('confirm-dedicated-qa-account') || optionString(options, 'qa-calendar'))) {
+                throw new IllegalArgumentException('QA calendar provisioning options are refused by normal planner operations')
             }
             if (operation == 'legacy-sync') {
                 File stateFile = new File(configFile.parentFile, configFile.name.replace('.conf', '.state'))
                 new TodoistCalDavSync(configFile, stateFile).syncLoop()
+                return 0
+            }
+            if (operation in ['google-oauth-bootstrap', 'google-oauth-bootstrap-qa']) {
+                boolean qa = operation == 'google-oauth-bootstrap-qa'
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def bootstrapConfig = ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(
+                    root, configFile.absoluteFile.parentFile.toPath(), qa)
+                def google = bootstrapConfig.calendarProvider.googleCalendarApi
+                def bootstrapService = oauthBootstrapFactory.call(google)
+                if (bootstrapService == null) throw new IllegalArgumentException('Google OAuth bootstrap service is unavailable')
+                bootstrapService.bootstrap(google,
+                    qa ? GoogleOAuthBootstrapMode.QA : GoogleOAuthBootstrapMode.NORMAL, out)
+                return 0
+            }
+            if (operation == 'google-oauth-import-legacy-qa') {
+                if (!options.hasOption('confirm-legacy-qa-import')) {
+                    throw new IllegalArgumentException('--confirm-legacy-qa-import is required')
+                }
+                String inputReference = requiredOption(options, 'input-reference')
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def importConfig = ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(
+                    root, configFile.absoluteFile.parentFile.toPath(), true)
+                def google = importConfig.calendarProvider.googleCalendarApi
+                def operationService = legacyQaImportFactory.call(google)
+                if (operationService == null) throw new IllegalArgumentException('Legacy Google OAuth QA import service is unavailable')
+                operationService.importConfirmedReference(inputReference, true)
+                out.append('Legacy Google OAuth credential verified and imported to isolated QA store.\n')
+                return 0
+            }
+            if (operation in ['google-qa-calendars-list', 'google-qa-calendars-provision']) {
+                if (!options.hasOption('confirm-dedicated-qa-account')) {
+                    throw new IllegalArgumentException('--confirm-dedicated-qa-account is required')
+                }
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def provisionConfig = ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(
+                    root, configFile.absoluteFile.parentFile.toPath(), true)
+                def google = provisionConfig.calendarProvider.googleCalendarApi
+                Path configDir = configFile.absoluteFile.parentFile.toPath().normalize()
+                Path qaRoot = configDir.fileName?.toString() == '.qa' ? configDir : configDir.resolve('.qa')
+                Path stateFile = qaRoot.resolve('state/calendar-ids.json')
+                def service = qaCalendarProvisioningFactory.call(google, qaRoot, stateFile)
+                if (service == null) throw new IllegalArgumentException('QA calendar provisioning service is unavailable')
+                def rows
+                if (operation == 'google-qa-calendars-list') {
+                    rows = service.list()
+                } else {
+                    String rawSpec = optionString(options, 'qa-calendar')
+                    if (!rawSpec) throw new IllegalArgumentException('--qa-calendar is required for QA provisioning')
+                    List<QaCalendarSpec> specs = rawSpec.split(/\s*;\s*/).collect { QaCalendarSpec.parse(it) }
+                    rows = service.provision(specs)
+                }
+                out.append(JsonOutput.prettyPrint(JsonOutput.toJson(rows))).append('\n')
                 return 0
             }
             ProductionPlannerOrchestrator orchestrator = new ProductionPlannerOrchestrator(configFile)

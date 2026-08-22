@@ -1,6 +1,8 @@
 package todoistcaldavsync.planner.config
 
 import spock.lang.Specification
+import groovy.yaml.YamlSlurper
+import todoistcaldavsync.planner.ProductionIntegrationConfig
 import todoistcaldavsync.planner.domain.EventRole
 
 import java.time.DayOfWeek
@@ -43,6 +45,27 @@ class PlannerConfigSpec extends Specification {
         config.taskContexts.any { it.name == 'phone' }
         !config.weather.enabled
         !config.messaging.enabled
+    }
+
+    def "production example parses with explicit routing and keeps Google guidance reference-only"() {
+        given:
+        File example = repoFile('conf/todoist-planner.conf.example.yaml')
+        Map root = new YamlSlurper().parse(example) as Map
+        String text = example.getText('UTF-8')
+        String googleExample = text.substring(text.indexOf('# Mutually exclusive Google Calendar API alternative'),
+            text.indexOf('    caldav:'))
+
+        when:
+        def integration = ProductionIntegrationConfig.fromMap(root, example.absoluteFile.parentFile.toPath())
+
+        then:
+        integration.calendarProvider.provider == 'caldav'
+        root.planner.integration.calendar == [provider: 'caldav']
+        googleExample.contains('oauth_client_secret_file: planner-private/google-oauth-client.json')
+        googleExample.contains('token_store_dir: planner-private/normal-event-only')
+        googleExample.contains('qa_token_store_dir: planner-private/qa-calendar-management')
+        !(googleExample =~ /(?im)^\s*#?\s*(client_secret|access_token|refresh_token|authorization_code)\s*:/)
+        !(googleExample =~ /(?i)(normal[ -]?password|app[ -]?password|password_env|token_env)/)
     }
 
     def "parses enabled messaging section with schedules and env secret refs"() {

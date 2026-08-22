@@ -47,14 +47,16 @@ final class CalendarProviderConfig {
     static final class GoogleCalendarApiConfig {
         final Path oauthClientSecretFile
         final Path tokenStoreDir
+        final Path qaTokenStoreDir
         final String accountEmail
         final int oauthCallbackPort
         final List<Map> calendars
 
-        GoogleCalendarApiConfig(Path oauthClientSecretFile, Path tokenStoreDir, String accountEmail,
+        GoogleCalendarApiConfig(Path oauthClientSecretFile, Path tokenStoreDir, Path qaTokenStoreDir, String accountEmail,
                                 int oauthCallbackPort, Collection<Map> calendars) {
             this.oauthClientSecretFile = oauthClientSecretFile
             this.tokenStoreDir = tokenStoreDir
+            this.qaTokenStoreDir = qaTokenStoreDir
             this.accountEmail = accountEmail
             this.oauthCallbackPort = oauthCallbackPort
             this.calendars = Collections.unmodifiableList((calendars ?: []).collect { Map row ->

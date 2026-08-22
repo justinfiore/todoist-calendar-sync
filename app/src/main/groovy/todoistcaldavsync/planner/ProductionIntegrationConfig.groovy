@@ -1,5 +1,8 @@
 package todoistcaldavsync.planner
 
+import todoistcaldavsync.planner.oauth.GoogleOAuthException
+import todoistcaldavsync.planner.oauth.GoogleOAuthStoreIsolation
+
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -28,7 +31,7 @@ final class ProductionIntegrationConfig {
     final Path deliveriesDir
     final String previousPlanId
 
-    private ProductionIntegrationConfig(Map root, Path configDir, boolean googleBootstrapOnly) {
+    private ProductionIntegrationConfig(Map root, Path configDir, boolean googleBootstrapOnly, boolean qaBootstrap) {
         Map planner = root.planner instanceof Map ? root.planner as Map : [:]
         Map integration = planner.integration instanceof Map ? planner.integration as Map : [:]
         if (googleBootstrapOnly) {
@@ -42,7 +45,7 @@ final class ProductionIntegrationConfig {
                 throw new IllegalArgumentException('mixed or unsupported calendar provider fields are not allowed for Google OAuth bootstrap')
             }
             Map googleRaw = calendarRaw.google_calendar_api instanceof Map ? calendarRaw.google_calendar_api as Map : [:]
-            def google = parseGoogleCalendarApi(googleRaw, configDir, null, true)
+            def google = parseGoogleCalendarApi(googleRaw, configDir, null, true, qaBootstrap)
             this.todoist = Collections.emptyMap()
             this.calendars = google.calendars
             this.caldav = null
@@ -107,7 +110,7 @@ final class ProductionIntegrationConfig {
                 throw new IllegalArgumentException('mixed CalDAV and Google calendar provider sections are not allowed')
             }
             Map googleRaw = calendarRaw.google_calendar_api instanceof Map ? calendarRaw.google_calendar_api as Map : [:]
-            def google = parseGoogleCalendarApi(googleRaw, configDir, outputCalendar, googleBootstrapOnly)
+            def google = parseGoogleCalendarApi(googleRaw, configDir, outputCalendar, googleBootstrapOnly, false)
             this.calendars = google.calendars
             this.caldav = null
             this.calendarProvider = new CalendarProviderConfig(provider, null, google)
@@ -139,11 +142,15 @@ final class ProductionIntegrationConfig {
     }
 
     static ProductionIntegrationConfig fromMap(Map root, Path configDir) {
-        new ProductionIntegrationConfig(root ?: [:], configDir, false)
+        new ProductionIntegrationConfig(root ?: [:], configDir, false, false)
     }
 
     static ProductionIntegrationConfig fromMapForGoogleOAuthBootstrap(Map root, Path configDir) {
-        new ProductionIntegrationConfig(root ?: [:], configDir, true)
+        new ProductionIntegrationConfig(root ?: [:], configDir, true, false)
+    }
+
+    static ProductionIntegrationConfig fromMapForGoogleOAuthBootstrap(Map root, Path configDir, boolean qaBootstrap) {
+        new ProductionIntegrationConfig(root ?: [:], configDir, true, qaBootstrap)
     }
 
     Collection<String> feedbackActors() {
@@ -157,7 +164,7 @@ final class ProductionIntegrationConfig {
     private static Map parseCalDav(def raw, String outputCalendar) {
         Map caldavRaw = raw instanceof Map ? raw as Map : [:]
         if (caldavRaw.keySet().any { it.toString() in [
-            'google_calendar_api', 'oauth_client_secret_file', 'token_store_dir',
+            'google_calendar_api', 'oauth_client_secret_file', 'token_store_dir', 'qa_token_store_dir',
             'account_email', 'oauth_callback_port'
         ] }) {
             throw new IllegalArgumentException('planner.integration.caldav contains mixed Google provider fields')
@@ -206,9 +213,9 @@ final class ProductionIntegrationConfig {
     }
 
     private static CalendarProviderConfig.GoogleCalendarApiConfig parseGoogleCalendarApi(
-        Map raw, Path configDir, String outputCalendar, boolean bootstrapOnly) {
+        Map raw, Path configDir, String outputCalendar, boolean bootstrapOnly, boolean qaBootstrap) {
         rejectInlineSecrets(raw, 'planner.integration.calendar.google_calendar_api')
-        Set<String> allowed = ['oauth_client_secret_file', 'token_store_dir', 'account_email',
+        Set<String> allowed = ['oauth_client_secret_file', 'token_store_dir', 'qa_token_store_dir', 'account_email',
                                'oauth_callback_port', 'calendars'] as Set
         if (raw.keySet().any { !allowed.contains(it.toString()) }) {
             throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api contains mixed or unsupported provider fields')
@@ -217,6 +224,20 @@ final class ProductionIntegrationConfig {
             'planner.integration.calendar.google_calendar_api.oauth_client_secret_file')
         Path tokenStore = requiredContainedPath(raw.token_store_dir, configDir,
             'planner.integration.calendar.google_calendar_api.token_store_dir')
+        Path qaTokenStore = raw.qa_token_store_dir != null ? requiredContainedPath(raw.qa_token_store_dir, configDir,
+            'planner.integration.calendar.google_calendar_api.qa_token_store_dir') : null
+        if (qaBootstrap && qaTokenStore == null) {
+            throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api.qa_token_store_dir is required for QA OAuth bootstrap')
+        }
+        if (qaTokenStore != null && qaTokenStore == tokenStore) {
+            throw new IllegalArgumentException('normal and QA Google OAuth token store directories must be distinct')
+        }
+        try {
+            if (qaTokenStore != null) GoogleOAuthStoreIsolation.requireDistinct(tokenStore, qaTokenStore)
+            else GoogleOAuthStoreIsolation.requireIsolated(tokenStore)
+        } catch (GoogleOAuthException e) {
+            throw new IllegalArgumentException(e.message)
+        }
         String accountEmail = raw.account_email?.toString()?.trim()
         if (!accountEmail || !(accountEmail ==~ /[^\s@]+@[^\s@]+\.[^\s@]+/)) {
             throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api.account_email must be a valid email address')
@@ -225,7 +246,7 @@ final class ProductionIntegrationConfig {
             'planner.integration.calendar.google_calendar_api.oauth_callback_port')
         List<Map> calendars = parseGoogleCalendars(raw.calendars, outputCalendar, bootstrapOnly)
         new CalendarProviderConfig.GoogleCalendarApiConfig(
-            clientFile, tokenStore, accountEmail, callbackPort, calendars)
+            clientFile, tokenStore, qaTokenStore, accountEmail, callbackPort, calendars)
     }
 
     private static List<Map> parseGoogleCalendars(def raw, String outputCalendar, boolean bootstrapOnly) {

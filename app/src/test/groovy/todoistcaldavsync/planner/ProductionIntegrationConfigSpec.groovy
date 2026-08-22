@@ -228,6 +228,23 @@ class ProductionIntegrationConfigSpec extends Specification {
         error.message.contains('configuration directory')
     }
 
+    def "Google normal and QA token stores reject an in-tree physical alias during configuration"() {
+        given:
+        Path actualConfigDir = Files.createTempDirectory('google-store-alias-config-')
+        Path physical = Files.createDirectories(actualConfigDir.resolve('physical'))
+        Files.createSymbolicLink(actualConfigDir.resolve('alias'), physical)
+        Map root = validGoogleRoot()
+        root.planner.integration.calendar.google_calendar_api.token_store_dir = 'physical/tokens'
+        root.planner.integration.calendar.google_calendar_api.qa_token_store_dir = 'alias/tokens'
+
+        when:
+        ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(root, actualConfigDir, true)
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('distinct')
+    }
+
     def "bootstrap-only Google validation still rejects invalid OAuth bootstrap fields"() {
         given:
         Map root = [planner: [integration: [calendar: [
