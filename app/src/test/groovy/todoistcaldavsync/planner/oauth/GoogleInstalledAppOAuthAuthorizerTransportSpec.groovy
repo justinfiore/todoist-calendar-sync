@@ -103,6 +103,84 @@ class GoogleInstalledAppOAuthAuthorizerTransportSpec extends Specification {
         state.scopes == GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT
     }
 
+    @Unroll("live identity scope variant succeeds: #caseName")
+    def "Google identity scope aliases and known profile extras produce lifecycle-only state"() {
+        given:
+        server.stubFor(post('/token').willReturn(okJson('''{
+          "access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600,
+          "scope":"''' + returnedScopes + '''","id_token":"signed-id-token-secret"
+        }''')))
+        def verifier = Stub(GoogleOAuthIdentityVerifier)
+        verifier.verify(_, _) >> new GoogleOAuthVerifiedIdentity('subject', 'owner@example.test')
+
+        when:
+        store.save(authorize(GoogleOAuthScopes.EVENTS, verifier))
+
+        then:
+        store.writeCount == 1
+        store.load().get().scopes == GoogleOAuthScopes.EVENTS
+
+        where:
+        caseName                 | returnedScopes
+        'userinfo email alias'   | (GoogleOAuthScopes.EVENTS + ['openid', 'https://www.googleapis.com/auth/userinfo.email']).join(' ')
+        'userinfo profile extra' | (GoogleOAuthScopes.EVENTS + ['openid', 'email', 'https://www.googleapis.com/auth/userinfo.profile']).join(' ')
+    }
+
+    @Unroll("scope mismatch is closed and unwritten: #caseName")
+    def "missing required or unexpected returned scopes are rejected"() {
+        given:
+        server.stubFor(post('/token').willReturn(okJson('''{
+          "access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600,
+          "scope":"''' + returnedScopes + '''","id_token":"signed-id-token-secret"
+        }''')))
+        def verifier = Mock(GoogleOAuthIdentityVerifier)
+
+        when:
+        store.save(authorize(GoogleOAuthScopes.EVENTS, verifier))
+
+        then:
+        GoogleOAuthException error = thrown()
+        error.classification == GoogleOAuthErrorClass.SCOPE_MISMATCH
+        error.message.contains(namedScope)
+        !error.message.contains('access-secret')
+        !error.message.contains('refresh-secret')
+        !error.message.contains('signed-id-token-secret')
+        0 * verifier._
+        store.writeCount == 0
+
+        where:
+        caseName          | returnedScopes                                                                                                          | namedScope
+        'missing email'   | (GoogleOAuthScopes.EVENTS + ['openid']).join(' ')                                                                        | 'email'
+        'unexpected Drive'| (GoogleOAuthScopes.EVENTS + GoogleOAuthScopes.IDENTITY + ['https://www.googleapis.com/auth/drive']).join(' ')            | 'https://www.googleapis.com/auth/drive'
+    }
+
+    @Unroll("missing #fieldName is classified and redacted")
+    def "missing required token response fields fail closed"() {
+        given:
+        server.stubFor(post('/token').willReturn(okJson(body)))
+        def verifier = Mock(GoogleOAuthIdentityVerifier)
+
+        when:
+        store.save(authorize(GoogleOAuthScopes.EVENTS, verifier))
+
+        then:
+        GoogleOAuthException error = thrown()
+        error.classification == GoogleOAuthErrorClass.TOKEN_RESPONSE_INVALID
+        error.message.contains(fieldName)
+        !error.message.contains('provider-access-secret')
+        !error.message.contains('refresh-secret')
+        !error.message.contains('signed-id-token-secret')
+        !error.message.contains('client-secret-value')
+        !error.message.contains('authorization-code-secret')
+        0 * verifier._
+        store.writeCount == 0
+
+        where:
+        fieldName       | body
+        'refresh_token' | validResponseWithout('refresh_token')
+        'id_token'      | validResponseWithout('id_token')
+    }
+
     @Unroll("exchange failure is closed, redacted, and unwritten: #caseName")
     def "malformed error oversized and unverified exchange responses never produce persistable state"() {
         given:
@@ -143,5 +221,12 @@ class GoogleInstalledAppOAuthAuthorizerTransportSpec extends Specification {
     private static String sha256Url(String value) {
         Base64.urlEncoder.withoutPadding().encodeToString(
             MessageDigest.getInstance('SHA-256').digest(value.getBytes(StandardCharsets.US_ASCII)))
+    }
+
+    private static String validResponseWithout(String fieldName) {
+        Map response = [access_token: 'provider-access-secret', refresh_token: 'refresh-secret', expires_in: 3600,
+            scope: (GoogleOAuthScopes.EVENTS + GoogleOAuthScopes.IDENTITY).join(' '), id_token: 'signed-id-token-secret']
+        response.remove(fieldName)
+        groovy.json.JsonOutput.toJson(response)
     }
 }

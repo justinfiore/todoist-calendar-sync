@@ -93,13 +93,17 @@ final class GoogleInstalledAppOAuthAuthorizer implements GoogleInstalledAppAutho
             }
             String access = parsed.access_token?.toString()
             String refresh = parsed.refresh_token?.toString()
+            String idToken = parsed.id_token?.toString()
+            if (!access) throw invalidField('access_token')
+            if (!refresh) throw invalidField('refresh_token')
+            if (!idToken) throw invalidField('id_token')
             long seconds
             try { seconds = Long.parseLong(parsed.expires_in?.toString()) }
-            catch (Exception ignored) { throw invalid() }
+            catch (Exception ignored) { throw invalidField('expires_in') }
+            if (seconds <= 0 || seconds > 86_400) throw invalidField('expires_in')
             Set<String> returned = parsed.scope ?
                 (parsed.scope.toString().split(/\s+/).findAll { it } as LinkedHashSet<String>) : [] as Set<String>
-            String idToken = parsed.id_token?.toString()
-            if (!access || !refresh || !idToken || seconds <= 0 || seconds > 86_400 || returned != requestedScopes) throw invalid()
+            validateReturnedScopes(requestedScopes, returned)
             GoogleOAuthVerifiedIdentity identity = identityVerifier.verify(idToken, material)
             if (!identity?.subject?.trim() || !identity?.email?.trim() ||
                 !account.equalsIgnoreCase(identity.email)) {
@@ -121,6 +125,25 @@ final class GoogleInstalledAppOAuthAuthorizer implements GoogleInstalledAppAutho
     private static GoogleOAuthException invalid() {
         new GoogleOAuthException(GoogleOAuthErrorClass.TOKEN_RESPONSE_INVALID,
             'Google OAuth authorization-code exchange returned an invalid response')
+    }
+
+    private static GoogleOAuthException invalidField(String fieldName) {
+        new GoogleOAuthException(GoogleOAuthErrorClass.TOKEN_RESPONSE_INVALID,
+            "Google OAuth token response has invalid ${fieldName}")
+    }
+
+    private static void validateReturnedScopes(Set<String> requestedScopes, Set<String> returnedScopes) {
+        Set<String> requested = GoogleOAuthScopes.canonicalize(requestedScopes)
+        Set<String> returned = GoogleOAuthScopes.canonicalize(returnedScopes)
+        Set<String> missing = requested - returned
+        Set<String> unexpected = returned - requested - GoogleOAuthScopes.OPTIONAL_IDENTITY_ADJACENT
+        if (missing || unexpected) {
+            List<String> details = []
+            if (missing) details << "missing scopes: ${missing.sort().join(', ')}"
+            if (unexpected) details << "unexpected scopes: ${unexpected.sort().join(', ')}"
+            throw new GoogleOAuthException(GoogleOAuthErrorClass.SCOPE_MISMATCH,
+                "Google OAuth scope mismatch; ${details.join('; ')}")
+        }
     }
 
     private static boolean validPkceVerifier(String value) {
