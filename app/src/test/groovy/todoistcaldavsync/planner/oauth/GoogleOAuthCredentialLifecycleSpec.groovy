@@ -67,6 +67,96 @@ class GoogleOAuthCredentialLifecycleSpec extends Specification {
         server.verify(1, postRequestedFor(urlEqualTo('/token')))
     }
 
+    def "credential refresh treats an omitted scope field as unchanged and persists required scopes"() {
+        given:
+        server.stubFor(post(urlEqualTo('/token')).willReturn(okJson(
+            '{"access_token":"new-access","expires_in":3600,"token_type":"Bearer"}')))
+        def store = new InMemoryGoogleOAuthTokenStore()
+        store.save(new GoogleOAuthTokenState('old-access', 'refresh-value', now.plusSeconds(30),
+            GoogleOAuthScopes.EVENTS, 'owner@example.test', 'owner-subject'))
+
+        when:
+        String access = service(store).accessToken()
+
+        then:
+        access == 'new-access'
+        store.load().get().scopes == GoogleOAuthScopes.EVENTS
+        store.writeCount == 2
+    }
+
+    @Unroll("refresh accepts Google identity aliases and persists only required scopes [#caseName]")
+    def "refresh canonicalizes identity aliases without widening stored planner scopes"() {
+        given:
+        server.stubFor(post(urlEqualTo('/token')).willReturn(okJson(
+            '{"access_token":"new-access","expires_in":3600,"token_type":"Bearer","scope":"' + returnedScopes + '"}')))
+        def store = new InMemoryGoogleOAuthTokenStore()
+        store.save(new GoogleOAuthTokenState('old-access', 'refresh-value', now.plusSeconds(30),
+            GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT, 'owner@example.test', 'owner-subject'))
+
+        when:
+        String access = service(store, GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT).accessToken()
+
+        then:
+        access == 'new-access'
+        store.load().get().scopes == GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT
+        store.writeCount == 2
+
+        where:
+        caseName                 | returnedScopes
+        'userinfo email alias'   | (GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT + ['openid', GoogleOAuthScopes.USERINFO_EMAIL]).join(' ')
+        'userinfo profile extra' | (GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT + ['openid', 'email', GoogleOAuthScopes.USERINFO_PROFILE]).join(' ')
+    }
+
+    @Unroll("refresh rejects scope allowlist boundary [#caseName]")
+    def "refresh rejects missing planner scopes or unrelated extras without persisting"() {
+        given:
+        server.stubFor(post(urlEqualTo('/token')).willReturn(okJson(
+            '{"access_token":"new-access","expires_in":3600,"token_type":"Bearer","scope":"' + returnedScopes + '"}')))
+        def store = new InMemoryGoogleOAuthTokenStore()
+        store.save(new GoogleOAuthTokenState('old-access', 'refresh-value', now.plusSeconds(30),
+            GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT, 'owner@example.test', 'owner-subject'))
+
+        when:
+        service(store, GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT).accessToken()
+
+        then:
+        def error = thrown(GoogleOAuthException)
+        error.classification == GoogleOAuthErrorClass.SCOPE_MISMATCH
+        store.writeCount == 1
+
+        where:
+        caseName                  | returnedScopes
+        'unrelated Drive extra'   | (GoogleOAuthScopes.QA_CALENDAR_MANAGEMENT + GoogleOAuthScopes.IDENTITY + ['https://www.googleapis.com/auth/drive']).join(' ')
+        'missing calendar scope'  | (GoogleOAuthScopes.EVENTS + GoogleOAuthScopes.IDENTITY).join(' ')
+    }
+
+    @Unroll("refresh rejects explicit malformed scope value [#caseName]")
+    def "refresh treats only an omitted scope field as unchanged"() {
+        given:
+        server.stubFor(post(urlEqualTo('/token')).willReturn(okJson(
+            '{"access_token":"new-access","expires_in":3600,"token_type":"Bearer","scope":' + scopeJson + '}')))
+        def store = new InMemoryGoogleOAuthTokenStore()
+        store.save(new GoogleOAuthTokenState('old-access', 'refresh-value', now.plusSeconds(30),
+            GoogleOAuthScopes.EVENTS, 'owner@example.test', 'owner-subject'))
+
+        when:
+        service(store).accessToken()
+
+        then:
+        def error = thrown(GoogleOAuthException)
+        error.classification == GoogleOAuthErrorClass.TOKEN_RESPONSE_INVALID
+        store.writeCount == 1
+
+        where:
+        caseName          | scopeJson
+        'null'            | 'null'
+        'empty string'    | '""'
+        'blank string'    | '"   "'
+        'boolean false'   | 'false'
+        'number zero'     | '0'
+        'empty array'     | '[]'
+    }
+
     @Unroll("refresh failure is closed and redacted [#expected]")
     def "revoked malformed and oversized refresh responses fail closed and redact secrets"() {
         given:

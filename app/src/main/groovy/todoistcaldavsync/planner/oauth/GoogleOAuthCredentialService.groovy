@@ -90,9 +90,17 @@ final class GoogleOAuthCredentialService {
             try { expiresIn = Long.parseLong(parsed.expires_in?.toString()) }
             catch (Exception ignored) { throw invalidResponse() }
             if (!access || expiresIn <= 0 || expiresIn > 86_400L) throw invalidResponse()
-            Set<String> returnedScopes = parsed.scope ?
-                (parsed.scope.toString().split(/\s+/).findAll { it } as LinkedHashSet<String>) : requiredScopes
-            if (returnedScopes != requiredScopes) {
+            Set<String> returnedScopes
+            if (!parsed.containsKey('scope')) {
+                returnedScopes = requiredScopes
+            } else {
+                def rawScope = parsed.scope
+                if (!(rawScope instanceof CharSequence) || rawScope.toString().trim().isEmpty()) {
+                    throw invalidResponse()
+                }
+                returnedScopes = rawScope.toString().split(/\s+/).findAll { it } as LinkedHashSet<String>
+            }
+            if (!GoogleOAuthScopes.matchesRefreshGrant(requiredScopes, returnedScopes)) {
                 throw new GoogleOAuthException(GoogleOAuthErrorClass.SCOPE_MISMATCH,
                     'Google OAuth refresh returned the wrong scope set')
             }

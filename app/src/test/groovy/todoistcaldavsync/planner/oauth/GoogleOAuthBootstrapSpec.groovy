@@ -117,6 +117,30 @@ class GoogleOAuthBootstrapSpec extends Specification {
         stores == 0
     }
 
+    def "loopback callback identifies a state mismatch without exposing callback values"() {
+        given:
+        int port = freePort()
+        def receiver = new LoopbackGoogleOAuthCallbackReceiver('127.0.0.1', port, Duration.ofSeconds(3))
+        URI redirect = receiver.start('expected-state')
+
+        when:
+        HttpURLConnection connection = (HttpURLConnection) URI.create(
+            "${redirect}?code=callback-code&state=other-state").toURL().openConnection()
+        int status = connection.responseCode
+        receiver.awaitCode()
+
+        then:
+        status == 400
+        def error = thrown(GoogleOAuthException)
+        error.classification == GoogleOAuthErrorClass.CALLBACK_FAILURE
+        error.message == 'Google OAuth callback state did not match'
+        !error.message.contains('other-state')
+        !error.message.contains('callback-code')
+
+        cleanup:
+        receiver?.close()
+    }
+
     def "loopback callback receives an SSH-forwarded-style local callback and never binds wildcard"() {
         given:
         int port = freePort()

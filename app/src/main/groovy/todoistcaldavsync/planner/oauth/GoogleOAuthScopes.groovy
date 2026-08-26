@@ -21,5 +21,14 @@ final class GoogleOAuthScopes {
         } as LinkedHashSet<String>
     }
 
+    static boolean matchesRefreshGrant(Collection<String> requiredScopes, Collection<String> returnedScopes) {
+        Set<String> required = canonicalize(requiredScopes)
+        Set<String> returned = canonicalize(returnedScopes)
+        Set<String> allowed = new LinkedHashSet<>(required)
+        allowed.addAll(IDENTITY)
+        allowed.addAll(OPTIONAL_IDENTITY_ADJACENT)
+        returned.containsAll(required) && (returned - allowed).isEmpty()
+    }
+
     private GoogleOAuthScopes() {}
 }

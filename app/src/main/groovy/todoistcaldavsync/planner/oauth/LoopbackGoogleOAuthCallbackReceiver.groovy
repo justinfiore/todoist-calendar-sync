@@ -66,7 +66,9 @@ final class LoopbackGoogleOAuthCallbackReceiver implements AutoCloseable {
         try {
             if (exchange.requestMethod != 'GET') throw callbackFailure()
             Map<String, String> query = parseQuery(exchange.requestURI.rawQuery)
-            if (query.state != expectedState || query.error || !query.code) throw callbackFailure()
+            if (query.state != expectedState) throw callbackFailure('Google OAuth callback state did not match')
+            if (query.error) throw callbackFailure('Google OAuth authorization was denied or cancelled')
+            if (!query.code) throw callbackFailure('Google OAuth callback did not contain an authorization code')
             code = query.code
             status = 200
             responseText = 'OAuth authorization received. You may close this window.'
@@ -91,9 +93,8 @@ final class LoopbackGoogleOAuthCallbackReceiver implements AutoCloseable {
         values
     }
 
-    private static GoogleOAuthException callbackFailure() {
-        new GoogleOAuthException(GoogleOAuthErrorClass.CALLBACK_FAILURE,
-            'Google OAuth callback was rejected')
+    private static GoogleOAuthException callbackFailure(String message = 'Google OAuth callback was rejected') {
+        new GoogleOAuthException(GoogleOAuthErrorClass.CALLBACK_FAILURE, message)
     }
 
     @Override synchronized void close() {
