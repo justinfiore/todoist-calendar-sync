@@ -158,7 +158,7 @@ These are the only commands approved during documentation/review validation:
 ./gradlew build
 ./gradlew installDist
 ./app/build/install/todoist-caldav-sync/bin/todoist-caldav-sync --help
-openspec validate add-google-calendar-gateway --strict
+openspec validate --all --strict
 git diff --check
 git status --short
 git diff --stat

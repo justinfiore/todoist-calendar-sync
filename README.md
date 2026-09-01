@@ -15,7 +15,7 @@ Open-Meteo, configurable regex feedback, and disabled-by-default bounded AI inte
 
 Sync Todoist tasks into one or more CalDAV calendars.
 
-Feature guides: [SmartPlanner configuration](docs/SMART_PLANNER_CONFIGURATION.md),
+Start with the [system architecture](ARCHITECTURE.md). Feature guides: [SmartPlanner configuration](docs/SMART_PLANNER_CONFIGURATION.md),
 [end-to-end rollout/testing](docs/PLANNER_END_TO_END_TESTING.md),
 [Slack](docs/SLACK_INTEGRATION.md), [LLM](docs/LLM_INTEGRATION.md), and
 [weather](docs/WEATHER_INTEGRATION.md). The bounded suggestion and confirmation contracts are in
