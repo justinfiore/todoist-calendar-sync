@@ -1,0 +1,6 @@
+COMMAND: .qa/tools/provider_qa.py google-calendars --out <private>/google-preflight.json
+STARTED_UTC: 2026-10-01T12:08:17Z
+google_calendars=4
+google_primary_calendars=1
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:08:18Z

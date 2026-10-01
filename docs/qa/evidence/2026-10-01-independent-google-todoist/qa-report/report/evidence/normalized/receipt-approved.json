@@ -1,0 +1,47 @@
+{
+  "approvalId": "qa-exact-approved",
+  "drifts": [],
+  "errors": [],
+  "finishedAt": "2026-10-01T12:23:43.960305488Z",
+  "id": "ar-f4b7e2e38cb68677-1",
+  "items": [
+    {
+      "appliedAt": "2026-10-01T12:23:36.878873573Z",
+      "approvalId": "qa-exact-approved",
+      "approvalTime": "2026-10-01T12:23:26.680396Z",
+      "blockId": "block-6hg649G4CVhh4386-1791205200000",
+      "calendarError": null,
+      "calendarStatus": "applied",
+      "eventUid": "planner-1f76fcf39e6520f007eb2a30@todoist-planner.local",
+      "metadata": {
+        "blockEnd": "2026-10-05T13:30:00Z",
+        "blockStart": "2026-10-05T13:00:00Z",
+        "calendarRecreateReason": "missing_live_event",
+        "focusBlock": false
+      },
+      "planHash": "dfb73000fb409a48db94ed2771f99e1208983c8685c753bb23393a531c35dac5",
+      "planId": "plan-6447db439a9dc380",
+      "planVersion": 1,
+      "slotEnd": "2026-10-05T13:30:00Z",
+      "slotStart": "2026-10-05T13:00:00Z",
+      "taskId": "6hg649G4CVhh4386",
+      "todoistError": null,
+      "todoistStatus": "applied"
+    }
+  ],
+  "metadata": {
+    "approvalBound": true,
+    "approvalValid": true,
+    "blockCount": 1,
+    "effectiveMode": "approval_required",
+    "explicitApproval": true,
+    "writeCount": 1
+  },
+  "mode": "approval_required",
+  "overallStatus": "applied",
+  "planHash": "dfb73000fb409a48db94ed2771f99e1208983c8685c753bb23393a531c35dac5",
+  "planId": "plan-6447db439a9dc380",
+  "planVersion": 1,
+  "schemaVersion": 1,
+  "startedAt": "2026-10-01T12:23:36.755004620Z"
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "end": {
+      "dateTime": "2026-10-05T14:00:00Z",
+      "timeZone": "America/New_York"
+    },
+    "id_fp": "2a78cca657a4",
+    "ownership": {
+      "block_id_fp": null,
+      "managed": null,
+      "planner_uid_fp": null,
+      "qa_run": "spqa-20261001-9b3beb"
+    },
+    "start": {
+      "dateTime": "2026-10-05T13:00:00Z",
+      "timeZone": "America/New_York"
+    },
+    "status": "confirmed",
+    "summary": "SmartPlanner QA blocker spqa-20261001-9b3beb"
+  }
+]

@@ -167,17 +167,16 @@ The clean QA thread checked out `origin/qa-google-calendar` at exact reviewed ba
 
 The final normalized Todoist, Google output, and Google blocker snapshots are byte-identical to their preflight/baseline counterparts. Native provider UI captures were unavailable because orb Chrome was not authenticated; API exports, diffs, receipts, ownership metadata, and final snapshots are the authoritative provider evidence.
 
-The ignored fresh evidence tree contains 372 checksummed files at `.qa/runs/20261001T120759Z-live-9b3bebf43bfe`. Its secret-free distributable is `manual-qa-report-package.tar.gz`, SHA-256 `afbefb40293d5704cfea7e2876a698cd17615fc958b3aac47e642ca91f19aa28`. The package's result matrix, campaign manifest, cleanup assertions, redaction result, exact apply receipt, normalized provider snapshots, screenshots, and four-second walkthrough support the PASS. Two evidence-quality caveats remain:
+The ignored fresh evidence tree contains 372 checksummed files at `.qa/runs/20261001T120759Z-live-9b3bebf43bfe`. Its source secret-free package has SHA-256 `afbefb40293d5704cfea7e2876a698cd17615fc958b3aac47e642ca91f19aa28`; the repository stores its 138 extracted individual files under `docs/qa/evidence/2026-10-01-independent-google-todoist/qa-report/`. The result matrix, campaign manifest, cleanup assertions, redaction result, exact apply receipt, normalized provider snapshots, screenshots, and four-second walkthrough support the PASS. One evidence-quality caveat remains:
 
 - The first combined Gradle command exited 1 because task-specific `--tests` options were also applied to `installDist`; the thread corrected this by running the same scoped tests and `installDist` separately, both of which passed. This is a captured command-composition error, not a test or build failure.
-- The packaged `report/evidence-manifest.sha256` retains its original `.qa/runs/.../report/` path prefix, so direct verification from the extracted package root fails. Removing that prefix verifies all 134 distributable entries. Fix the packager before the next campaign so verification is portable without path rewriting.
 
-The thread made two unpushed local commits that are not part of PR #12:
+The source QA thread's two local commits remain unpushed under their original IDs, but their exact content was recreated and pushed to PR #12:
 
-- `02a44e5`: Java 25 plus pinned OpenSpec 1.14.0 orb setup, verified in login and non-login shells.
-- `9b3bebf`: OpenSpec configuration and six generated Amp skills, committed after review, strict validation, `doctor`, and skill reload.
+- Source `02a44e5` became pushed commit `e6d603a`: Java 25 plus pinned OpenSpec 1.14.0 orb setup, verified in login and non-login shells.
+- Source `9b3bebf` became pushed commit `8b3e1b8`: OpenSpec configuration and six generated Amp skills, committed after review, strict validation, `doctor`, and skill reload.
 
-Both commits must be reviewed and transferred separately if wanted.
+Both transferred commits remain independently reviewable in PR #12.
 
 ### Open finding from the completed campaign
 

@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation apply --plan-id <same> --approval <same exact approval>
+STARTED_UTC: 2026-10-01T12:24:27Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:24:38Z

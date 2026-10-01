@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation preview --previous-plan-id <approved baseline> [apply_safe_changes]
+STARTED_UTC: 2026-10-01T12:25:08Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:25:17Z
