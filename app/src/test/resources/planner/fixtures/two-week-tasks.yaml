@@ -1,0 +1,176 @@
+tasks:
+  # --- Week-1 capacity consumers (early deadlines) ---
+  - id: "tw-email"
+    content: "Clear email inbox"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, phone, t30]
+    priority: 4
+    deadline:
+      date: "2026-08-06T18:00:00-04:00"
+
+  - id: "tw-standup-prep"
+    content: "Standup prep notes"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, computer, t60]
+    priority: 4
+    deadline:
+      date: "2026-08-07T12:00:00-04:00"
+
+  - id: "tw-client-call"
+    content: "Client follow-up call"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, phone, t45]
+    priority: 3
+    deadline:
+      date: "2026-08-07T17:00:00-04:00"
+
+  - id: "tw-home-fix"
+    content: "Organize garage shelf"
+    project_id: "p-home"
+    project_name: "Home"
+    labels: [schedule, home, t60]
+    priority: 3
+    deadline:
+      date: "2026-08-08T17:00:00-04:00"
+
+  - id: "tw-weekend-errand"
+    content: "Hardware store run"
+    project_id: "p-home"
+    project_name: "Home"
+    labels: [schedule, outdoor, t60]
+    priority: 2
+    deadline:
+      date: "2026-08-09T14:00:00-04:00"
+
+  - id: "tw-mon-report"
+    content: "Monday status digest"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, computer, t90]
+    priority: 3
+    deadline:
+      date: "2026-08-10T17:00:00-04:00"
+
+  - id: "tw-tue-budget"
+    content: "Budget spreadsheet pass"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, computer, t90]
+    priority: 3
+    deadline:
+      date: "2026-08-11T17:00:00-04:00"
+
+  # Same-project batch (Scouts) — mid/late first week into second
+  - id: "tw-scout-a"
+    content: "Scout advancement paperwork"
+    project_id: "p-scouts"
+    project_name: "Scouts"
+    labels: [schedule, computer, t30]
+    priority: 3
+    deadline:
+      date: "2026-08-14"
+
+  - id: "tw-scout-b"
+    content: "Scout parent email"
+    project_id: "p-scouts"
+    project_name: "Scouts"
+    labels: [schedule, phone, t15]
+    priority: 2
+    deadline:
+      date: "2026-08-14"
+
+  - id: "tw-scout-c"
+    content: "Den meeting plan"
+    project_id: "p-scouts"
+    project_name: "Scouts"
+    labels: [schedule, computer, t30]
+    priority: 2
+    deadline:
+      date: "2026-08-15"
+
+  # --- Week-2 / horizon tasks (later deadlines; should land after week-1 fills) ---
+  - id: "tw-deep"
+    content: "Architecture writeup"
+    project_id: "p-ai"
+    project_name: "AI"
+    labels: [schedule, computer, t90]
+    priority: 4
+    deadline:
+      date: "2026-08-18"
+
+  - id: "tw-refactor"
+    content: "Refactor planner adapters"
+    project_id: "p-ai"
+    project_name: "AI"
+    labels: [schedule, computer, t90]
+    priority: 3
+    deadline:
+      date: "2026-08-19"
+
+  - id: "tw-deck"
+    content: "Paint the deck railing"
+    project_id: "p-home"
+    project_name: "Home"
+    labels: [schedule, outdoor, t90]
+    priority: 3
+    deadline:
+      date: "2026-08-17"
+
+  - id: "tw-mid-review"
+    content: "Weekly status review"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, phone, t60]
+    priority: 2
+    deadline:
+      date: "2026-08-13T17:00:00-04:00"
+
+  - id: "tw-horizon-end"
+    content: "File quarterly notes"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, computer, t60]
+    priority: 2
+    deadline:
+      date: "2026-08-20T17:00:00-04:00"
+
+  - id: "tw-late-home"
+    content: "Assemble shelving unit"
+    project_id: "p-home"
+    project_name: "Home"
+    labels: [schedule, home, t60]
+    priority: 2
+    deadline:
+      date: "2026-08-19"
+
+  - id: "tw-week2-call"
+    content: "Vendor check-in call"
+    project_id: "p-admin"
+    project_name: "Admin"
+    labels: [schedule, phone, t45]
+    priority: 3
+    deadline:
+      date: "2026-08-14T17:00:00-04:00"
+
+  # Manual — must be excluded
+  - id: "tw-manual"
+    content: "Doctor appointment prep"
+    project_id: "p-personal"
+    project_name: "Personal"
+    labels: [schedule, manual, t60]
+    priority: 3
+    deadline:
+      date: "2026-08-10"
+
+  # Impossible: 90m before early deadline while morning capacity is blocked
+  - id: "tw-impossible"
+    content: "Rewrite monorepo before standup"
+    project_id: "p-ai"
+    project_name: "AI"
+    labels: [schedule, computer, t90]
+    priority: 4
+    deadline:
+      date: "2026-08-06T10:00:00-04:00"

@@ -541,10 +541,63 @@ All AI output must conform to a schema, be validated by deterministic code, and 
 
 **Objective:** Add optional Slack delivery and a controlled collaboration workflow.
 
+**Scope:** Library-only messaging integration. Phase 5 does **not** wire a CLI or daemon.
+Host applications construct `MessagingService`, `DeliveryLedger`, `DecisionStore`, and
+`FeedbackParser` and call `deliverDue` / `handleFeedback` / `applyDecision` explicitly.
+
+**Authorization:** `FeedbackParser` is fail-closed. Default and null authorization
+predicates deny all actors (including help/status). Production integrations **must**
+inject an explicit actor allowlist or policy predicate
+(`FeedbackParser.allowlist([...])`). Unknown/null/blank actors are always denied.
+`IDEMPOTENT_REPLAY` returns `FeedbackResult` with `accepted=false`, `approval=null`,
+and `replayed=true` — never a reusable Phase 3 `Approval` or apply-safe authorization.
+Host anti-pattern `if (accepted || approval)` cannot apply on replay. Missing
+correlation ids are derived deterministically (SHA-256 prefix of actor + normalized
+command + destination/thread/message/plan identity); platform `messageId` is preferred.
+Never default correlation to epoch millis.
+
+**Slack success contract (strict):**
+- **webhook:** HTTP 2xx counts as delivered **only** when the response body, trimmed,
+  equals `ok` case-insensitively (Slack incoming-webhook contract). Empty, whitespace,
+  HTML proxy pages, JSON objects (`{}`, `{"ok":true}`), or any other text → `FAILED`
+  with `WEBHOOK_BODY` classification and `responseClass` metadata; never `DELIVERED`.
+- **chat_api:** HTTP 2xx requires a valid JSON object with `ok: true`. `ok: false` is
+  `PROVIDER` failure (safe error text). Empty/malformed/non-object/`ok` missing or
+  non-boolean → failure without delivery.
+
+**Slack endpoint allowlist (mode-specific, SSRF-hardened):**
+- webhook: HTTPS only, host exactly `hooks.slack.com`, default port 443.
+- chat_api: HTTPS only, host exactly `slack.com`, path prefix `/api/`, default port 443.
+- Rejects `www.slack.com`, `api.slack.com`, subdomains, userinfo, non-443 ports
+  (unless explicit test override), and lookalike hosts.
+
+**Delivery ledger — DELIVERED is a terminal barrier:**
+- `tryClaimPending` inspects immutable first-delivered `byIdempotency`, not only latest.
+  Any historical `DELIVERED` for the key refuses claim forever.
+- Public APIs enforce an explicit legal state machine (`recordPending`, `recordFailed`,
+  `recordDelivered`, `transition`, `tryClaimPending`, audited `reconcile`). Raw `record`
+  cannot demote `DELIVERED` to `FAILED`/`PENDING`/`UNKNOWN`. Illegal transitions throw
+  `IllegalTransitionException` with no mutation.
+- Legal edges (summary): absent→`PENDING`/`FAILED`/`DELIVERED`; `FAILED`→`PENDING`
+  (retry); `PENDING`/`ATTEMPT`→`DELIVERED`|`FAILED`|`UNKNOWN`; `UNKNOWN` blocks
+  auto-reclaim (audited `reconcile` only); `DELIVERED` terminal.
+- First `DELIVERED` wins in `byIdempotency`; once terminal, `byLatest` stays `DELIVERED`.
+
+**Crash recovery (dual-file index):**
+- `DeliveryLedger` and `DecisionStore` write data files before the index. After a crash
+  between data atomic move and index move, load/repair scans only contained expected
+  filename patterns (`delivery-*.json` / `decision-*.json`), validates payloads, and
+  merges into the index under lock deterministically. Corruption is ignored/rejected;
+  never reads outside the store directory. `repairIndex()` is also available explicitly.
+  Index entries are never created before durable data. Recovery does not duplicate
+  decisions or allow a second send for a recovered `DELIVERED`.
+
 **Files:**
 - Create: `planner/adapters/MessagingGateway.groovy`
 - Create: `planner/adapters/SlackMessagingGateway.groovy`
 - Create: `planner/feedback/FeedbackParser.groovy`
+- Create: `planner/messaging/MessagingService.groovy`, `MessageRenderer.groovy`
+- Create: `planner/state/DeliveryLedger.groovy`, `DecisionStore.groovy`
 - Create message rendering and feedback validation tests.
 
 **Steps:**
@@ -553,9 +606,21 @@ All AI output must conform to a schema, be validated by deterministic code, and 
 3. Implement daily, weekly, and medium-horizon summary delivery based on configured run schedules.
 4. Implement proposal IDs, approve/reject/apply-safe actions, and auditable decision records.
 5. Implement structured feedback first; add natural-language interpretation only in the optional AI phase.
-6. Verify in a test Slack channel with preview-only plan data.
+6. Atomic same-key delivery claim (`DeliveryLedger.tryClaimPending`) so concurrent instances
+   yield exactly one provider send; index path containment; bounded decision/command text.
+7. Recurring-delivery idempotency: `DeliveryIntent` carries stable schedule identity (hash of
+   canonical schedule fields) and an occurrence key anchored to scheduled local civil
+   date/time + cadence in the messaging timezone — not the raw invocation instant.
+   Delivery keys include plan semantic identity, kind, destination/thread, horizon,
+   schedule id, and occurrence (plus task/alert id for risk). Same occurrence retries
+   dedupe; the next daily/weekly/medium occurrence sends even if the Plan is unchanged.
+   DST spring gap uses the first valid local time after the gap (one occurrence); fall
+   fold maps both overlap instants to one local occurrence key. Manual/`deliverKind`
+   paths use a stable manual key (no silent clock nondeterminism). Renderer content
+   identity (`contentKey`) is separate from delivery occurrence idempotency.
+8. Verify in a test Slack channel with preview-only plan data (host app wiring).
 
-**Acceptance criteria:** Messages accurately represent the stored plan; approval is required before protected writes; capacity-risk alerts include task, deadline, reason, and alternatives.
+**Acceptance criteria:** Messages accurately represent the stored plan; approval is required before protected writes; capacity-risk alerts include task, deadline, reason, and alternatives; feedback auth is fail-closed with explicit allowlist; recurring schedules re-deliver each occurrence without suppressing unchanged plans forever; Slack webhook/chat_api success is strict; `DELIVERED` is a terminal ledger barrier; replay never authorizes apply; dual-file crash recovery restores exact records without duplicate send/decision.
 
 ### Phase 6: Optional LLM enrichment and conversational feedback
 

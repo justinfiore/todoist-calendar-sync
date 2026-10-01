@@ -41,8 +41,24 @@ import com.github.caldav4j.CalDAVConstants;
 import com.github.caldav4j.exceptions.ResourceNotFoundException
 import com.github.caldav4j.exceptions.BadStatusException
 import java.util.concurrent.TimeUnit
+import java.nio.file.Path
 import groovy.cli.picocli.CliBuilder
 import com.google.api.client.auth.oauth2.Credential;
+import todoistcaldavsync.planner.ProductionPlannerOrchestrator
+import todoistcaldavsync.planner.SmartPlannerDaemon
+import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
+import todoistcaldavsync.planner.state.DeliveryLedger
+import todoistcaldavsync.planner.domain.Approval
+import todoistcaldavsync.planner.ProductionIntegrationConfig
+import todoistcaldavsync.planner.oauth.GoogleOAuthBootstrapMode
+import todoistcaldavsync.planner.oauth.GoogleOAuthBootstrapService
+import todoistcaldavsync.planner.oauth.GoogleTokenInfoLegacyOAuthCredentialVerifier
+import todoistcaldavsync.planner.oauth.JsonFileLegacyGoogleOAuthCredentialSource
+import todoistcaldavsync.planner.oauth.LegacyGoogleOAuthQaImportOperation
+import todoistcaldavsync.planner.qa.QaCalendarProvisioningService
+import todoistcaldavsync.planner.qa.QaCalendarSpec
+import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport
+import org.apache.commons.io.output.AppendableWriter
 
 
 @Log4j
@@ -53,39 +69,235 @@ class TodoistCalDavSync {
     }
     
     public static void main(String[] args) {
-        def cli = new CliBuilder(usage: 'TodoistCalDavSync.groovy -f configFile -l log4j.groovy')
-        cli.setFooter("Syncs Todoist Events with CalDav Calendars")
+        int code = run(args, System.out, System.err)
+        if (code != 0) System.exit(code)
+    }
+
+    /** Main command dispatcher retained on the legacy entry point; composition lives elsewhere. */
+    static int run(String[] args, Appendable out = System.out, Appendable err = System.err,
+                   Closure oauthBootstrapFactory = { googleConfig -> GoogleOAuthBootstrapService.production() },
+                   Closure legacyQaImportFactory = { googleConfig ->
+                       def transport = GoogleNetHttpTransport.newTrustedTransport()
+                       LegacyGoogleOAuthQaImportOperation.production(googleConfig.accountEmail,
+                           googleConfig.tokenStoreDir, googleConfig.qaTokenStoreDir,
+                           new JsonFileLegacyGoogleOAuthCredentialSource(),
+                           new GoogleTokenInfoLegacyOAuthCredentialVerifier(transport))
+                   },
+                   Closure qaCalendarProvisioningFactory = { googleConfig, qaRoot, stateFile ->
+                       new QaCalendarProvisioningService(config: googleConfig, qaRoot: qaRoot, stateFile: stateFile)
+                   }) {
+        def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
+            writer: new PrintWriter(new AppendableWriter(out), true))
+        cli.setFooter('Operations: legacy-sync (default), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
-        cli.h(args: 0, "Show the help")
+        cli.h(longOpt: 'help', args: 0, 'Show the help')
+        cli._(longOpt: 'operation', args: 1, argName: 'operation', 'Operation (default: legacy-sync)')
+        cli._(longOpt: 'range-start', args: 1, argName: 'instant', 'ISO-8601 range start')
+        cli._(longOpt: 'range-end', args: 1, argName: 'instant', 'ISO-8601 exclusive range end')
+        cli._(longOpt: 'format', args: 1, argName: 'format', 'capacity format: markdown|json')
+        cli._(longOpt: 'plan-id', args: 1, argName: 'id', 'Stored plan id')
+        cli._(longOpt: 'previous-plan-id', args: 1, argName: 'id', 'Explicit stability baseline plan id')
+        cli._(longOpt: 'approval', args: 1, argName: 'file', 'Exact approval JSON/YAML file')
+        cli._(longOpt: 'kind', args: 1, argName: 'kind', 'Message kind (omit for deliver-due)')
+        cli._(longOpt: 'feedback', args: 1, argName: 'command', 'Structured feedback command')
+        cli._(longOpt: 'actor', args: 1, argName: 'id', 'Feedback actor id')
+        cli._(longOpt: 'correlation-id', args: 1, argName: 'id', 'Feedback/AI correlation id')
+        cli._(longOpt: 'message-id', args: 1, argName: 'id', 'Provider message id for idempotency')
+        cli._(longOpt: 'decision-id', args: 1, argName: 'id', 'Stored decision id')
+        cli._(longOpt: 'ai-type', args: 1, argName: 'type', 'Allowed bounded AI suggestion type')
+        cli._(longOpt: 'confirm-legacy-qa-import', args: 0, 'Explicitly confirm operator-only legacy import to QA')
+        cli._(longOpt: 'input-reference', args: 1, argName: 'reference', 'Explicit legacy OAuth credential input reference')
+        cli._(longOpt: 'confirm-dedicated-qa-account', args: 0, 'Confirm the configured account is dedicated to isolated QA')
+        cli._(longOpt: 'qa-calendar', args: 1, argName: 'alias|role|name[;...]', 'Semicolon-separated named QA calendars to provision')
         def options = cli.parse(args)
-
-
-        if(options.h) {
-            showHelp(cli)
-            System.exit(0);
+        if (!options) return 2
+        if (options.h || options.help) {
+            cli.usage()
+            return 0
         }
-
         if (!options.f) {
-            throw new IllegalArgumentException("You must specify the config file");
+            err.append('Error: you must specify the config file\n')
+            return 2
         }
-
         if (!options.l) {
-            throw new IllegalArgumentException("You must specify the log4j file");
+            err.append('Error: you must specify the log4j file\n')
+            return 2
         }
+        try {
+            def logConfig = new ConfigSlurper().parse(new File(options.l.toString()).toURI().toURL())
+            PropertyConfigurator.configure(logConfig.toProperties())
+            log.info('----------------------------------------------------------------')
+            File configFile = new File(options.f.toString())
+            String operation = optionString(options, 'operation') ?: 'legacy-sync'
+            Set<String> supportedOperations = ['legacy-sync', 'planner-daemon', 'capacity', 'preview', 'apply', 'apply-safe',
+                'deliver', 'feedback', 'apply-decision', 'ai-suggest',
+                'google-oauth-bootstrap', 'google-oauth-bootstrap-qa', 'google-oauth-import-legacy-qa',
+                'google-qa-calendars-list', 'google-qa-calendars-provision'] as Set
+            if (!supportedOperations.contains(operation)) {
+                throw new IllegalArgumentException("Unsupported operation: ${operation}")
+            }
+            if (!(operation in ['google-qa-calendars-list', 'google-qa-calendars-provision']) &&
+                (options.hasOption('confirm-dedicated-qa-account') || optionString(options, 'qa-calendar'))) {
+                throw new IllegalArgumentException('QA calendar provisioning options are refused by normal planner operations')
+            }
+            if (operation == 'legacy-sync') {
+                File stateFile = new File(configFile.parentFile, configFile.name.replace('.conf', '.state'))
+                new TodoistCalDavSync(configFile, stateFile).syncLoop()
+                return 0
+            }
+            if (operation in ['google-oauth-bootstrap', 'google-oauth-bootstrap-qa']) {
+                boolean qa = operation == 'google-oauth-bootstrap-qa'
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def bootstrapConfig = ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(
+                    root, configFile.absoluteFile.parentFile.toPath(), qa)
+                def google = bootstrapConfig.calendarProvider.googleCalendarApi
+                def bootstrapService = oauthBootstrapFactory.call(google)
+                if (bootstrapService == null) throw new IllegalArgumentException('Google OAuth bootstrap service is unavailable')
+                bootstrapService.bootstrap(google,
+                    qa ? GoogleOAuthBootstrapMode.QA : GoogleOAuthBootstrapMode.NORMAL, out)
+                return 0
+            }
+            if (operation == 'google-oauth-import-legacy-qa') {
+                if (!options.hasOption('confirm-legacy-qa-import')) {
+                    throw new IllegalArgumentException('--confirm-legacy-qa-import is required')
+                }
+                String inputReference = requiredOption(options, 'input-reference')
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def importConfig = ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(
+                    root, configFile.absoluteFile.parentFile.toPath(), true)
+                def google = importConfig.calendarProvider.googleCalendarApi
+                def operationService = legacyQaImportFactory.call(google)
+                if (operationService == null) throw new IllegalArgumentException('Legacy Google OAuth QA import service is unavailable')
+                operationService.importConfirmedReference(inputReference, true)
+                out.append('Legacy Google OAuth credential verified and imported to isolated QA store.\n')
+                return 0
+            }
+            if (operation in ['google-qa-calendars-list', 'google-qa-calendars-provision']) {
+                if (!options.hasOption('confirm-dedicated-qa-account')) {
+                    throw new IllegalArgumentException('--confirm-dedicated-qa-account is required')
+                }
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def provisionConfig = ProductionIntegrationConfig.fromMapForGoogleOAuthBootstrap(
+                    root, configFile.absoluteFile.parentFile.toPath(), true)
+                def google = provisionConfig.calendarProvider.googleCalendarApi
+                Path configDir = configFile.absoluteFile.parentFile.toPath().normalize()
+                Path qaRoot = configDir.fileName?.toString() == '.qa' ? configDir : configDir.resolve('.qa')
+                Path stateFile = qaRoot.resolve('state/calendar-ids.json')
+                def service = qaCalendarProvisioningFactory.call(google, qaRoot, stateFile)
+                if (service == null) throw new IllegalArgumentException('QA calendar provisioning service is unavailable')
+                def rows
+                if (operation == 'google-qa-calendars-list') {
+                    rows = service.list()
+                } else {
+                    String rawSpec = optionString(options, 'qa-calendar')
+                    if (!rawSpec) throw new IllegalArgumentException('--qa-calendar is required for QA provisioning')
+                    List<QaCalendarSpec> specs = rawSpec.split(/\s*;\s*/).collect { QaCalendarSpec.parse(it) }
+                    rows = service.provision(specs)
+                }
+                out.append(JsonOutput.prettyPrint(JsonOutput.toJson(rows))).append('\n')
+                return 0
+            }
+            ProductionPlannerOrchestrator orchestrator = new ProductionPlannerOrchestrator(configFile)
+            try {
+                def json = { value -> JsonOutput.prettyPrint(JsonOutput.toJson(value)) }
+                switch (operation) {
+                    case 'planner-daemon':
+                        if (orchestrator.integrationConfig.daemon.enabled != true) {
+                            throw new IllegalArgumentException('planner.daemon.enabled must be true for planner-daemon')
+                        }
+                        def surface = new SlackSocketModeMessagingSurface(orchestrator.integrationConfig.slack,
+                            null, null, null, new DeliveryLedger(orchestrator.integrationConfig.deliveriesDir))
+                        def daemon = new SmartPlannerDaemon(orchestrator, surface)
+                        Thread shutdownHook = new Thread({ daemon.close() } as Runnable, 'smartplanner-shutdown')
+                        Runtime.runtime.addShutdownHook(shutdownHook)
+                        try {
+                            daemon.start()
+                            out.append('SmartPlanner daemon started.\n')
+                            daemon.awaitTermination()
+                        } finally {
+                            try { Runtime.runtime.removeShutdownHook(shutdownHook) } catch (IllegalStateException ignored) {}
+                            daemon.close()
+                        }
+                        break
+                    case 'capacity':
+                        def bounds = requireBounds(options)
+                        out.append(orchestrator.capacity(bounds[0], bounds[1], optionString(options, 'format') ?: 'markdown')).append('\n')
+                        break
+                    case 'preview':
+                        def bounds = requireBounds(options)
+                        out.append(orchestrator.renderPlan(orchestrator.preview(bounds[0], bounds[1], optionString(options, 'previous-plan-id')))).append('\n')
+                        break
+                    case 'apply':
+                        Approval approval = optionString(options, 'approval') ?
+                            ProductionPlannerOrchestrator.loadApproval(new File(optionString(options, 'approval'))) : null
+                        out.append(json(orchestrator.apply(requiredOption(options, 'plan-id'), approval).toMap())).append('\n')
+                        break
+                    case 'apply-safe':
+                        out.append(json(orchestrator.applySafe(requiredOption(options, 'plan-id')).toMap())).append('\n')
+                        break
+                    case 'deliver':
+                        out.append(json(orchestrator.deliver(requiredOption(options, 'plan-id'), optionString(options, 'kind'))*.toMap())).append('\n')
+                        break
+                    case 'feedback':
+                        def result = orchestrator.feedback(requiredOption(options, 'plan-id'),
+                            requiredOption(options, 'feedback'), requiredOption(options, 'actor'),
+                            optionString(options, 'correlation-id'), optionString(options, 'message-id'))
+                        out.append(json([accepted: result.accepted, replayed: result.replayed,
+                            message: result.message, decision: result.decision?.toMap(), approval: result.approval?.toMap()])).append('\n')
+                        break
+                    case 'apply-decision':
+                        def result = orchestrator.applyDecision(requiredOption(options, 'plan-id'), requiredOption(options, 'decision-id'))
+                        out.append(json([status: result.status?.name(), action: result.action,
+                            decisionId: result.decisionId, reason: result.reason, receipt: result.receipt?.toMap()])).append('\n')
+                        break
+                    case 'ai-suggest':
+                        def result = orchestrator.aiSuggestions(requiredOption(options, 'plan-id'),
+                            requiredOption(options, 'ai-type'), requiredOption(options, 'correlation-id'),
+                            optionString(options, 'feedback'))
+                        out.append(json([accepted: result.bundle != null,
+                            error: result.error != null ? [class: result.error.errorClass?.name(), detail: result.error.detail] : null,
+                            audit: result.audit?.toMap(),
+                            bundle: result.bundle != null ? [type: result.bundle.suggestionType,
+                                contentHash: result.bundle.contentHash,
+                                suggestions: result.bundle.suggestions.collect { [id: it.suggestionId, type: it.class.simpleName] }] : null])).append('\n')
+                        break
+                    default:
+                        throw new IllegalArgumentException("Unsupported operation: ${operation}")
+                }
+                return 0
+            } finally {
+                orchestrator.close()
+            }
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            err.append("Error: ${e.message}\n")
+            return 2
+        } catch (Exception e) {
+            err.append("Error: ${e.message}\n")
+            return 1
+        }
+    }
 
-        def logConfig = new ConfigSlurper().parse(new File(options.l).toURL())
-        PropertyConfigurator.configure(logConfig.toProperties())
+    private static List<Instant> requireBounds(def options) {
+        String start = requiredOption(options, 'range-start')
+        String end = requiredOption(options, 'range-end')
+        Instant s = Instant.parse(start)
+        Instant e = Instant.parse(end)
+        if (!e.isAfter(s)) throw new IllegalArgumentException('--range-end must be after --range-start')
+        [s, e]
+    }
 
-        log.info("----------------------------------------------------------------")
+    private static String requiredOption(def options, String name) {
+        String value = optionString(options, name)
+        if (!value) throw new IllegalArgumentException("--${name} is required")
+        value
+    }
 
-
-        def configFile = new File(options.f);
-        def stateFile = new File(configFile.getParentFile(), configFile.getName().replace(".conf", ".state"))
-
-        def syncer = new TodoistCalDavSync(configFile, stateFile)
-        syncer.syncLoop()
-
+    private static String optionString(def options, String name) {
+        def value = options.getProperty(name)
+        if (value == null || value == false || value == true) return null
+        String text = value.toString()
+        text && !(text in ['false', 'true']) ? text : null
     }
 
     static def todoistApiBaseUrl = "https://api.todoist.com/api/v1"
@@ -340,7 +552,7 @@ class TodoistCalDavSync {
         def labelsToInclude = getLabelsToInclude();
         def projectsToInclude = getProjectsToInclude();
 
-        log.info("Using todoistAccessToken: $todoistAccessToken")
+        log.info("Using Todoist access token from configured secret source (redacted)")
         log.info("todoistApiBaseUrl: $todoistApiBaseUrl")
         log.info("todoistBasePath: $todoistBasePath")
         log.info("projectsToInclude: $projectsToInclude")

@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation apply --plan-id <recorded> --approval <wrong-hash>
+STARTED_UTC: 2026-10-01T12:21:18Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:21:23Z

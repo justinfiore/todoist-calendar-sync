@@ -1,0 +1,299 @@
+# Example planner configuration — safe preview / read-only defaults.
+# Phase 1: use with PlannerCli --mode capacity-report (no remote writes).
+
+planner:
+  # preview | approval_required | apply_safe_changes | fully_automated
+  # Safe default: preview (calculate/report only; no Todoist or calendar writes)
+  mode: preview
+  timezone: America/New_York
+  output_calendar: Todoist Planned
+
+  # Phase 7 production composition. Endpoints, credential environment-variable
+  # names, and every durable state path are explicit. Relative paths resolve
+  # against this configuration file's directory.
+  integration:
+    todoist:
+      base_url: https://api.todoist.com/api/v1
+      token_env: TODOIST_ACCESS_TOKEN
+      timeout: PT10S
+      max_pages: 100
+      max_response_bytes: 1048576
+      include_project_names: true
+    # Calendar routing is mandatory and fail-closed. Select exactly one provider.
+    # The active example selects CalDAV, so planner.integration.caldav below is
+    # required and planner.integration.calendar.google_calendar_api must be absent.
+    calendar:
+      provider: caldav               # caldav | google_calendar_api
+
+    # Mutually exclusive Google Calendar API alternative (uncomment this block,
+    # remove planner.integration.caldav, and keep all referenced material ignored):
+    # calendar:
+    #   provider: google_calendar_api
+    #   google_calendar_api:
+    #     oauth_client_secret_file: planner-private/google-oauth-client.json
+    #     token_store_dir: planner-private/normal-event-only
+    #     qa_token_store_dir: planner-private/qa-calendar-management
+    #     account_email: dedicated-qa-account@example.test
+    #     oauth_callback_port: 8787
+    #     calendars:
+    #       - name: Todoist Planned
+    #         id: <provider-returned-managed-calendar-id>
+    #         role: managed_output
+    #       - name: Work
+    #         id: <provider-returned-blocker-calendar-id>
+    #         role: hard_blocker
+    # Google uses renewable OAuth and Calendar API IDs. It never falls back to
+    # the CalDAV section, and normal planner operations never provision calendars.
+    caldav:
+      timeout: PT15S
+      max_response_bytes: 2097152
+      calendars:
+        - name: Todoist Planned
+          url: https://caldav.example.com/calendars/me/planned/
+          auth:
+            type: basic               # none | basic | bearer
+            username: me@example.com
+            password_env: CALDAV_PLANNED_PASSWORD
+        - name: Work
+          url: https://caldav.example.com/calendars/me/work/
+          auth:
+            type: bearer
+            token_env: CALDAV_WORK_TOKEN
+    weather:
+      base_url: https://api.open-meteo.com/v1/forecast
+      timeout: PT10S
+      max_response_bytes: 1048576
+    feedback:
+      # Empty/omitted means deny all. Exact Slack user ids only.
+      allowed_actors: []
+      # Ordered Java regular expressions. First full-string match wins.
+      rules:
+        - name: approve
+          pattern: "(?i)^\\s*(yes|approve|looks good)\\s*$"
+          action: approve
+        - name: reject
+          pattern: "(?i)^\\s*(no|reject)(?:\\s+(?<reason>.*))?$"
+          action: reject
+        - name: acknowledge
+          pattern: "(?i)^\\s*(ok|ack|acknowledged)\\s*$"
+          action: acknowledge
+        - name: replan
+          pattern: "(?i)^\\s*(replan|try again)(?:\\s+(?<feedback>.*))?$"
+          action: replan
+          # Optional deterministic conversation-scoped overrides:
+          # overrides:
+          #   horizon: P3D
+          #   priority_overrides: {"todoist-task-id": 4}
+          #   exclude_task_ids: ["todoist-task-id"]
+          #   freeze_task_ids: ["todoist-task-id"]
+    state:
+      plans_dir: ../state/planner/plans
+      applications_dir: ../state/planner/applications
+      decisions_dir: ../state/planner/decisions
+      deliveries_dir: ../state/planner/deliveries
+    # Optional explicit stability baseline; otherwise latest stored plan is used.
+    # previous_plan_id: plan-0123456789abcdef
+
+  # Primary SmartPlanner production lifecycle. Keep disabled for the initial
+  # read-only preview; enable only after isolated Todoist/CalDAV/Slack validation.
+  daemon:
+    enabled: false
+    startup_connectivity_check: true
+    shutdown_timeout: PT20S
+    retry:
+      initial_delay: PT5S
+      max_delay: PT5M
+      multiplier: 2
+    planning_runs:
+      - name: daily
+        horizon: P3D
+        interval: PT6H
+        initial_delay: PT0S
+        run_on_startup: true
+      - name: weekly
+        horizon: P7D
+        interval: P1D
+        initial_delay: PT5M
+        run_on_startup: true
+      - name: medium
+        horizon: P14D
+        interval: P7D
+        initial_delay: PT10M
+        run_on_startup: true
+
+  stability:
+    freeze_within: PT48H
+    keep_manual_moves: true
+    require_approval_for_move_within: P7D
+    minimum_buffer_between_blocks_minutes: 10
+
+  availability:
+    working_windows:
+      weekday: ["06:30-07:30", "12:00-13:00", "20:00-22:00"]
+      weekend: ["09:00-12:00", "14:00-16:00"]
+
+    calendars:
+      - calendar: Work
+        default_role: hard_blocker
+      - calendar: Family
+        default_role: soft_blocker
+      - calendar: Bob
+        default_role: informational
+      - calendar: Todoist Planned
+        default_role: managed_output
+
+    # First matching rule wins (configuration order).
+    event_rules:
+      - name: Justin transports or attends an activity
+        calendar_regex: "^Bob$"
+        title_regex: "(?i)\\b(justin|dad)\\b.*\\b(takes|drive|drives|coaches|attend)\\b"
+        role: hard_blocker
+        buffer_before_minutes: 15
+        buffer_after_minutes: 20
+      - name: Family logistics involving Justin
+        calendar_regex: "^(Family|Kids)$"
+        text_regex: "(?is)\\b(justin|dad)\\b.*\\b(pickup|drop.?off|transport|volleyball|scouts)\\b"
+        role: soft_blocker
+      - name: Default informational child event
+        calendar_regex: "^(Bob|Kids)$"
+        role: informational
+
+    # Unknown calendars use this visible fallback (diagnostic, not silent free time)
+    unknown_calendar_fallback: informational
+
+  tasks:
+    scheduling_eligible_labels: [schedule]
+    manual_label: manual
+    default_duration_minutes: 30
+    duration_labels:
+      t15: 15
+      t30: 30
+      t60: 60
+      t90: 90
+    contexts:
+      phone:
+        match_labels: [phone]
+        preferred_windows: ["weekday 12:00-13:00"]
+      home:
+        match_labels: [home]
+        preferred_windows: ["weekday 20:00-22:00", "weekend 09:00-12:00"]
+      computer:
+        match_labels: [computer]
+        preferred_windows: ["weekday 06:30-07:30", "weekday 20:00-22:00"]
+
+  batching:
+    enabled: true
+    project_batch_bonus: 25
+    max_focus_block_minutes: 90
+    minimum_focus_block_minutes: 30
+    context_switch_penalty: 15
+
+  # Weather-aware outdoor task policy (Phase 4). Disabled by default — non-weather
+  # planning is unchanged. When enabled, first matching task_rules entry wins
+  # (case-insensitive label intersection). Missing/stale forecast uses fallback.
+  weather:
+    enabled: false
+    provider: open_meteo
+    # latitude: 40.7128
+    # longitude: -74.0060
+    # timezone: America/New_York   # defaults to planner.timezone
+    max_age: PT6H
+    forecast_horizon_days: 7
+    fallback: fail_closed          # fail_closed | fail_open
+    suitability_bonus: 35
+    # task_rules:
+    #   - name: outdoor-dry
+    #     match_labels: [outdoor, dry-weather]
+    #     require:
+    #       precipitation_probability_max: 25
+    #       precipitation_mm_max: 0.5
+    #       wind_speed_kph_max: 25
+    #   - name: deck-paint
+    #     match_labels: [paint, deck]
+    #     require:
+    #       precipitation_probability_max: 15
+    #       precipitation_mm_max: 0
+    #       temperature_min_c: 10
+    #       wind_speed_kph_max: 20
+    #     preferred:
+    #       daylight: true
+    #       forecast_confidence_min: 0.70
+
+  # SmartPlanner daemon uses Slack Socket Mode: an outbound WebSocket, no public
+  # inbound port. One-shot webhook/chat_api delivery remains available for diagnostics.
+  # Secrets are env var *names* only; never put token values in YAML or state.
+  messaging:
+    enabled: false
+    provider: slack
+    app_name: SmartPlanner                # operator label; edit the manifest to rename the registered app
+    command: /smartplanner
+    # destination: C0123456789            # channel ID required for planner-daemon
+    # slack_mode: socket_mode             # socket_mode | webhook | chat_api
+    # bot_token_env: SLACK_BOT_TOKEN      # xoxb-* value lives only in this environment variable
+    # app_token_env: SLACK_APP_TOKEN      # xapp-* with connections:write
+    working_status: "is working on your request…"
+    max_event_text_chars: 4000            # 1..40000; oversized inbound events are ignored
+    event_queue_capacity: 100             # 1..10000; bounds callback-to-worker buffering
+    loading_messages:
+      - "is planning…"
+      - "is checking Todoist and calendar capacity…"
+    # Prefer exclusive allowlist when enabling a subset of kinds:
+    # enabled_kinds: [daily_summary]    # only daily; weekly/medium/risk/proposal off
+    # enabled_kinds: []                 # explicit disable-all kinds (messaging may still be enabled)
+    # enabled_kinds: [daily_summary, capacity_risk_alert]
+    # Legacy per-kind booleans (used only when enabled_kinds is absent; default true):
+    daily_summary: true
+    weekly_summary: true
+    medium_horizon_summary: true
+    capacity_risk_alerts: true
+    proposal_summary: true
+    risk_deadline_days: 5
+    # timezone: America/New_York        # defaults to planner.timezone
+    # schedules:
+    #   - name: daily
+    #     kind: daily_summary           # aliases ok: daily, Daily, daily-summary → stored canonical
+    #     schedule: "06:00"             # HH:mm | "mon 09:00" | cron "0 6 * * *"
+    #     horizon: P1D
+    #     window: PT30M
+    #   - name: weekly
+    #     kind: weekly_summary          # aliases: weekly, WEEKLY_SUMMARY
+    #     schedule: "mon 09:00"
+    #     horizon: P7D
+    #   - name: medium
+    #     kind: medium_horizon_summary  # aliases: medium, medium-horizon
+    #     schedule: "mon 09:30"
+    #     horizon: P14D
+    #   - name: risk
+    #     kind: capacity_risk_alert     # aliases: risk, risk_alert
+    #     schedule: "06:15"
+    #     horizon: P5D
+    #     window: PT30M
+
+  ai:
+    enabled: false
+    # Provider-neutral side service. Enabling it alone changes no plan; a host must
+    # explicitly invoke AiAssistanceService and separately confirm any suggestion.
+    provider: openai_compatible
+    endpoint: https://api.openai.com/v1/chat/completions
+    model: gpt-5-mini
+    secret_env: OPENAI_API_KEY       # environment variable NAME, never the key itself
+    allowed_hosts: [api.openai.com]  # HTTPS allowlist; redirects are always disabled
+    connect_timeout: PT5S
+    request_timeout: PT30S
+    max_request_bytes: 65536
+    max_response_bytes: 65536
+    max_items: 100
+    max_string_chars: 500
+    max_tokens: 1200
+    allowed_suggestion_types:
+      - task_suggestions
+      - event_classification_suggestions
+      - temporary_planning_overrides
+      - conversational_feedback_interpretation
+    redaction_enabled: true
+    require_confirmation: true
+    safety:
+      never_apply_changes_directly: true
+      require_structured_output: true
+      require_confirmation_for_policy_changes: true
+      send_minimum_necessary_data: true

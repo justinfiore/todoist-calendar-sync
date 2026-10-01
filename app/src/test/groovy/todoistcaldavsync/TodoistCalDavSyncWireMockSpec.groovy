@@ -2,6 +2,10 @@ package todoistcaldavsync
 
 import com.github.tomakehurst.wiremock.WireMockServer
 import spock.lang.Specification
+import org.apache.log4j.Logger
+import org.apache.log4j.Level
+import org.apache.log4j.PatternLayout
+import org.apache.log4j.WriterAppender
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
@@ -79,6 +83,37 @@ class TodoistCalDavSyncWireMockSpec extends Specification {
         error.message == 'API Call to Todoist failed.'
         calendarServer.verify(0, deleteRequestedFor(urlMatching('/caldav/work/.*')))
         calendarServer.verify(0, putRequestedFor(urlMatching('/caldav/work/.*')))
+    }
+
+    def "legacy sync logs redact Todoist access token"() {
+        given:
+        stubTodoistResponses()
+        calendarServer.stubFor(delete(urlMatching('/caldav/work/.*\\.ics')).willReturn(aResponse().withStatus(404)))
+        calendarServer.stubFor(put(urlMatching('/caldav/work/.*\\.ics')).willReturn(aResponse().withStatus(201)))
+        def syncer = newSyncer(false)
+        def writer = new StringWriter()
+        def appender = new WriterAppender(new PatternLayout('%m%n'), writer)
+        def logger = Logger.getLogger(TodoistCalDavSync)
+        def oldLevel = logger.level
+        boolean oldAdditivity = logger.additivity
+        logger.level = Level.INFO
+        logger.additivity = false
+        logger.addAppender(appender)
+
+        when:
+        try {
+            syncer.sync()
+        } finally {
+            logger.removeAppender(appender)
+            logger.level = oldLevel
+            logger.additivity = oldAdditivity
+            appender.close()
+        }
+
+        then:
+        writer.toString().contains('configured secret source (redacted)')
+        !writer.toString().contains('test-token')
+        !writer.toString().contains('Using todoistAccessToken')
     }
 
     private void stubTodoistResponses() {

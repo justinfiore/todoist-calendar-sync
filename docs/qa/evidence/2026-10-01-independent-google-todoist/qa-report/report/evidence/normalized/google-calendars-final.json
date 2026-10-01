@@ -1,0 +1,26 @@
+[
+  {
+    "access_role": "reader",
+    "id_fp": "a38366ff7285",
+    "name": "Holidays in United States",
+    "primary": false
+  },
+  {
+    "access_role": "owner",
+    "id_fp": "3191a4f2109e",
+    "name": "SmartPlanner QA Blockers",
+    "primary": false
+  },
+  {
+    "access_role": "owner",
+    "id_fp": "b51cdb0dbec0",
+    "name": "SmartPlanner QA Output",
+    "primary": false
+  },
+  {
+    "access_role": "owner",
+    "id_fp": "45789c9ee678",
+    "name": "<redacted-google-account>",
+    "primary": true
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "approvalId": null,
+  "drifts": [],
+  "errors": [
+    "fully_automated not enabled in Phase 3; refusing writes"
+  ],
+  "finishedAt": "2026-10-01T12:22:35.530851286Z",
+  "id": "ar-4636a47527b2a816-1",
+  "items": [],
+  "metadata": {
+    "approvalInvalidReason": "fully_automated not enabled in Phase 3; refusing writes",
+    "approvalValid": false,
+    "explicitApproval": false,
+    "gate": "fully_automated not enabled in Phase 3; refusing writes",
+    "writeCount": 0
+  },
+  "mode": "fully_automated",
+  "overallStatus": "skipped_unapproved",
+  "planHash": "9f70365495a72d8c47549a08f77d390d022903938e3a606b184755dfde9eec1c",
+  "planId": "plan-315c1839a597afbb",
+  "planVersion": 1,
+  "schemaVersion": 1,
+  "startedAt": "2026-10-01T12:22:35.422397995Z"
+}

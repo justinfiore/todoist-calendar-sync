@@ -1,0 +1,64 @@
+{
+  "labels": [
+    {
+      "id_fp": "2d1332301434",
+      "name": "manual"
+    },
+    {
+      "id_fp": "e357b09d36ce",
+      "name": "schedule"
+    },
+    {
+      "id_fp": "d46ab7756840",
+      "name": "spqa-20261001-9b3beb"
+    },
+    {
+      "id_fp": "3dccfdc7362e",
+      "name": "t30"
+    }
+  ],
+  "projects": [
+    {
+      "id_fp": "fcc667aaa1a8",
+      "name": "Inbox"
+    },
+    {
+      "id_fp": "f40e8dd9731d",
+      "name": "SmartPlanner QA spqa-20261001-9b3beb"
+    }
+  ],
+  "tasks": [
+    {
+      "content": "SmartPlanner QA approved spqa-20261001-9b3beb",
+      "deadline": {
+        "date": "2026-10-08",
+        "lang": "en"
+      },
+      "due": null,
+      "id_fp": "7016dfb1a695",
+      "labels": [
+        "schedule",
+        "spqa-20261001-9b3beb",
+        "t30"
+      ],
+      "priority": 2,
+      "project_fp": "f40e8dd9731d"
+    },
+    {
+      "content": "SmartPlanner QA safe ordinary spqa-20261001-9b3beb",
+      "deadline": {
+        "date": "2026-10-08",
+        "lang": "en"
+      },
+      "due": null,
+      "id_fp": "85c0e9925a71",
+      "labels": [
+        "schedule",
+        "spqa-20261001-9b3beb",
+        "t30"
+      ],
+      "priority": 1,
+      "project_fp": "f40e8dd9731d"
+    }
+  ]
+}
