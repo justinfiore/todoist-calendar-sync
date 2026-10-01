@@ -1,0 +1,22 @@
+COMMAND: ./gradlew :app:test [Google/Todoist/planning/apply scoped filters] :app:installDist --rerun-tasks --no-daemon
+STARTED_UTC: 2026-10-01T12:14:39Z
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.6.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Problem configuring task :app:installDist from command line.
+> Unknown command-line option '--tests'.
+
+* Try:
+> Run gradlew help --task :app:installDist to get task usage details.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 13s
+
+EXIT_STATUS: 1
+FINISHED_UTC: 2026-10-01T12:14:52Z

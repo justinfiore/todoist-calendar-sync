@@ -1,0 +1,26 @@
+{
+  "approvalId": null,
+  "drifts": [],
+  "errors": [
+    "applySafeChanges refuses fully_automated (plan.mode=fully_automated, config.mode=fully_automated)"
+  ],
+  "finishedAt": "2026-10-01T12:22:42.147461098Z",
+  "id": "ar-497a24c3a1c08f3f-1",
+  "items": [],
+  "metadata": {
+    "configMode": "fully_automated",
+    "effectiveMode": "apply_safe_changes",
+    "gate": "applySafeChanges_fully_automated",
+    "planMode": "fully_automated",
+    "refused": true,
+    "refusedReason": "fully_automated",
+    "writeCount": 0
+  },
+  "mode": "apply_safe_changes",
+  "overallStatus": "skipped_unapproved",
+  "planHash": "9f70365495a72d8c47549a08f77d390d022903938e3a606b184755dfde9eec1c",
+  "planId": "plan-315c1839a597afbb",
+  "planVersion": 1,
+  "schemaVersion": 1,
+  "startedAt": "2026-10-01T12:22:42.057748914Z"
+}

@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation google-qa-calendars-list --confirm-dedicated-qa-account
+STARTED_UTC: 2026-10-01T12:08:51Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:08:58Z

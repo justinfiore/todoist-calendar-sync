@@ -1,0 +1,67 @@
+{
+  "approvalId": null,
+  "drifts": [],
+  "errors": [],
+  "finishedAt": "2026-10-01T12:26:05.867034904Z",
+  "id": "ar-881bf15bf30e0dec-2",
+  "items": [
+    {
+      "appliedAt": "2026-10-01T12:25:57.293897259Z",
+      "approvalId": null,
+      "approvalTime": null,
+      "blockId": "block-6hg649G4CVhh4386-1791208800000",
+      "calendarError": null,
+      "calendarStatus": "skipped_unapproved",
+      "eventUid": "planner-b0a017be37fa244634c8fd83@todoist-planner.local",
+      "metadata": {
+        "approvalRequired": true
+      },
+      "planHash": "1ee9452c5844d200d7cad072fe63b03cb3cc22736c43bddca23ab47f99b62a80",
+      "planId": "plan-041f44b6502863f3",
+      "planVersion": 1,
+      "slotEnd": "2026-10-05T14:30:00Z",
+      "slotStart": "2026-10-05T14:00:00Z",
+      "taskId": "6hg649G4CVhh4386",
+      "todoistError": null,
+      "todoistStatus": "skipped_unapproved"
+    },
+    {
+      "appliedAt": "2026-10-01T12:25:57.310334113Z",
+      "approvalId": null,
+      "approvalTime": null,
+      "blockId": "block-6hg6655HMFrx7F4c-1791211200000",
+      "calendarError": null,
+      "calendarStatus": "applied",
+      "eventUid": "planner-30152c123c67a1f262ef4e6f@todoist-planner.local",
+      "metadata": {
+        "blockEnd": "2026-10-05T15:10:00Z",
+        "blockStart": "2026-10-05T14:40:00Z",
+        "calendarRecreateReason": "missing_live_event",
+        "focusBlock": false
+      },
+      "planHash": "1ee9452c5844d200d7cad072fe63b03cb3cc22736c43bddca23ab47f99b62a80",
+      "planId": "plan-041f44b6502863f3",
+      "planVersion": 1,
+      "slotEnd": "2026-10-05T15:10:00Z",
+      "slotStart": "2026-10-05T14:40:00Z",
+      "taskId": "6hg6655HMFrx7F4c",
+      "todoistError": null,
+      "todoistStatus": "applied"
+    }
+  ],
+  "metadata": {
+    "approvalBound": false,
+    "approvalValid": true,
+    "blockCount": 2,
+    "effectiveMode": "apply_safe_changes",
+    "explicitApproval": false,
+    "writeCount": 1
+  },
+  "mode": "apply_safe_changes",
+  "overallStatus": "partial",
+  "planHash": "1ee9452c5844d200d7cad072fe63b03cb3cc22736c43bddca23ab47f99b62a80",
+  "planId": "plan-041f44b6502863f3",
+  "planVersion": 1,
+  "schemaVersion": 1,
+  "startedAt": "2026-10-01T12:25:57.206441399Z"
+}

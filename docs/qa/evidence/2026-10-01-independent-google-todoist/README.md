@@ -14,33 +14,41 @@ Google Calendar API + Todoist API QA campaign completed on October 1, 2026.
   the `plans`, `applications`, `decisions`, and `deliveries` state directories
   together to their empty baseline.
 
-See `results.json` for the gate matrix, `manifest.json` for campaign identity and
-scope, and `command-status-index.txt` for the captured command/exit-status index.
-`provider-proof.png` is a representative inspected view of exact apply,
-apply-safe, and rollback evidence. The tarball contains the complete secret-free
-report package, including normalized provider exports, receipts, report media,
-and its internal checksum manifests.
+The complete report package is extracted under `qa-report/` as individual files:
+
+- `qa-report/report/results.json` contains the gate matrix.
+- `qa-report/manifest.json` contains campaign identity and scope.
+- `qa-report/report/command-status-index.txt` contains the captured
+  command/exit-status index.
+- `qa-report/report/media/provider-proof.png` is a representative inspected view
+  of exact apply, apply-safe, and rollback evidence.
+- `qa-report/report/evidence/` contains normalized provider exports, receipts,
+  and redacted command logs.
+- `qa-report/report/index.html` and `qa-report/report/media/` contain the
+  human-readable report and inspected walkthrough media.
 
 ## Package integrity
 
-`manual-qa-report-package.tar.gz` has SHA-256:
-
-```text
-afbefb40293d5704cfea7e2876a698cd17615fc958b3aac47e642ca91f19aa28
-```
-
-Verify it from this directory with:
+The package-content manifest uses paths relative to `qa-report/`. Verify all 134
+report files with:
 
 ```bash
-sha256sum -c manual-qa-report-package.tar.gz.sha256
+cd qa-report
+sha256sum -c report/evidence-manifest.sha256
 ```
 
-The tarball passed path-safety and high-confidence credential/consent scans.
-Its packaged `report/evidence-manifest.sha256` retains the original
-`.qa/runs/20261001T120759Z-live-9b3bebf43bfe/` prefix. A direct
-`sha256sum -c` after extraction therefore reports missing paths; stripping that
-prefix verifies all 134 distributable entries. This portability defect should be
-fixed in the next evidence packager revision.
+The original source tarball had SHA-256
+`afbefb40293d5704cfea7e2876a698cd17615fc958b3aac47e642ca91f19aa28`.
+It was safely extracted, and its package manifest's stale source-directory prefix
+was removed so verification works from the committed `qa-report/` directory.
+The disposable Google account email was also replaced consistently with
+`<redacted-google-account>` in the preflight and final calendar inventories;
+their manifest entries were regenerated after redaction.
+
+`qa-report/checksums/evidence.sha256` and `exact-build.sha256` preserve the
+campaign's original full-run/build indexes. They reference private build and
+fresh-run paths that are deliberately not committed, so they are provenance
+records rather than independently runnable manifests in this checkout.
 
 ## Boundaries and limitations
 
@@ -50,7 +58,8 @@ fixed in the next evidence packager revision.
 - The first combined Gradle invocation exited 1 because test-specific `--tests`
   options were also applied to `installDist`. The campaign then ran the same
   scoped tests and `installDist` separately; both passed. The failed invocation
-  remains in the command index rather than being omitted.
+  remains in `qa-report/report/command-status-index.txt` rather than being
+  omitted.
 - Native Todoist and Google Calendar UI captures were unavailable because the
   orb browser was not authenticated. API exports, provider diffs, receipts,
   ownership metadata, and final inventories are the authoritative evidence.

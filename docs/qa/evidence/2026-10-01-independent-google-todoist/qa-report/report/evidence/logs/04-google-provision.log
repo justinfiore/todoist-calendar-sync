@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation google-qa-calendars-provision --confirm-dedicated-qa-account --qa-calendar '<approved-two-calendar-spec>'
+STARTED_UTC: 2026-10-01T12:09:14Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:09:20Z

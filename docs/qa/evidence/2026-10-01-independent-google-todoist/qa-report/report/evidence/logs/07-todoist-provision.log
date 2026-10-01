@@ -1,0 +1,7 @@
+COMMAND: provider_qa.py todoist-create-fixtures --manifest <private> --run-tag <run-tag> --deadline 2026-10-08
+STARTED_UTC: 2026-10-01T12:13:52Z
+todoist_project_created=1
+todoist_labels_created=4
+todoist_tasks_created=1
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:13:54Z

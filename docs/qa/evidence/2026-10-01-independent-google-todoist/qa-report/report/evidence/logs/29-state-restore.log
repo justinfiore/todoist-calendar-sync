@@ -1,0 +1,10 @@
+COMMAND: restore plans/applications/decisions/deliveries together from campaign baseline
+STARTED_UTC: 2026-10-01T12:28:39Z
+pre_restore_files=15
+post_restore_files=0
+state_plans_restored=true
+state_applications_restored=true
+state_decisions_restored=true
+state_deliveries_restored=true
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:28:39Z

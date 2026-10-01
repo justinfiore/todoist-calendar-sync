@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation capacity --range-start 2026-10-05T04:00:00Z --range-end 2026-10-06T04:00:00Z --format json
+STARTED_UTC: 2026-10-01T12:17:16Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:17:25Z
