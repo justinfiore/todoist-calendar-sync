@@ -17,3 +17,6 @@ creds.txt
 
 # Private provider material referenced by the tracked planner example.
 conf/planner-private/
+
+# Orb runtime portal metadata.
+.amp/portals/
