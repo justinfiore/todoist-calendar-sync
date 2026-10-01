@@ -1,0 +1,17 @@
+{
+  "verdict": "PASS",
+  "cases": [
+    {"id":"HERMETIC","result":"PASS","proof":"299 scoped tests; 0 failures/errors/skips"},
+    {"id":"PREFLIGHT","result":"PASS","proof":"Dedicated Todoist empty boundary and matching Google primary account"},
+    {"id":"CAPACITY","result":"PASS","proof":"420 usable minutes, 30 task minutes, no provider writes"},
+    {"id":"PREVIEW-STABILITY","result":"PASS","proof":"Repeated preview kept the same 13:00–13:30Z block; zero provider writes"},
+    {"id":"MISSING-APPROVAL","result":"PASS","proof":"skipped_unapproved; writeCount=0; dedicated Todoist/Google diff empty"},
+    {"id":"WRONG-HASH","result":"PASS","proof":"stale/tampered hash refused; writeCount=0; dedicated diffs empty"},
+    {"id":"FULL-AUTO-APPLY","result":"PASS","proof":"fully_automated unavailable; writeCount=0; dedicated diffs empty"},
+    {"id":"FULL-AUTO-SAFE","result":"PASS","proof":"fully_automated refused; writeCount=0; dedicated diffs empty"},
+    {"id":"EXACT-APPROVED","result":"PASS","proof":"One owned event; Todoist due=start; deadline unchanged"},
+    {"id":"IDEMPOTENT-REPLAY","result":"PASS","proof":"skipped_idempotent; writeCount=0; no duplicate/resend"},
+    {"id":"APPLY-SAFE","result":"PASS","proof":"Protected move withheld; ordinary add applied; deadline unchanged"},
+    {"id":"ROLLBACK-CLEANUP","result":"PASS","proof":"Events removed, dues restored, four state dirs restored, tasks/labels/project deleted"}
+  ]
+}
