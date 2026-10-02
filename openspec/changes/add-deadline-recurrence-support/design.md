@@ -58,7 +58,7 @@ The configured sentinel label is visible discovery state: it tells users and fil
 - series task ID and current `completed_count` occurrence sequence;
 - last verified native Due and recurrence tuple fingerprint;
 - current occurrence's Deadline source/mode and any pending legacy source date;
-- last planner-applied Due and stable lifecycle command identity.
+- last planner-applied Due, monotonic marker generation, and stable lifecycle command identity.
 
 The original recurrence string and fields remain authoritative in Todoist Due and need not be duplicated in full when a collision-resistant fingerprint is enough to detect changes; the live tuple is always copied from Todoist, never reconstructed from metadata.
 
@@ -72,11 +72,15 @@ Remember to put the bins by the back gate.
 **SmartPlanner metadata — do not edit**
 
 ```json
-{"schema_version":1,"owner":"smartplanner","task_id":"6hgHR3qRjPrPGqM7","completed_count":12,"deadline_mode":"managed","deadline_source":"initial_user_due","deadline_date":"2026-10-09","pending_legacy_source_date":null,"last_verified_due":"2026-10-06T18:30:00-04:00","recurrence_fingerprint":"sha256:example","last_planner_due":"2026-10-06T18:30:00-04:00","last_command_id":"example-command-id"}
+{"schema_version":1,"owner":"smartplanner","task_id":"6hgHR3qRjPrPGqM7","completed_count":12,"deadline_mode":"managed","deadline_source":"initial_user_due","deadline_date":"2026-10-09","pending_legacy_source_date":null,"last_verified_due":"2026-10-06T18:30:00-04:00","recurrence_fingerprint":"sha256:example","last_planner_due":"2026-10-06T18:30:00-04:00","marker_generation":3,"last_command_id":"example-command-id"}
 ```
 ~~~
 
-Description is preferred over a task comment because it arrives with task reads, avoids comment pagination and notification/conversation clutter, and may be updated in the same Sync command as other task fields. Todoist updates the description as one field rather than appending atomically, so the implementation must fetch the latest value, preserve the human-authored prefix exactly, append the suffix once, and on later writes replace only a recognized suffix anchored at the end. It must never accumulate duplicate blocks. It then re-fetches and verifies the entire merged description. A malformed, duplicate, relocated, or concurrently changed marker fails closed for reconciliation rather than rewriting user content.
+Description is preferred over a task comment because it arrives with task reads, avoids comment pagination and notification/conversation clutter, and may be updated in the same Sync command as other task fields. Todoist updates the description as one field rather than appending atomically, so the implementation must fetch the latest value, preserve the human-authored prefix exactly, append the suffix once, and on later writes replace only a recognized suffix anchored at the end. It must never accumulate duplicate blocks.
+
+After every description write, SmartPlanner re-fetches the task and verifies the entire merged description and lifecycle preconditions. If a concurrent human edit won and the live task contains the old/absent intended marker plus a changed human prefix, SmartPlanner rebases the same intended marker onto that latest prefix and retries with the same stable command identity. Retry is bounded to two additional attempts. It is permitted only when Due, Deadline, labels, recurrence tuple, `completed_count`, and prior marker generation still match the intended transition. A different valid marker generation, lifecycle drift, malformed/duplicate/relocated marker, ambiguous write that cannot be classified, or retry exhaustion fails closed for reconciliation.
+
+This recovery handles the ordering where the human write lands last. Todoist exposes no documented compare-and-swap for description, so it cannot recover a human edit that lands first and is then overwritten by SmartPlanner's whole-field write. Minimizing marker writes to lifecycle transitions and keeping the post-write verification window short reduces but does not eliminate that residual risk.
 
 A sentinel comment is the fallback if a spike shows description writes cannot be made safely. Comments preserve the user's description but add an API read/pagination path, may notify collaborators, clutter task conversation, and complicate selecting the authoritative version. Labels alone are too small for occurrence state and Due provenance. Encoding everything in labels pollutes filters and the UI. Hidden local state is rejected as authority because it is neither visible nor portable; existing local storage remains valuable operation evidence.
 

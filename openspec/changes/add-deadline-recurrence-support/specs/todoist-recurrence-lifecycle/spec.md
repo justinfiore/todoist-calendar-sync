@@ -137,6 +137,15 @@ The system SHALL store the versioned lifecycle state needed to interpret and rec
 - **THEN** it SHALL replace only that recognized suffix
 - **AND** SHALL retain exactly one marker without reformatting the human-authored prefix
 
+#### Scenario: Concurrent human description edit wins
+- **WHEN** post-write verification finds the intended old or absent marker with a newer human-authored prefix and all lifecycle preconditions remain unchanged
+- **THEN** SmartPlanner SHALL merge the intended marker into the latest prefix and retry with the same command identity
+- **AND** SHALL stop after at most two additional attempts
+
+#### Scenario: Concurrent retry is unsafe
+- **WHEN** verification finds a different marker generation, lifecycle drift, an unclassifiable ambiguous result, or exhausted retries
+- **THEN** SmartPlanner SHALL preserve the live task and withhold further mutation for reconciliation
+
 #### Scenario: Description marker is unsafe to merge
 - **WHEN** a marker is malformed, duplicated, relocated away from the suffix, or concurrently changed
 - **THEN** SmartPlanner SHALL preserve the live description and withhold lifecycle mutations for reconciliation
