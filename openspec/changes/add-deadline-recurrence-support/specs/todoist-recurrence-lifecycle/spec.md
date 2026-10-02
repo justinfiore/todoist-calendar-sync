@@ -122,7 +122,48 @@ The system SHALL let Todoist complete recurring occurrences natively and SHALL d
 
 #### Scenario: Completed feeds contain no recurring occurrence row
 - **WHEN** Todoist's completed-task or activity feeds do not expose the recurring completion
-- **THEN** active-task polling and `completed_count` SHALL remain sufficient to advance the lifecycle
+- **THEN** incremental active-item Sync and `completed_count` SHALL remain sufficient to advance the lifecycle
+
+### Requirement: Changed tasks are detected by crash-safe incremental Sync
+The system SHALL poll a dedicated Todoist `items` Sync cursor every five minutes and SHALL durably preserve every returned item delta across cursor advancement. The cursor and pending deltas SHALL be replaceable operational state and SHALL NOT override Todoist lifecycle authority.
+
+#### Scenario: Initial bootstrap has no cursor
+- **WHEN** SmartPlanner has no valid dedicated items cursor
+- **THEN** it SHALL request a full `items` Sync with `sync_token=*`
+- **AND** SHALL stage the returned active items and replacement cursor before processing them
+
+#### Scenario: Incremental poll has no changes
+- **WHEN** a five-minute poll returns an empty incremental `items` response
+- **THEN** SmartPlanner SHALL checkpoint the replacement cursor
+- **AND** SHALL NOT fetch all active tasks or trigger lifecycle writes
+
+#### Scenario: Native recurring completion is returned incrementally
+- **WHEN** an incremental item delta contains an active recurring task with an increased `completed_count` and Todoist-advanced Due
+- **THEN** SmartPlanner SHALL classify it as the next occurrence
+- **AND** SHALL process it under the native-completion lifecycle requirements
+
+#### Scenario: Process stops before checkpoint
+- **WHEN** SmartPlanner receives a response but stops before atomically staging its delta and replacement cursor
+- **THEN** the prior cursor SHALL remain current
+- **AND** replay of the response SHALL be idempotent
+
+#### Scenario: Process stops after checkpoint
+- **WHEN** SmartPlanner stops after staging a response but before all pending items are processed
+- **THEN** it SHALL resume the durable pending-delta inbox before relying on later cursor results
+
+#### Scenario: Cursor state is unusable
+- **WHEN** the dedicated cursor or inbox is missing or corrupt, or Todoist rejects the cursor as unusable
+- **THEN** SmartPlanner SHALL rebuild from a full `items` Sync and reconcile against on-task markers and managed Calendar metadata
+- **AND** SHALL NOT infer recurrence or occurrence authority from the lost local checkpoint
+
+#### Scenario: Sync failure is transient
+- **WHEN** an incremental request fails without proving the cursor unusable
+- **THEN** SmartPlanner SHALL retain the current cursor and pending inbox, back off, and retry later
+- **AND** SHALL report that the normal zero-to-five-minute detection latency has been exceeded
+
+#### Scenario: Sync cursors are isolated
+- **WHEN** another application path consumes Todoist Sync resources
+- **THEN** SmartPlanner SHALL NOT share its items cursor with the legacy calendar-sync or metadata cursor
 
 ### Requirement: Lifecycle authority is portable on the Todoist task
 The system SHALL store the versioned lifecycle state needed to interpret and recover the current occurrence in a reserved suffix of the Todoist task description. Local plans, mappings, and receipts SHALL be reconciliation evidence and SHALL NOT override a conflicting on-task lifecycle marker.

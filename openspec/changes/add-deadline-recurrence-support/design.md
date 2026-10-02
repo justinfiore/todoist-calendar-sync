@@ -6,7 +6,7 @@ See `proposal.md` for motivation and scope. The current Todoist projection retai
 
 Todoist Deadline is date-only and non-recurring. Todoist Due owns recurrence through a tuple including `date`, `string`, `is_recurring`, `lang`, and `timezone`. Native completion advances that Due and increments the active task's `completed_count`, but leaves Deadline stale. The public completed-task and activity reads did not expose recurring occurrence rows during the live spike.
 
-The disposable Sync API spike validated recurrence-preserving current-occurrence moves, Deadline coexistence, native completion, and a second planning cycle for `every day`, `every week`, `every Monday`, `every month`, `every year`, `every! 2 days`, and `every day at 9am`. All temporary projects, tasks, and labels were removed. This is strong empirical evidence for the selected Sync shape, but remains covered by regression/live-contract tests because the public API documentation does not promise a named "next occurrence only" operation.
+The disposable Sync API spike validated recurrence-preserving current-occurrence moves, Deadline coexistence, native completion, and a second planning cycle for `every day`, `every week`, `every Monday`, `every month`, `every year`, `every! 2 days`, and `every day at 9am`. A follow-up token-cursor spike validated the detector itself: an incremental `items` response after native completion returned the same task active with `checked=false`, `completed_count` advanced from 0 to 1, Due advanced by Todoist, and the recurrence tuple unchanged. Task deletion also appeared as an incremental tombstone. All disposable resources were removed. This is strong empirical evidence for the selected Sync shapes, but remains covered by regression/live-contract tests because the public API documentation does not promise a named "next occurrence only" operation or the recurring-completion delta's exact fields.
 
 ## Goals / Non-Goals
 
@@ -112,11 +112,15 @@ Persisted mappings and managed event metadata will carry both series task ID and
 
 If `completed_count` jumps, SmartPlanner records the newly observed count, retains all known history, and does not invent events for missed counts. Counter regression or reuse is corruption/drift and fails closed.
 
-### 8. Detect transitions from active-task polling
+### 8. Detect transitions with a dedicated incremental Sync cursor
 
-The daemon's ordinary active-task polling is the required detector. For each marked recurring task it compares live `completed_count`, Due tuple, Deadline, labels, description marker, and last verified Due. A count increase means native advancement. Same count plus changed Due means a user or external move of the active occurrence. Changed recurrence tuple means a recurrence edit. Removed recurrence, Deadline edits, or marker/sentinel mismatch each enter an explicit reconciliation state.
+The daemon uses its own Todoist Sync cursor with `resource_types=["items"]`; it does not share the legacy CalDAV cursor or any metadata consumer's cursor. With no usable cursor it requests `sync_token=*`, validates the full response and `full_sync_date_utc`, durably stages the active-item snapshot with the returned token, and immediately follows that token when the snapshot timestamp indicates delay. Thereafter it requests only item changes every five minutes. An empty delta is a successful poll, not a reason to full-scan.
 
-Completed-task and activity feeds may add diagnostics but cannot gate correctness: neither returned immediate recurring completion evidence in the spike. Poll cadence controls how quickly Todoist Today and Calendar realign after completion and will be documented as user-visible latency.
+Each successful response is atomically persisted as a replacement cursor plus a pending-delta inbox before lifecycle processing. Processing is idempotent by task/occurrence identity, marker generation, and stable command IDs. A crash before checkpoint reuses the old token and receives a replay; a crash after checkpoint replays the durable inbox. An inbox entry is removed only after its classification or transition outcome is durably recorded. The cursor and inbox are operational delivery state, not recurrence or lifecycle authority: losing or corrupting them triggers a full `items` bootstrap from Todoist, then Calendar/local reconciliation from on-task markers and managed-event metadata. A token-specific rejection may also trigger that bootstrap; transient transport or server failures retain the current token and back off rather than discarding it.
+
+For each changed recurring task the daemon compares live `completed_count`, Due tuple, Deadline, labels, description marker, and last verified Due. A count increase means native advancement. Same count plus changed Due means a user or external move of the active occurrence. Changed recurrence tuple means a recurrence edit. Removed recurrence, deletion, Deadline edits, or marker/sentinel mismatch each enter an explicit reconciliation state. The five-minute cadence gives a nominal zero-to-five-minute completion-detection delay plus processing/backoff time and costs only three partial Sync requests per 15 minutes, far below Todoist's documented limit of 1,000 partial Sync requests per user per 15 minutes.
+
+Completed-task and activity feeds may add diagnostics but cannot gate correctness: neither returned immediate recurring completion evidence in the spike, while the incremental active-item delta did. Full `items` Sync is reserved for bootstrap and recovery rather than repeated on every poll.
 
 ### 9. Preflight Todoist before Calendar and preserve local evidence
 
@@ -143,6 +147,10 @@ Managed event descriptions retain their ownership, block, plan, series, and occu
 | Marker missing/corrupt/unknown version | Freeze lifecycle writes; preserve raw metadata for repair. |
 | Sentinel missing but marker exists | Drift/repair, never first-observation conversion. |
 | Local database lost | Rebuild from marked Todoist tasks and occurrence-tagged managed events. |
+| Cursor/inbox lost or corrupt | Discard only the operational checkpoint, run a full `items` bootstrap, and reconcile without changing lifecycle authority. |
+| Crash before response checkpoint | Retry from the previous cursor; idempotently classify the replayed delta. |
+| Crash after response checkpoint | Resume the durable pending-delta inbox before polling from the replacement cursor. |
+| Transient Sync failure | Retain the cursor and inbox, back off, and report latency; do not force a full sync. |
 | Multiple completions between polls | Schedule current active occurrence only; retain known history and report gap. |
 | Legacy onboarding write is ambiguous | Keep `smartplanner-onboard`, re-read live state, and never copy from a planner-authored Due. |
 
@@ -152,7 +160,8 @@ Managed event descriptions retain their ownership, block, plan, series, and occu
 - **[Description metadata is visible and can conflict with human editing]** → Use a compact delimited block, merge against a fresh read, verify post-state, and document it as user-visible planner state.
 - **[Soft and hard tasks share Todoist's date-only Deadline UI]** → Keep `hard` visible as a label and explain its scheduler-only urgency/feasibility effect.
 - **[Legacy candidate Due may be moved before opt-in]** → Persist the original user-authored source date in on-task metadata and never derive conversion from the later planner Due.
-- **[Polling introduces completion-to-reschedule latency]** → Define and monitor cadence; do not add unreliable feed authority.
+- **[Polling introduces completion-to-reschedule latency]** → Poll incremental items every five minutes, expose lag/backoff health, and document nominal zero-to-five-minute detection latency.
+- **[Cursor checkpointing adds local operational state]** → Keep it replaceable and separate from lifecycle authority; atomically pair the replacement token with a durable delta inbox and recover by full Sync.
 - **[`completed_count` behavior could change]** → Validate monotonicity and occurrence transition in automated/live tests; freeze on regression.
 - **[Sentinel labels add filter/UI surface]** → Use one configurable, documented label; this visibility is intentional and preferable to hidden migration authority.
 - **[Historical events increase calendar volume]** → Retention is intentional completion history; cleanup requires a separate explicit policy.
@@ -162,7 +171,7 @@ Managed event descriptions retain their ownership, block, plan, series, and occu
 1. Add read-only projection and diagnostics for full Due tuples, completion count, description marker, sentinel, and `%hard`; recurring writes remain disabled.
 2. Add recurrence-safe Sync gateway operations, classified verification, and hermetic contract tests. Repeat the disposable live matrix without touching independent QA fixtures.
 3. Add first-observation classification and legacy candidate logs with ID-only Todoist links. Establish the automatic new-task cutoff and test incremental `smartplanner-onboard` → `smartplanner-seen` conversion.
-4. Add soft Deadline scoring, configurable approaching-hard urgency, and native completion advancement while Calendar writes remain withheld in shadow mode.
+4. Add the dedicated incremental `items` cursor, durable pending-delta inbox, five-minute daemon trigger, soft Deadline scoring, configurable approaching-hard urgency, and native completion advancement while Calendar writes remain withheld in shadow mode.
 5. Migrate mappings and event ownership metadata to occurrence identity, add Todoist links to managed descriptions, reconcile existing managed events, then enable guarded Calendar apply.
 6. Expand from a small labelled migration cohort to all configured eligible new tasks after observing at least daily, weekly, monthly, yearly, strict-relative, timezone/DST, recurrence-edit, hard-window, and recovery cases.
 
@@ -182,6 +191,7 @@ Use new disposable projects/tasks/labels and separate evidence from the independ
 | Apply failure | ambiguous Todoist response, Todoist success/Calendar failure, Calendar success/receipt failure, completion between plan/apply |
 | Identity | same-occurrence reschedule updates one event; next occurrence creates a different event; old event remains |
 | Recovery | local state removed, daemon restart, marker-only reconstruction, duplicate managed-event detection |
+| Incremental Sync | initial full bootstrap, empty delta, changed-item delta, recurring completion delta, deletion tombstone, restart before/after checkpoint, cursor corruption/rejection, delayed full snapshot |
 | Preservation | reminders, project, labels, comments, human description, subtasks, assignee, native completion history, Calendar task links |
 
 For every recurring case assert the exact pre/post Due tuple, Deadline date/mode, marker version and occurrence key, `completed_count`, Todoist Today placement, matching Google time, ID-only Todoist link, managed UID, and absence of duplicate or ghost events.
@@ -190,8 +200,4 @@ For every recurring case assert the exact pre/post Due tuple, Deadline date/mode
 
 Before live QA, reproduce every deterministic transition with Spock and WireMock using the existing `ProductionHttpGatewaysWireMockSpec`, `GoogleCalendarApiGatewayWireMockSpec`, and `PlanApplierGoogleCalendarApiGatewaySpec` conventions. Mocked sequences must verify exact Sync command payloads, live re-reads, Google request bodies, call ordering, no-write branches, timeout/ambiguous-write reconciliation, and mutation counts—not merely final domain objects.
 
-Keep live cases only where they establish an external product contract or rendered UX: Todoist's native recurrence advancement, `completed_count`, labels and Deadline UI, reminder/property preservation, clickable Google description links, Today/Calendar alignment, real daemon polling/restart, and cleanup. Add these as a dedicated recurrence/deadline section in `docs/SMARTPLANNER_QA_RUNBOOK.md` during implementation, then store the run under a new dated evidence path with normalized snapshots, command statuses, manifests, hashes, and redaction results. Do not amend or regenerate the independent 2026-10-01 evidence package.
-
-## Open Questions
-
-- What poll interval provides acceptable post-completion realignment latency within the owner's Todoist/API usage limits?
+Keep live cases only where they establish an external product contract or rendered UX: Todoist's native recurrence advancement and incremental delta shape, `completed_count`, labels and Deadline UI, reminder/property preservation, clickable Google description links, Today/Calendar alignment, real five-minute daemon polling/restart, and cleanup. Add these as a dedicated recurrence/deadline section in `docs/SMARTPLANNER_QA_RUNBOOK.md` during implementation, then store the run under a new dated evidence path with normalized snapshots, command statuses, manifests, hashes, and redaction results. Do not amend or regenerate the independent 2026-10-01 evidence package.

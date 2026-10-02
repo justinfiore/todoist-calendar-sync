@@ -12,7 +12,7 @@ SmartPlanner currently replaces a Todoist task's Due value with a fixed `due_dat
 - Let SmartPlanner move Due to its selected work time while retaining `due.string`, `due.is_recurring`, language, timezone, and native next-occurrence behavior. Keep the pre-scheduling user Due date in portable metadata for a pending legacy conversion.
 - Treat every Due time as a scheduling preference, never an exact cutoff. The copied date-only Deadline is soft by default; the configured `hard` label makes that date a finish-by constraint whose urgency escalates within a configurable `hard_deadline_soon_days` window and can outrank ordinary Todoist priority.
 - Keep one Todoist task, its project placement, labels, reminders, comments, subtasks, assignee, and native completion history. Do not complete/uncomplete tasks or generate recurrence-anchor/work-task pairs in the default design.
-- Detect recurring completion by comparing the active task's durable occurrence metadata and Todoist `completed_count`; update Deadline for Deadline-managed recurrences, leave unconverted legacy recurrences without Deadline, and schedule the new occurrence in either mode. Completed-task/activity feeds are optional evidence because the live spike did not return recurring completion rows.
+- Detect changed tasks through a dedicated Todoist incremental `items` Sync cursor every five minutes. Native recurring completion appears as an active-item delta with increased `completed_count`, advanced Due, and preserved recurrence; update Deadline for Deadline-managed recurrences, leave unconverted legacy recurrences without Deadline, and schedule the new occurrence in either mode. Completed-task/activity feeds are optional evidence because the live spike did not return recurring completion rows.
 - Store a versioned, portable lifecycle marker on the Todoist task and use existing local plans/mappings/receipts only as reconciliation evidence, not recurrence authority.
 - Give every recurrence an explicit occurrence identity so scheduling the next occurrence creates a distinct managed calendar event and does not overwrite or delete prior occurrence history.
 - Include the stable Todoist task deep link `https://app.todoist.com/app/task/<task-id>` in every managed Google Calendar event description.
@@ -33,9 +33,9 @@ SmartPlanner currently replaces a Todoist task's Due value with a fixed `due_dat
 
 - Todoist domain and gateway: retain the complete Due recurrence tuple, Deadline source semantics, labels, description/comment metadata, creation/update timestamps, and completion count; add Sync command support and classified live verification.
 - Planning and apply: distinguish task/series/occurrence identity, treat ordinary Deadline dates as soft targets, escalate approaching `hard` Deadline dates, preflight live task state before calendar writes, and reconcile Todoist/Calendar mutations without recurrence loss.
-- State and Google Calendar: key current and historical mappings by occurrence identity, preserve prior occurrence events, include stable Todoist task links, and retain enough provider metadata to rebuild from Todoist plus Google if local state is lost.
+- State and Google Calendar: key current and historical mappings by occurrence identity, preserve prior occurrence events, include stable Todoist task links, retain enough provider metadata to rebuild from Todoist plus Google if local state is lost, and persist a dedicated incremental-Sync cursor plus crash-safe pending-delta inbox as replaceable operational state rather than lifecycle authority.
 - Configuration and UX: configure `smartplanner-seen`, `smartplanner-onboard`, and `hard` labels, rollout cutoff, hard-deadline urgency window, metadata location, and operator-visible legacy candidate logs.
-- Daemon: poll active recurring tasks frequently enough to observe `completed_count` advancement and schedule the new occurrence without relying on completed-task feeds.
+- Daemon: poll Todoist's incremental `items` Sync feed every five minutes, durably checkpoint each response before processing, and use full `items` Sync only for initial bootstrap or cursor recovery.
 - Tests and QA: add hermetic recurrence, migration, failure/recovery, reminder-preservation, identity, and history coverage plus a post-implementation live matrix isolated from the existing independent QA campaign.
 - Documentation: explain voice/mobile capture, legacy onboarding labels, soft versus hard Deadline dates, Todoist-native recurrence behavior, Calendar task links, manual edits, recovery, and rollout.
 
@@ -44,6 +44,7 @@ SmartPlanner currently replaces a Todoist task's Due value with a fixed `due_dat
 Implementation SHALL add automated mocked-API integration coverage wherever provider behavior can be represented deterministically. Using the project's WireMock patterns, tests SHALL exercise:
 
 - exact Sync `item_update` request and verification sequences for date-only, zoned, timed, strict-relative, and opaque rich recurrence tuples;
+- initial full-Sync bootstrap, empty and non-empty incremental responses, native recurring-completion deltas, atomic cursor/inbox checkpointing, crash replay, invalid/corrupt cursor recovery, delayed full snapshots, and isolation from the legacy sync cursor;
 - two native-completion cycles, `completed_count` advancement/jumps/regression, same-occurrence rescheduling, distinct next-occurrence UIDs, and preservation of historical events;
 - post-cutoff Due-only, existing-Deadline, initially undated, later user-Due, planner-authored Due, unlabelled legacy, and `smartplanner-onboard` → `smartplanner-seen` transitions;
 - soft Deadline placement on both sides of its date, hard-window boundaries, approaching hard P4 versus ordinary P1, timezone/DST boundaries, and infeasible hard dates;
@@ -53,6 +54,7 @@ Implementation SHALL add automated mocked-API integration coverage wherever prov
 Implementation SHALL also add a separate recurrence/deadline section to `docs/SMARTPLANNER_QA_RUNBOOK.md` and perform it only after automated and mocked integration checks pass. The disposable live campaign SHALL validate behavior that mocks cannot establish confidently:
 
 - native Todoist completion and next-occurrence advancement for daily, weekly, weekday-specific, monthly, yearly, strict-relative, timed, and richer recurrence expressions across two cycles;
+- five-minute incremental polling, empty polls, completion-to-detection latency, daemon restart with a pending delta, cursor-loss full bootstrap, and cleanup deltas without repeatedly fetching all active tasks;
 - Todoist Today and Google Calendar alignment, old-event retention, new-event creation, and clickable Todoist links in single- and multi-task event descriptions;
 - real Todoist label workflow and logs for unlabelled legacy candidates, incremental onboarding, verified request-label removal, initially undated tasks, and preserved existing Deadlines;
 - soft versus approaching-hard scheduling and Todoist-priority override using disposable capacity contention, including explicit infeasible-hard reporting;
