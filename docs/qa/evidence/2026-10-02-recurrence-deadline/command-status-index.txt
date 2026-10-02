@@ -56,3 +56,25 @@
 54	./gradlew --no-daemon -Dorg.gradle.jvmargs='-Xmx256m -Xms64m -XX:MaxMetaspaceSize=192m' -Dorg.gradle.workers.max=1 test	0	961/961 passed
 55	npx -y @fission-ai/openspec@1.14.0 validate add-deadline-recurrence-support --strict	0	valid
 56	git diff --check	0	clean
+57	focused REST/Sync fixed-IANA Due creation and REST close	0	Sync update re-read America/New_York; REST close removed Due, failed assertion retained
+58	focused Sync item_close fixed-IANA retest	0	command reported ok but removed Due; failed assertion retained
+59	delete first fixed-IANA fixtures and inventory	0	all tagged resources zero
+60	focused item_update_date_complete DST retest	0	America/New_York tuple preserved across 2027 DST boundary with same task and count +1
+61	delete explicit-completion fixture and inventory	0	all tagged resources zero
+62	focused non-empty property lifecycle case	0	description label/project comment subtask reminder passed; owner self-assignment normalized null
+63	delete property fixture and final tagged inventory	0	all tagged resources zero
+64	production fixed-IANA poll/preview/apply	0	apply receipt failed postcondition after Todoist normalized timezone null; Calendar write withheld
+65	focused fixed-IANA unit/WireMock tests	1	new tests passed but existing fixed-zone retry expectation exposed outdated civil assertion
+66	focused fixed-IANA unit/WireMock tests + installDist	0	18/18 passed after independently updating expected UTC fixed-zone shape
+67	delete initial production fixed-IANA fixtures and inventory	0	all tagged tasks projects labels and calendars zero
+68	production fixed-IANA setup/poll/preview/apply retest	0	Todoist retained America/New_York and first owned linked event was created
+69	provider alignment checker	0	provider states passed but textual offset-vs-Z assertion failed; retained
+70	instant-normalized provider alignment retest	0	03:30-05:00 equals 08:30Z; one event and fixed Due passed
+71	explicit recurring completion + incremental poll + second preview/apply	0	count advanced; fixed timezone retained; second occurrence applied
+72	second fixed-IANA provider alignment	0	two distinct owned linked events at 03:30 across -05:00/-04:00 DST offset
+73	delete fixed-IANA production retest fixtures and final inventory	0	all tagged tasks projects labels and calendars zero
+74	bash scripts/recurrence-sync-contract.sh	0	82/82 focused tests passed
+75	constrained full Gradle suite	terminated	stale daemon/worker memory stall; no test result claimed
+76	stop daemons + constrained full Gradle suite	0	963/963 passed
+77	npx -y @fission-ai/openspec@1.14.0 validate add-deadline-recurrence-support --strict	0	valid
+78	git diff --check + independent evidence tree digest	0	clean; independent digest unchanged

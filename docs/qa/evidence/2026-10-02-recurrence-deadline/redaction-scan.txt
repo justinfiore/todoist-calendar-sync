@@ -1,6 +1,7 @@
 Scan target: docs/qa/evidence/2026-10-02-recurrence-deadline
 Scan date (UTC): 2026-10-02
 Result: PASS
+Files scanned (excluding this report and checksum manifest): 46
 
 High-confidence credential patterns:
   Google/OAuth credential material, provider authorization header values,
@@ -20,3 +21,7 @@ Repository checks:
 
 The scan intentionally covered sanitized tracked evidence, not ignored private
 credential stores. Private raw provider payloads and credentials remain untracked.
+
+Reviewer-remediation additions were included: fixed-IANA/DST attempts, failed and
+successful production scheduling assertions, non-empty property assertions, and
+cleanup inventories. Credential, email-address, and OAuth/consent URL matches: 0.

@@ -1,0 +1,37 @@
+{
+  "attempts": [
+    {
+      "accepted": true,
+      "provider_timezone": null,
+      "shape": "REST due_string plus due_timezone"
+    },
+    {
+      "accepted": true,
+      "provider_timezone": "America/New_York",
+      "shape": "Sync item_update due object with string/lang/timezone",
+      "sync_status": "ok"
+    },
+    {
+      "accepted": false,
+      "provider_timezone": null,
+      "shape": "Sync item_add due object with string/lang/timezone",
+      "sync_status": "rejected"
+    }
+  ],
+  "case": "fixed-IANA-timezone-DST",
+  "lifecycle": {
+    "civil_time_string_preserved": false,
+    "crosses_new_york_2027_dst_start": false,
+    "date_advanced": true,
+    "date_after": null,
+    "date_before": "2027-03-13T08:30:00Z",
+    "provider_timezone_after": null,
+    "provider_timezone_before": "America/New_York",
+    "recurring_after": null,
+    "recurring_before": true,
+    "utc_hour_changed_for_same_civil_time": false
+  },
+  "non_null_iana_reread": true,
+  "requested_timezone": "America/New_York",
+  "verdict": "LIMITATION_PROVIDER_NORMALIZED_OR_REJECTED"
+}

@@ -1,0 +1,99 @@
+{
+  "after_lifecycle_move": {
+    "assignee_matches_requested": false,
+    "assignee_present": false,
+    "comment_count_for_marker": 1,
+    "comment_present": true,
+    "completed_count": 0,
+    "due": {
+      "date": "2026-10-21T11:15:00",
+      "is_recurring": true,
+      "lang": "en",
+      "string": "every day @ 10:00",
+      "timezone": null
+    },
+    "human_description_exact": true,
+    "label_present": true,
+    "project_matches": true,
+    "reminder_present": true,
+    "reminders_endpoint_status": 200,
+    "same_task_id_hash": "041ab1ae59112897",
+    "subtask_count_for_marker": 1,
+    "subtask_present": true
+  },
+  "after_native_completion": {
+    "assignee_matches_requested": false,
+    "assignee_present": false,
+    "comment_count_for_marker": 1,
+    "comment_present": true,
+    "completed_count": 1,
+    "due": {
+      "date": "2026-10-22T10:00:00",
+      "is_recurring": true,
+      "lang": "en",
+      "string": "every day @ 10:00",
+      "timezone": null
+    },
+    "human_description_exact": true,
+    "label_present": true,
+    "project_matches": true,
+    "reminder_present": true,
+    "reminders_endpoint_status": 200,
+    "same_task_id_hash": "041ab1ae59112897",
+    "subtask_count_for_marker": 1,
+    "subtask_present": true
+  },
+  "assignee_attempted": true,
+  "before": {
+    "assignee_matches_requested": false,
+    "assignee_present": false,
+    "comment_count_for_marker": 1,
+    "comment_present": true,
+    "completed_count": 0,
+    "due": {
+      "date": "2026-10-03T10:00:00",
+      "is_recurring": true,
+      "lang": "en",
+      "string": "every day @ 10:00",
+      "timezone": null
+    },
+    "human_description_exact": true,
+    "label_present": true,
+    "project_matches": true,
+    "reminder_present": true,
+    "reminders_endpoint_status": 200,
+    "same_task_id_hash": "041ab1ae59112897",
+    "subtask_count_for_marker": 1,
+    "subtask_present": true
+  },
+  "capability_verdicts": {
+    "assignee_collaboration": "UNSUPPORTED_SINGLE_USER_PROJECT",
+    "description_labels_project_comment_subtask": "PASS",
+    "reminder": "PASS"
+  },
+  "case": "non-empty-property-preservation",
+  "collaborator_count": 1,
+  "collaborators_endpoint_status": 200,
+  "completion_advanced_due": true,
+  "provider_normalized_moved_due": {
+    "date": "2026-10-21T11:15:00",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day @ 10:00",
+    "timezone": null
+  },
+  "reminder_attempts": [
+    {
+      "item_reference_field": "item_id",
+      "outcome": "provider-validation-rejected",
+      "status": 400
+    },
+    {
+      "item_reference_field": "task_id",
+      "outcome": "accepted",
+      "status": 200
+    }
+  ],
+  "sync_lifecycle_update_status": "ok",
+  "verdict": "PASS_WITH_ACCOUNT_CAPABILITY_LIMITATIONS"
+}

@@ -1,0 +1,26 @@
+{
+  "after": {
+    "date": null,
+    "is_recurring": null,
+    "lang": null,
+    "string": null,
+    "timezone": null
+  },
+  "before": {
+    "date": "2027-03-13T08:30:00Z",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": "America/New_York"
+  },
+  "case": "fixed-IANA-timezone-DST-native-sync-close-retest",
+  "close_status": "ok",
+  "crosses_new_york_2027_dst_start": false,
+  "date_advanced": true,
+  "non_null_iana_reread_after": false,
+  "non_null_iana_reread_before": true,
+  "recurrence_tuple_preserved": false,
+  "update_status": "ok",
+  "utc_hour_changed_for_same_civil_time": false,
+  "verdict": "FAIL"
+}
