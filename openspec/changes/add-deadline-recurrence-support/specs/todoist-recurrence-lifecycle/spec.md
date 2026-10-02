@@ -125,7 +125,21 @@ The system SHALL let Todoist complete recurring occurrences natively and SHALL d
 - **THEN** active-task polling and `completed_count` SHALL remain sufficient to advance the lifecycle
 
 ### Requirement: Lifecycle authority is portable on the Todoist task
-The system SHALL store the versioned lifecycle state needed to interpret and recover the current occurrence on the Todoist task. Local plans, mappings, and receipts SHALL be reconciliation evidence and SHALL NOT override a conflicting on-task lifecycle marker.
+The system SHALL store the versioned lifecycle state needed to interpret and recover the current occurrence in a reserved suffix of the Todoist task description. Local plans, mappings, and receipts SHALL be reconciliation evidence and SHALL NOT override a conflicting on-task lifecycle marker.
+
+#### Scenario: Marker is appended to a human description
+- **WHEN** SmartPlanner writes lifecycle metadata to a task with a human-authored description and no marker
+- **THEN** it SHALL preserve the existing description prefix exactly
+- **AND** SHALL append a Markdown divider, SmartPlanner warning, and fenced canonical single-line JSON marker at the end
+
+#### Scenario: Existing marker is updated
+- **WHEN** SmartPlanner updates a valid lifecycle marker anchored at the end of the description
+- **THEN** it SHALL replace only that recognized suffix
+- **AND** SHALL retain exactly one marker without reformatting the human-authored prefix
+
+#### Scenario: Description marker is unsafe to merge
+- **WHEN** a marker is malformed, duplicated, relocated away from the suffix, or concurrently changed
+- **THEN** SmartPlanner SHALL preserve the live description and withhold lifecycle mutations for reconciliation
 
 #### Scenario: Local planner state is lost
 - **WHEN** local state is unavailable but the Todoist task retains a valid lifecycle marker and sentinel

@@ -4,7 +4,7 @@
 
 - [ ] 1.1 Extend the Todoist task/domain projection with the complete Due tuple (`date`, `string`, `is_recurring`, `lang`, `timezone`), Deadline date, labels, description, timestamps, and `completed_count`; verify parsing tests cover date-only, zoned, malformed, absent, and rich recurring values without normalizing the recurrence expression.
 - [ ] 1.2 Add explicit series and occurrence identity using Todoist task ID plus `completed_count`, including monotonicity validation; verify unit tests distinguish same-occurrence Due moves, next occurrences, skipped counts, and counter regression.
-- [ ] 1.3 Introduce the versioned lifecycle marker codec for a delimited description block, including recurrence fingerprint, Deadline mode/source, pending legacy source date, last planner-verified Due, and command identity; verify round-trip and malformed/unknown-version tests preserve surrounding human description exactly.
+- [ ] 1.3 Introduce the versioned lifecycle marker codec as an end-of-description suffix containing a Markdown divider, warning, and fenced canonical single-line JSON with recurrence fingerprint, Deadline mode/source, pending legacy source date, last planner-verified Due, and command identity; verify exact-format, escaping, stable-key-order, empty/non-empty description, round-trip, replacement-without-duplication, malformed/relocated/duplicate marker, and concurrent-drift tests preserve the human prefix exactly or fail closed.
 - [ ] 1.4 Add lifecycle-state classification for unmarked, initialized, advanced, user-edited, recurrence-removed, sentinel-missing, marker-missing, and unsupported states; verify table-driven tests cover every classified transition and fail-closed result.
 
 ## 2. Add a Recurrence-Preserving Todoist Sync Boundary
