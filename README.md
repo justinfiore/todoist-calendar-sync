@@ -445,6 +445,21 @@ Sample logging config is `conf/log4j.groovy`:
 
 Run with a different log config by passing another file to `-l`.
 
+## Native Todoist recurrence
+
+SmartPlanner preserves Todoist's complete Due recurrence tuple and treats its natural-language rule
+as opaque. It moves only the active occurrence through an `item_update` Sync command, verifies the
+live result, and uses `(task ID, completed_count)` as occurrence identity. Native completion remains
+the only advancement mechanism; detection normally occurs within zero to five minutes through a
+dedicated incremental `items` cursor. Prior occurrence events are retained and each managed event
+contains stable `https://app.todoist.com/app/task/<task-id>` links.
+
+Due time is a scheduling preference. Deadline is date-only and soft unless the configured `hard`
+label is present. An approaching hard P4 can outrank an ordinary P1 inside the configured soon
+window; outside that window hard has no permanent score boost, though finish-by feasibility remains
+mandatory. See `docs/SMART_PLANNER_CONFIGURATION.md` and the recurrence section of
+`docs/SMARTPLANNER_QA_RUNBOOK.md` before enabling this feature.
+
 ## Troubleshooting
 
 ### Tasks not appearing in calendars

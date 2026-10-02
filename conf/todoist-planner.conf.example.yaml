@@ -164,6 +164,14 @@ planner:
   tasks:
     scheduling_eligible_labels: [schedule]
     manual_label: manual
+    # Native recurring-task lifecycle. Keep disabled until the recurrence QA matrix passes.
+    recurrence:
+      enabled: false
+      seen_label: smartplanner-seen
+      onboard_label: smartplanner-onboard
+      hard_label: hard
+      rollout_cutoff: '2026-10-02T00:00:00Z'
+      hard_deadline_soon_days: 5
     default_duration_minutes: 30
     duration_labels:
       t15: 15

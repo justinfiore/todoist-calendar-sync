@@ -170,3 +170,38 @@ codes, credential documents, tokens, account passwords, or Slack secrets into Sl
 receipts, screenshots, or evidence. For a remote browser, start
 `ssh -N -L 8787:127.0.0.1:8787 hermes@<host>` (substitute the configured port), then open the URL
 printed by the launcher locally; the callback returns through the tunnel without copying a code.
+
+## Native recurrence and Deadline lifecycle
+
+`planner.tasks.recurrence.enabled` gates native recurring-task management. The configured
+`rollout_cutoff` is mandatory when enabled. Tasks created at or after it are classified before the
+planner first changes Due. A user Due contributes only its local calendar date to Todoist Deadline;
+an existing Deadline is preserved; an initially undated task records the later planner Due as
+planner-authored and never copies it back into Deadline.
+
+Pre-cutoff Due-only tasks remain recurrence-safe but are only logged as legacy candidates. Add
+`smartplanner-onboard` in Todoist to migrate one candidate. SmartPlanner preserves its original Due
+date in the description marker, writes and verifies Deadline and `smartplanner-seen`, and removes the
+request label last. `%hard` means the date-only Deadline is a finish-by constraint. Without it,
+Deadline is a soft target and work may be placed late with an increasing penalty. Hard urgency is
+boosted only inside `hard_deadline_soon_days`; outside the window, Todoist priority remains the
+ordinary ordering signal.
+
+The final description suffix beginning `**SmartPlanner metadata — do not edit**` is portable
+lifecycle authority. Human text before it remains owned by the user. A malformed, moved, duplicated,
+missing, or unsupported marker freezes writes. Rollback means disable recurrence apply and return to
+preview; it deliberately leaves marker, sentinel, mappings, and historical events intact for repair.
+
+Mobile and voice capture use the same Todoist workflow: capture the task normally, then add its native
+recurrence and Due. Post-cutoff tasks are classified automatically; pre-cutoff tasks stay in legacy-log
+mode until `smartplanner-onboard` is added. Do not dictate or paste the SmartPlanner metadata block.
+SmartPlanner owns that suffix and preserves the human description above it.
+
+Managed Calendar events retain one identity per Todoist occurrence and include series/occurrence
+ownership metadata plus ID-only Todoist links. Historical occurrences are not cleanup candidates when
+the active occurrence advances. If local application state is lost, start in preview, inventory the
+valid Todoist lifecycle marker and matching managed Calendar occurrence metadata, and apply only when
+they agree; deterministic UID lookup then rebuilds the active index without creating a duplicate.
+Conflicting, corrupt, or duplicate provider authority is a stop condition. Rollback never deletes
+provider events or metadata; disposable or obsolete history is removed only by an explicitly approved,
+inventory-based cleanup using the QA runbook.
