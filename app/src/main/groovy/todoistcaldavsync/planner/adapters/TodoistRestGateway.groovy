@@ -2,6 +2,7 @@ package todoistcaldavsync.planner.adapters
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import todoistcaldavsync.planner.recurrence.TodoistDue
 
 import java.net.URI
 import java.net.URLEncoder
@@ -22,7 +23,7 @@ import java.util.function.Function
  * GETs retry boundedly for transient status codes. Writes are at-most-once: an
  * ambiguous failed write is surfaced for reconciliation rather than replayed.
  */
-final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGateway {
+final class TodoistRestGateway implements TodoistLifecycleGateway {
     static final String DEFAULT_BASE_URL = 'https://api.todoist.com/api/v1'
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10)
     static final int DEFAULT_PAGE_SIZE = 200
@@ -80,6 +81,61 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
     }
 
     @Override
+    Map fetchTask(String taskId) {
+        if (!taskId) throw new IllegalArgumentException('taskId is required')
+        GatewayResponse response = sendReadWithRetry("/tasks/${segment(taskId)}", null)
+        if (response.statusCode() == 404) return null
+        requireSuccess(response, 'read task')
+        Object parsed = parseJson(response.body(), 'task')
+        if (!(parsed instanceof Map)) throw new TodoistGatewayException('SCHEMA', 'Todoist task response must be an object')
+        Collections.unmodifiableMap(new LinkedHashMap(parsed as Map))
+    }
+
+    @Override
+    TodoistCommandResult updateRecurringDue(String taskId, TodoistDue liveDue,
+                                             String replacementDate, String commandId) {
+        if (!taskId || !replacementDate || !validUuid(commandId)) {
+            throw new IllegalArgumentException('taskId, replacementDate, and UUID commandId are required')
+        }
+        if (liveDue == null || !liveDue.recurring || !liveDue.completeRecurrenceTuple()) {
+            throw new IllegalArgumentException('A complete live recurring Due tuple is required')
+        }
+        sendItemUpdate(taskId, commandId, [due: liveDue.syncTuple(replacementDate)])
+    }
+
+    @Override
+    TodoistCommandResult updateLifecycleFields(LifecycleMutation mutation) {
+        if (mutation == null) throw new IllegalArgumentException('validated lifecycle mutation is required')
+        Map args = [:]
+        if (mutation.deadlineDate != null) args.deadline = [date: mutation.deadlineDate]
+        if (mutation.labels != null) args.labels = mutation.labels
+        if (mutation.description != null) args.description = mutation.description
+        sendItemUpdate(mutation.taskId, mutation.commandId, args)
+    }
+
+    @Override
+    TodoistSyncPage syncItems(String syncToken) {
+        String token = syncToken ?: '*'
+        Map response = sendSyncForm([
+            sync_token: token,
+            resource_types: JsonOutput.toJson(['items'])
+        ], false)
+        String replacement = response.sync_token?.toString()
+        if (!replacement || !(response.items instanceof List)) {
+            throw new TodoistGatewayException('SCHEMA', 'Todoist items Sync response is incomplete')
+        }
+        boolean full = token == '*'
+        if (full && !response.full_sync_date_utc) {
+            throw new TodoistGatewayException('SCHEMA', 'Todoist full items Sync response lacks full_sync_date_utc')
+        }
+        new TodoistSyncPage(replacement, full, response.full_sync_date_utc?.toString(),
+            (response.items as List).collect {
+                if (!(it instanceof Map)) throw new TodoistGatewayException('SCHEMA', 'Todoist Sync item must be an object')
+                new LinkedHashMap(it as Map)
+            })
+    }
+
+    @Override
     void updateTaskDue(String taskId, String dueDateTimeIso) {
         if (!taskId || !dueDateTimeIso) {
             throw new IllegalArgumentException('taskId and dueDateTimeIso are required')
@@ -93,6 +149,64 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
     @Override
     void updateTaskDeadline(String taskId, String deadlineIso) {
         throw new UnsupportedOperationException('Planner Todoist adapter never mutates deadlines')
+    }
+
+    private TodoistCommandResult sendItemUpdate(String taskId, String commandId, Map fields) {
+        Map command = [type: 'item_update', uuid: commandId,
+                       args: new LinkedHashMap([id: taskId] + fields)]
+        Map response
+        try {
+            response = sendSyncForm([commands: JsonOutput.toJson([command])], true)
+        } catch (TodoistGatewayException e) {
+            if (e.classification == 'AMBIGUOUS_WRITE') {
+                return new TodoistCommandResult(TodoistCommandState.AMBIGUOUS, commandId)
+            }
+            throw e
+        }
+        if (!(response.sync_status instanceof Map) || !response.sync_status.containsKey(commandId)) {
+            return new TodoistCommandResult(TodoistCommandState.AMBIGUOUS, commandId)
+        }
+        Object status = response.sync_status[commandId]
+        if (status == 'ok') return new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+        String code = status instanceof Map ? (status.error_code ?: status.error)?.toString() : 'rejected'
+        new TodoistCommandResult(TodoistCommandState.REJECTED, commandId, code)
+    }
+
+    private Map sendSyncForm(Map<String, String> fields, boolean mutation) {
+        String form = fields.collect { k, v -> "${queryValue(k)}=${queryValue(v)}" }.join('&')
+        String token = resolveToken()
+        URI uri = resolve('/sync', null)
+        try {
+            HttpRequest request = HttpRequest.newBuilder(uri).timeout(timeout)
+                .header('Authorization', "Bearer ${token}")
+                .header('Accept', 'application/json')
+                .header('Content-Type', 'application/x-www-form-urlencoded')
+                .POST(HttpRequest.BodyPublishers.ofString(form, StandardCharsets.UTF_8)).build()
+            HttpResponse<InputStream> raw = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            String body = readBounded(raw.body())
+            if (raw.statusCode() < 200 || raw.statusCode() >= 300) {
+                throw new TodoistGatewayException('HTTP_STATUS',
+                    "Todoist Sync failed with HTTP ${raw.statusCode()}", null, raw.statusCode())
+            }
+            Object parsed = parseJson(body, 'Sync')
+            if (!(parsed instanceof Map)) throw new TodoistGatewayException('SCHEMA', 'Todoist Sync response must be an object')
+            parsed as Map
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt()
+            throw new TodoistGatewayException(mutation ? 'AMBIGUOUS_WRITE' : 'INTERRUPTED', 'Todoist Sync interrupted', e)
+        } catch (TodoistGatewayException e) { throw e }
+        catch (Exception e) {
+            throw new TodoistGatewayException(mutation ? 'AMBIGUOUS_WRITE' : 'TRANSPORT', 'Todoist Sync failed', e)
+        } finally { token = null }
+    }
+
+    private static Object parseJson(String body, String operation) {
+        try { new JsonSlurper().parseText(body ?: '{}') }
+        catch (Exception e) { throw new TodoistGatewayException('SCHEMA', "Todoist ${operation} returned malformed JSON", e) }
+    }
+
+    private static boolean validUuid(String value) {
+        try { UUID.fromString(value); true } catch (Exception ignored) { false }
     }
 
     private List<Map> fetchCollection(String path) {
@@ -243,8 +357,10 @@ final class TodoistRestGateway implements TodoistReadGateway, TodoistWriteGatewa
 
     static final class TodoistGatewayException extends RuntimeException {
         final String classification
-        TodoistGatewayException(String classification, String message, Throwable cause = null) {
-            super(message, cause); this.classification = classification
+        final Integer statusCode
+        TodoistGatewayException(String classification, String message, Throwable cause = null,
+                                Integer statusCode = null) {
+            super(message, cause); this.classification = classification; this.statusCode = statusCode
         }
     }
 

@@ -8,6 +8,7 @@ import groovy.yaml.YamlSlurper
 
 import java.time.DayOfWeek
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
 import java.net.URI
@@ -37,6 +38,7 @@ final class PlannerConfig {
     final WeatherConfig weather
     final MessagingConfig messaging
     final AiConfig ai
+    final RecurrenceConfig recurrence
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
 
@@ -59,6 +61,7 @@ final class PlannerConfig {
         this.weather = b.weather ?: WeatherConfig.disabled()
         this.messaging = b.messaging ?: MessagingConfig.disabled()
         this.ai = b.ai ?: AiConfig.disabled()
+        this.recurrence = b.recurrence ?: RecurrenceConfig.disabled()
     }
 
     static Builder builder() {
@@ -173,6 +176,7 @@ final class PlannerConfig {
         MessagingConfig messaging = parseMessaging(
             p.messaging instanceof Map ? p.messaging as Map : null, timezone, errors)
         AiConfig ai = parseAi(p.ai instanceof Map ? p.ai as Map : null, errors)
+        RecurrenceConfig recurrence = parseRecurrence(tasks, errors)
 
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
@@ -196,7 +200,34 @@ final class PlannerConfig {
             .weather(weather)
             .messaging(messaging)
             .ai(ai)
+            .recurrence(recurrence)
             .build()
+    }
+
+    private static RecurrenceConfig parseRecurrence(Map tasks, List errors) {
+        Map raw = tasks.recurrence instanceof Map ? tasks.recurrence as Map : tasks
+        boolean enabled = raw.recurrence_enabled == true || raw.enabled == true && tasks.recurrence instanceof Map
+        String seen = (raw.seen_label ?: raw.seenLabel ?: 'smartplanner-seen').toString()
+        String onboard = (raw.onboard_label ?: raw.onboardLabel ?: 'smartplanner-onboard').toString()
+        String hard = (raw.hard_label ?: raw.hardLabel ?: 'hard').toString()
+        int soon = 5
+        def soonRaw = raw.containsKey('hard_deadline_soon_days') ? raw.hard_deadline_soon_days :
+            (raw.containsKey('hardDeadlineSoonDays') ? raw.hardDeadlineSoonDays : 5)
+        try { soon = soonRaw as int }
+        catch (Exception ignored) { errors << 'planner.tasks.hard_deadline_soon_days must be a positive integer' }
+        if (soon <= 0) errors << 'planner.tasks.hard_deadline_soon_days must be positive'
+        if ([seen, onboard, hard].any { !it }) errors << 'planner recurrence labels must not be empty'
+        if ([seen.toLowerCase(Locale.ROOT), onboard.toLowerCase(Locale.ROOT), hard.toLowerCase(Locale.ROOT)].toSet().size() != 3) {
+            errors << 'planner recurrence seen, onboard, and hard labels must be distinct'
+        }
+        Instant cutoff = null
+        def cutoffRaw = raw.rollout_cutoff ?: raw.rolloutCutoff
+        if (cutoffRaw != null) {
+            try { cutoff = Instant.parse(cutoffRaw.toString()) }
+            catch (Exception ignored) { errors << 'planner.tasks.rollout_cutoff must be an ISO-8601 instant' }
+        }
+        if (enabled && cutoff == null) errors << 'planner.tasks.rollout_cutoff is required when recurrence lifecycle is enabled'
+        new RecurrenceConfig(enabled, seen, onboard, hard, cutoff, soon)
     }
 
     /**
@@ -268,6 +299,11 @@ final class PlannerConfig {
             if (b.batching.contextSwitchPenalty < 0) {
                 errors << 'planner.batching.context_switch_penalty must be non-negative'
             }
+        }
+        if (b.recurrence == null) {
+            errors << 'planner recurrence configuration is required'
+        } else if (b.recurrence.enabled && b.recurrence.rolloutCutoff == null) {
+            errors << 'planner.tasks.rollout_cutoff is required when recurrence lifecycle is enabled'
         }
         if (b.eventRules) {
             b.eventRules.eachWithIndex { EventRule rule, int idx ->
@@ -1811,6 +1847,26 @@ final class PlannerConfig {
         }
     }
 
+    static final class RecurrenceConfig {
+        final boolean enabled
+        final String seenLabel
+        final String onboardLabel
+        final String hardLabel
+        final Instant rolloutCutoff
+        final int hardDeadlineSoonDays
+
+        RecurrenceConfig(boolean enabled, String seenLabel, String onboardLabel, String hardLabel,
+                         Instant rolloutCutoff, int hardDeadlineSoonDays) {
+            this.enabled = enabled; this.seenLabel = seenLabel; this.onboardLabel = onboardLabel
+            this.hardLabel = hardLabel; this.rolloutCutoff = rolloutCutoff
+            this.hardDeadlineSoonDays = hardDeadlineSoonDays
+        }
+
+        static RecurrenceConfig disabled() {
+            new RecurrenceConfig(false, 'smartplanner-seen', 'smartplanner-onboard', 'hard', null, 5)
+        }
+    }
+
     /**
      * Preferred local window: optional day group + HH:mm-HH:mm.
      * Examples: "weekday 12:00-13:00", "09:00-12:00", "saturday 10:00-14:00"
@@ -1969,6 +2025,7 @@ final class PlannerConfig {
         private WeatherConfig weather = WeatherConfig.disabled()
         private MessagingConfig messaging = MessagingConfig.disabled()
         private AiConfig ai = AiConfig.disabled()
+        private RecurrenceConfig recurrence = RecurrenceConfig.disabled()
 
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
@@ -1987,6 +2044,7 @@ final class PlannerConfig {
         Builder weather(WeatherConfig v) { this.weather = v ?: WeatherConfig.disabled(); this }
         Builder messaging(MessagingConfig v) { this.messaging = v ?: MessagingConfig.disabled(); this }
         Builder ai(AiConfig v) { this.ai = v ?: AiConfig.disabled(); this }
+        Builder recurrence(RecurrenceConfig v) { this.recurrence = v ?: RecurrenceConfig.disabled(); this }
 
         // package-private accessors for invariant validation
         String getMode() { mode }
@@ -2003,6 +2061,7 @@ final class PlannerConfig {
         WeatherConfig getWeather() { weather }
         MessagingConfig getMessaging() { messaging }
         AiConfig getAi() { ai }
+        RecurrenceConfig getRecurrence() { recurrence }
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)
