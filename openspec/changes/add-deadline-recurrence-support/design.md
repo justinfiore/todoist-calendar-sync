@@ -62,7 +62,7 @@ The configured sentinel label is visible discovery state: it tells users and fil
 
 The original recurrence string and fields remain authoritative in Todoist Due and need not be duplicated in full when a collision-resistant fingerprint is enough to detect changes; the live tuple is always copied from Todoist, never reconstructed from metadata.
 
-The marker is a suffix at the end of the description, after a Markdown divider and human-readable warning. Its fenced body is canonical single-line JSON: UTF-8, no insignificant whitespace, stable key ordering, and JSON escaping. For example:
+The marker is always a suffix at the end of the human description, after a Markdown divider and human-readable warning. Its fenced body is canonical single-line JSON: UTF-8, no insignificant whitespace, stable key ordering, and JSON escaping. For example:
 
 ~~~markdown
 Remember to put the bins by the back gate.
@@ -195,4 +195,3 @@ Keep live cases only where they establish an external product contract or render
 ## Open Questions
 
 - What poll interval provides acceptable post-completion realignment latency within the owner's Todoist/API usage limits?
-- Should the compact lifecycle block be shown at the beginning or end of a human description? This affects presentation only, not its schema or authority.
