@@ -214,8 +214,8 @@ final class PlannerConfig {
         def soonRaw = raw.containsKey('hard_deadline_soon_days') ? raw.hard_deadline_soon_days :
             (raw.containsKey('hardDeadlineSoonDays') ? raw.hardDeadlineSoonDays : 5)
         try { soon = soonRaw as int }
-        catch (Exception ignored) { errors << 'planner.tasks.hard_deadline_soon_days must be a positive integer' }
-        if (soon <= 0) errors << 'planner.tasks.hard_deadline_soon_days must be positive'
+        catch (Exception ignored) { errors << 'planner.tasks.recurrence.hard_deadline_soon_days must be a positive integer' }
+        if (soon <= 0) errors << 'planner.tasks.recurrence.hard_deadline_soon_days must be positive'
         if ([seen, onboard, hard].any { !it }) errors << 'planner recurrence labels must not be empty'
         if ([seen.toLowerCase(Locale.ROOT), onboard.toLowerCase(Locale.ROOT), hard.toLowerCase(Locale.ROOT)].toSet().size() != 3) {
             errors << 'planner recurrence seen, onboard, and hard labels must be distinct'
@@ -224,9 +224,9 @@ final class PlannerConfig {
         def cutoffRaw = raw.rollout_cutoff ?: raw.rolloutCutoff
         if (cutoffRaw != null) {
             try { cutoff = Instant.parse(cutoffRaw.toString()) }
-            catch (Exception ignored) { errors << 'planner.tasks.rollout_cutoff must be an ISO-8601 instant' }
+            catch (Exception ignored) { errors << 'planner.tasks.recurrence.rollout_cutoff must be an ISO-8601 instant' }
         }
-        if (enabled && cutoff == null) errors << 'planner.tasks.rollout_cutoff is required when recurrence lifecycle is enabled'
+        if (enabled && cutoff == null) errors << 'planner.tasks.recurrence.rollout_cutoff is required when recurrence lifecycle is enabled'
         new RecurrenceConfig(enabled, seen, onboard, hard, cutoff, soon)
     }
 
@@ -303,7 +303,7 @@ final class PlannerConfig {
         if (b.recurrence == null) {
             errors << 'planner recurrence configuration is required'
         } else if (b.recurrence.enabled && b.recurrence.rolloutCutoff == null) {
-            errors << 'planner.tasks.rollout_cutoff is required when recurrence lifecycle is enabled'
+            errors << 'planner.tasks.recurrence.rollout_cutoff is required when recurrence lifecycle is enabled'
         }
         if (b.eventRules) {
             b.eventRules.eachWithIndex { EventRule rule, int idx ->

@@ -858,10 +858,10 @@ class PlannerConfigSpec extends Specification {
 
         where:
         invalid                                                        | expected
-        [rollout_cutoff: null]                                         | 'rollout_cutoff'
+        [rollout_cutoff: null]                                         | 'planner.tasks.recurrence.rollout_cutoff'
         [seen_label: 'same', onboard_label: 'SAME']                     | 'must be distinct'
-        [hard_deadline_soon_days: 0]                                   | 'must be positive'
-        [hard_deadline_soon_days: 'not-an-integer']                    | 'positive integer'
+        [hard_deadline_soon_days: 0]                                   | 'planner.tasks.recurrence.hard_deadline_soon_days must be positive'
+        [hard_deadline_soon_days: 'not-an-integer']                    | 'planner.tasks.recurrence.hard_deadline_soon_days must be a positive integer'
     }
 
     def "Builder.build rejects invalid state that cannot escape"() {
