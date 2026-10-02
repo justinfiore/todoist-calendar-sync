@@ -45,6 +45,26 @@ class TodoistSyncGatewayWireMockSpec extends Specification {
             is_recurring: true, lang: 'en', timezone: 'America/New_York']]]]
     }
 
+    def "Sync item_update preserves an explicitly null floating timezone"() {
+        given:
+        String uuid = '12111111-1111-1111-1111-111111111111'
+        server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(okJson(
+            "{\"sync_status\":{\"${uuid}\":\"ok\"}}")))
+        def due = Task.fromTodoistMap([id: 't1', content: 'x', labels: [], priority: 1,
+            due: [date: '2026-10-03T09:00:00', string: 'every day @ 09:00',
+                is_recurring: true, lang: 'en', timezone: null]],
+            new Task.DurationResolver(30, [:]), 'manual', ZoneId.of('America/New_York')).todoistDue
+
+        when:
+        gateway().updateRecurringDue('t1', due, '2026-10-04T09:00:00', uuid)
+
+        then:
+        Map form = parseForm(server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync')))[0].bodyAsString)
+        new JsonSlurper().parseText(form.commands)[0].args.due == [
+            date: '2026-10-04T09:00:00', string: 'every day @ 09:00',
+            is_recurring: true, lang: 'en', timezone: null]
+    }
+
     def "full then incremental items Sync uses isolated token and accepts empty delta"() {
         given:
         server.stubFor(post(urlEqualTo('/api/v1/sync')).inScenario('items')

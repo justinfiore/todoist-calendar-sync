@@ -56,6 +56,22 @@ class RecurrenceLifecycleSpec extends Specification {
         missing << ['date', 'string', 'lang', 'timezone']
     }
 
+    def "recurring Due preserves Todoist floating timezone as an explicit null field"() {
+        given:
+        Map due = [date: '2026-10-03T09:00:00', string: 'every day @ 09:00',
+            is_recurring: true, lang: 'en', timezone: null]
+
+        when:
+        Task task = task(due, 0)
+
+        then:
+        task.todoistDue.completeRecurrenceTuple()
+        task.todoistDue.timezone == null
+        task.todoistDue.timezonePresent
+        task.todoistDue.syncTuple('2026-10-04T09:00:00').timezone == null
+        task.todoistDue.instant.toString() == '2026-10-03T13:00:00Z'
+    }
+
     def "marker codec preserves exact human prefix and canonical suffix without duplication"() {
         given:
         def codec = new LifecycleMarkerCodec()
@@ -284,6 +300,115 @@ class RecurrenceLifecycleSpec extends Specification {
         logs.size() == 1
         logs[0].contains('name=Recurring task id=t1 url=https://app.todoist.com/app/task/t1')
         !logs[0].contains(raw.description)
+    }
+
+    def "first observation with onboarding request commits marker then removes request label"() {
+        given:
+        Map raw = rawTask([date: '2026-10-03T09:00:00', string: 'every day', is_recurring: true,
+            lang: 'en', timezone: null], 0, ['smartplanner-onboard'], '', null)
+        List<List<String>> labelWrites = []
+        TodoistLifecycleGateway gateway = [
+            updateLifecycleFields: { mutation ->
+                if (mutation.deadlineDate != null) raw.deadline = [date: mutation.deadlineDate]
+                if (mutation.labels != null) {
+                    raw.labels = new ArrayList(mutation.labels)
+                    labelWrites << new ArrayList(mutation.labels)
+                }
+                if (mutation.description != null) raw.description = mutation.description
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
+            },
+            fetchTask: { String ignored -> new LinkedHashMap(raw) }
+        ] as TodoistLifecycleGateway
+        def config = PlannerConfig.fromMap(planner: [mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [recurrence: [enabled: true, rollout_cutoff: '2026-10-03T00:00:00Z']]])
+
+        when:
+        def result = new RecurrenceLifecycleManager(config,
+            new LifecycleMarkerWriter(gateway, config)).process(
+            Task.fromTodoistMap(raw, resolver, 'manual', config.timezone))
+
+        then:
+        result.action == 'initialized'
+        labelWrites == [
+            ['smartplanner-onboard', 'smartplanner-seen'],
+            ['smartplanner-seen']
+        ]
+        raw.deadline.date == '2026-10-03'
+        def marker = new LifecycleMarkerCodec().read(raw.description).marker
+        marker.markerGeneration == 2
+        marker.deadlineMode == 'managed'
+        marker.deadlineSource == 'legacy_user_due'
+    }
+
+    def "Todoist Sync added_at drives automatic post-cutoff initialization"() {
+        given:
+        Map raw = rawTask([date: '2026-10-03T09:00:00', string: 'every day', is_recurring: true,
+            lang: 'en', timezone: null], 0, [], '', null)
+        raw.added_at = raw.remove('created_at')
+        TodoistLifecycleGateway gateway = [
+            updateLifecycleFields: { mutation ->
+                if (mutation.deadlineDate != null) raw.deadline = [date: mutation.deadlineDate]
+                if (mutation.labels != null) raw.labels = new ArrayList(mutation.labels)
+                if (mutation.description != null) raw.description = mutation.description
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
+            },
+            fetchTask: { String ignored -> new LinkedHashMap(raw) }
+        ] as TodoistLifecycleGateway
+        def config = PlannerConfig.fromMap(planner: [mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [recurrence: [enabled: true, rollout_cutoff: '2026-10-02T00:00:00Z']]])
+
+        when:
+        def result = new RecurrenceLifecycleManager(config,
+            new LifecycleMarkerWriter(gateway, config)).process(
+            Task.fromTodoistMap(raw, resolver, 'manual', config.timezone))
+
+        then:
+        result.action == 'initialized'
+        raw.deadline.date == '2026-10-03'
+        raw.labels == ['smartplanner-seen']
+        new LifecycleMarkerCodec().read(raw.description).marker.deadlineSource == 'initial_user_due'
+    }
+
+    def "restart after staged first-observation onboarding removes request label idempotently"() {
+        given:
+        Map raw = rawTask([date: '2026-10-03T09:00:00', string: 'every day', is_recurring: true,
+            lang: 'en', timezone: null], 0, ['smartplanner-onboard'], '', null)
+        int writes = 0
+        boolean interrupt = true
+        TodoistLifecycleGateway gateway = [
+            updateLifecycleFields: { mutation ->
+                writes++
+                if (interrupt && writes == 2) throw new IllegalStateException('simulated process crash')
+                if (mutation.deadlineDate != null) raw.deadline = [date: mutation.deadlineDate]
+                if (mutation.labels != null) raw.labels = new ArrayList(mutation.labels)
+                if (mutation.description != null) raw.description = mutation.description
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
+            },
+            fetchTask: { String ignored -> new LinkedHashMap(raw) }
+        ] as TodoistLifecycleGateway
+        def config = PlannerConfig.fromMap(planner: [mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [recurrence: [enabled: true, rollout_cutoff: '2026-10-03T00:00:00Z']]])
+        def manager = new RecurrenceLifecycleManager(config, new LifecycleMarkerWriter(gateway, config))
+
+        when:
+        manager.process(Task.fromTodoistMap(raw, resolver, 'manual', config.timezone))
+
+        then:
+        thrown(IllegalStateException)
+        raw.labels.toSet() == ['smartplanner-onboard', 'smartplanner-seen'] as Set
+        new LifecycleMarkerCodec().read(raw.description).marker.markerGeneration == 1
+
+        when:
+        interrupt = false
+        def replay = manager.process(Task.fromTodoistMap(raw, resolver, 'manual', config.timezone))
+
+        then:
+        replay.action == 'onboarding_finalized'
+        raw.labels == ['smartplanner-seen']
+        new LifecycleMarkerCodec().read(raw.description).marker.markerGeneration == 2
     }
 
     def "partial onboarding keeps the request label after verified Deadline marker and sentinel staging"() {

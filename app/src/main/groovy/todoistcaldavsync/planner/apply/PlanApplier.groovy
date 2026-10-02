@@ -21,7 +21,9 @@ import todoistcaldavsync.planner.domain.PlanHash
 import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.recurrence.LifecycleMarker
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
 import todoistcaldavsync.planner.recurrence.LifecycleMarkerWriter
+import todoistcaldavsync.planner.recurrence.TodoistDue
 import todoistcaldavsync.planner.state.ApplicationStateStore
 
 import java.nio.charset.StandardCharsets
@@ -421,6 +423,7 @@ class PlanApplier {
             throw new IllegalStateException(externalUidCollisionReason(preflightCollision, eventUid, block))
         }
         Map<String, Task> recurringLive = [:]
+        Map<String, Map> recurringTargets = [:]
         for (Task plannedTask : recurringTasks) {
             if (!(todoistWrite instanceof TodoistLifecycleGateway)) {
                 throw new IllegalStateException('Recurring apply requires TodoistLifecycleGateway')
@@ -429,26 +432,16 @@ class PlanApplier {
             Map liveRaw = lifecycle.fetchTask(plannedTask.id)
             if (liveRaw == null) throw new IllegalStateException("todoist task missing: ${plannedTask.id}")
             Task live = Task.fromTodoistMap(liveRaw, config.durationResolver, config.manualLabel, zoneId)
-            if (live.completedCount != plannedTask.completedCount || !live.todoistDue?.recurring ||
-                !live.todoistDue.completeRecurrenceTuple() ||
-                live.todoistDue.recurrenceFingerprintInput() != plannedTask.todoistDue.recurrenceFingerprintInput() ||
-                live.deadlineDate != plannedTask.deadlineDate || live.labels.toSet() != plannedTask.labels.toSet() ||
-                live.description != plannedTask.description) {
-                throw new IllegalStateException("stale recurring lifecycle preflight for task ${plannedTask.id}")
-            }
-            recurringLive[plannedTask.id] = live
-        }
-        for (Task plannedTask : recurringTasks) {
-            TodoistLifecycleGateway lifecycle = todoistWrite as TodoistLifecycleGateway
-            Task live = recurringLive[plannedTask.id]
             MemberInterval interval = block.intervalFor(plannedTask.id)
-            String replacement = formatDueIso(interval?.start ?: block.start)
-            if (live.lifecycleMarker != null) {
-                LifecycleMarker marker = live.lifecycleMarker
+            String replacement = formatRecurringDueIso(interval?.start ?: block.start, plannedTask.todoistDue, zoneId)
+            LifecycleMarker intendedMarker = null
+            String intendedDescription = plannedTask.description
+            if (plannedTask.lifecycleMarker != null) {
+                LifecycleMarker marker = plannedTask.lifecycleMarker
                 String markerCommandId = UUID.nameUUIDFromBytes(
                     "${planHash}|${plannedTask.occurrenceIdentity()}|marker|${replacement}"
                         .getBytes(StandardCharsets.UTF_8)).toString()
-                LifecycleMarker intended = new LifecycleMarker(
+                intendedMarker = new LifecycleMarker(
                     taskId: marker.taskId,
                     completedCount: marker.completedCount,
                     deadlineMode: marker.deadlineMode,
@@ -460,13 +453,40 @@ class PlanApplier {
                     lastPlannerDue: replacement,
                     markerGeneration: marker.markerGeneration + 1L,
                     lastCommandId: markerCommandId)
+                intendedDescription = new LifecycleMarkerCodec().merge(plannedTask.description, intendedMarker)
+            }
+            if (live.completedCount != plannedTask.completedCount || !live.todoistDue?.recurring ||
+                !live.todoistDue.completeRecurrenceTuple() ||
+                live.todoistDue.recurrenceFingerprintInput() != plannedTask.todoistDue.recurrenceFingerprintInput() ||
+                live.deadlineDate != plannedTask.deadlineDate || live.labels.toSet() != plannedTask.labels.toSet() ||
+                !(live.todoistDue.date in [plannedTask.todoistDue.date, replacement]) ||
+                !(live.description in [plannedTask.description, intendedDescription])) {
+                throw new IllegalStateException("stale recurring lifecycle preflight for task ${plannedTask.id}")
+            }
+            recurringLive[plannedTask.id] = live
+            recurringTargets[plannedTask.id] = [replacement: replacement,
+                marker: intendedMarker, description: intendedDescription]
+        }
+        for (Task plannedTask : recurringTasks) {
+            TodoistLifecycleGateway lifecycle = todoistWrite as TodoistLifecycleGateway
+            Task live = recurringLive[plannedTask.id]
+            Map target = recurringTargets[plannedTask.id]
+            String replacement = target.replacement as String
+            LifecycleMarker intended = target.marker as LifecycleMarker
+            boolean wroteMarker = false
+            if (intended != null && live.description == plannedTask.description) {
                 live = new LifecycleMarkerWriter(lifecycle, config).write(live, intended)
+                wroteMarker = true
             }
             String commandId = UUID.nameUUIDFromBytes(
                 "${planHash}|${plannedTask.occurrenceIdentity()}|${replacement}".getBytes(StandardCharsets.UTF_8)).toString()
-            def result = lifecycle.updateRecurringDue(plannedTask.id, live.todoistDue, replacement, commandId)
-            if (result.state == TodoistCommandState.REJECTED) {
-                throw new IllegalStateException("Todoist recurring command rejected for task ${plannedTask.id}")
+            boolean wroteDue = false
+            if (live.todoistDue.date != replacement) {
+                def result = lifecycle.updateRecurringDue(plannedTask.id, live.todoistDue, replacement, commandId)
+                if (result.state == TodoistCommandState.REJECTED) {
+                    throw new IllegalStateException("Todoist recurring command rejected for task ${plannedTask.id}")
+                }
+                wroteDue = result.state == TodoistCommandState.COMMITTED
             }
             Map verifiedRaw = lifecycle.fetchTask(plannedTask.id)
             Task verified = verifiedRaw == null ? null :
@@ -475,11 +495,11 @@ class PlanApplier {
                 verified.todoistDue?.date == replacement &&
                 verified.todoistDue?.recurrenceFingerprintInput() == live.todoistDue.recurrenceFingerprintInput() &&
                 verified.deadlineDate == live.deadlineDate && verified.labels.toSet() == live.labels.toSet() &&
-                verified.description == live.description
+                verified.description == target.description
             if (!postcondition) {
                 throw new IllegalStateException("Todoist recurring command outcome is ambiguous for task ${plannedTask.id}")
             }
-            recurringTodoistStatus[plannedTask.id] = result.state == TodoistCommandState.COMMITTED ?
+            recurringTodoistStatus[plannedTask.id] = wroteMarker || wroteDue ?
                 ApplyItemStatus.APPLIED : ApplyItemStatus.SKIPPED_IDEMPOTENT
         }
 
@@ -1306,6 +1326,15 @@ class PlanApplier {
             throw new IllegalArgumentException('start is required')
         }
         return DateTimeFormatter.ISO_INSTANT.format(start)
+    }
+
+    /** Todoist combines a civil datetime with its separate recurrence timezone field. */
+    static String formatRecurringDueIso(Instant start, TodoistDue due, ZoneId plannerZone) {
+        if (start == null || due == null || plannerZone == null) {
+            throw new IllegalArgumentException('start, recurring Due, and planner zone are required')
+        }
+        ZoneId dueZone = due.timezone ? ZoneId.of(due.timezone) : plannerZone
+        DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(start.atZone(dueZone).toLocalDateTime())
     }
 
     /**

@@ -12,16 +12,18 @@ final class TodoistDue {
     final boolean recurring
     final String lang
     final String timezone
+    final boolean timezonePresent
     final Instant instant
     final boolean allDay
 
     private TodoistDue(String date, String string, boolean recurring, String lang,
-                       String timezone, Instant instant, boolean allDay) {
+                       String timezone, boolean timezonePresent, Instant instant, boolean allDay) {
         this.date = date
         this.string = string
         this.recurring = recurring
         this.lang = lang
         this.timezone = timezone
+        this.timezonePresent = timezonePresent
         this.instant = instant
         this.allDay = allDay
     }
@@ -31,7 +33,7 @@ final class TodoistDue {
         if (value == null) return null
         if (!(value instanceof Map)) {
             String date = value.toString()
-            return new TodoistDue(date, null, false, null, null,
+            return new TodoistDue(date, null, false, null, null, false,
                 instantParser.call(date, plannerZone), !date.contains('T'))
         }
         Map raw = value as Map
@@ -43,9 +45,10 @@ final class TodoistDue {
         }
         String expression = raw.string?.toString()
         String lang = raw.lang?.toString()
+        boolean timezonePresent = raw.containsKey('timezone') || raw.containsKey('time_zone') ||
+            raw.containsKey('timeZone')
         String timezone = (raw.timezone ?: raw.time_zone ?: raw.timeZone)?.toString()
-        if (recurring && (!expression || !lang || !raw.containsKey('timezone') &&
-            !raw.containsKey('time_zone') && !raw.containsKey('timeZone'))) {
+        if (recurring && (!expression || !lang || !timezonePresent)) {
             throw new IllegalArgumentException(
                 'Recurring Todoist Due requires date, string, is_recurring, lang, and timezone')
         }
@@ -54,12 +57,12 @@ final class TodoistDue {
             try { zone = ZoneId.of(timezone) }
             catch (Exception e) { throw new IllegalArgumentException("Invalid due timezone '${timezone}'", e) }
         }
-        new TodoistDue(date, expression, recurring, lang, timezone,
+        new TodoistDue(date, expression, recurring, lang, timezone, timezonePresent,
             instantParser.call(date, zone), !date.contains('T'))
     }
 
     boolean completeRecurrenceTuple() {
-        !recurring || (date && string && lang && timezone != null)
+        !recurring || (date && string && lang && timezonePresent)
     }
 
     Map<String, Object> syncTuple(String replacementDate = date) {
@@ -73,6 +76,35 @@ final class TodoistDue {
             lang: lang,
             timezone: timezone
         ]))
+    }
+
+    Map<String, Object> snapshotMap() {
+        Collections.unmodifiableMap(new LinkedHashMap<String, Object>([
+            date: date,
+            string: string,
+            recurring: recurring,
+            lang: lang,
+            timezone: timezone,
+            timezonePresent: timezonePresent,
+            instant: instant?.toString(),
+            allDay: allDay
+        ]))
+    }
+
+    static TodoistDue fromSnapshotMap(Map raw) {
+        if (raw == null || !raw.date || !raw.instant) {
+            throw new IllegalArgumentException('Persisted Todoist Due requires date and instant')
+        }
+        boolean recurring = raw.recurring == true
+        boolean timezonePresent = raw.timezonePresent == true
+        String expression = raw.string?.toString()
+        String lang = raw.lang?.toString()
+        if (recurring && (!expression || !lang || !timezonePresent)) {
+            throw new IllegalArgumentException('Persisted recurring Todoist Due tuple is incomplete')
+        }
+        new TodoistDue(raw.date.toString(), expression, recurring, lang,
+            raw.timezone?.toString(), timezonePresent, Instant.parse(raw.instant.toString()),
+            raw.allDay == true)
     }
 
     String recurrenceFingerprintInput() {

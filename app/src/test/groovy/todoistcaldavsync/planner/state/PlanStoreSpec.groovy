@@ -5,12 +5,18 @@ import todoistcaldavsync.planner.domain.MemberInterval
 import todoistcaldavsync.planner.domain.Plan
 import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
+import todoistcaldavsync.planner.recurrence.LifecycleMarker
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
+import todoistcaldavsync.planner.recurrence.TodoistDue
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 class PlanStoreSpec extends Specification {
 
@@ -135,8 +141,43 @@ class PlanStoreSpec extends Specification {
         loaded.scheduledBlocks[0].memberIntervals[0].taskId == 'a'
         loaded.scheduledBlocks[0].memberIntervals[0].durationMinutes() == 20
         loaded.scheduledBlocks[0].memberIntervals[1].durationMinutes() == 10
-        json.contains('"schemaVersion" : 2') || json.contains('"schemaVersion": 2')
+        json.contains('"schemaVersion" : 3') || json.contains('"schemaVersion": 3')
         json.contains('memberIntervals')
+    }
+
+    def "round-trip preserves recurrence lifecycle fields required by apply"() {
+        given:
+        def due = TodoistDue.from([date: '2026-10-05T09:00:00', string: 'every day',
+            is_recurring: true, lang: 'en', timezone: null], ZoneId.of('America/New_York'),
+            { String value, ZoneId zone -> LocalDateTime.parse(value).atZone(zone).toInstant() })
+        def marker = new LifecycleMarker(taskId: 'recurring', completedCount: 4,
+            deadlineMode: 'managed', deadlineSource: 'initial_user_due',
+            deadlineDate: LocalDate.parse('2026-10-05'), pendingLegacySourceDate: null,
+            lastVerifiedDue: due.date, recurrenceFingerprint: 'sha256:test',
+            lastPlannerDue: due.date, markerGeneration: 3,
+            lastCommandId: '11111111-1111-1111-1111-111111111111')
+        String description = new LifecycleMarkerCodec().merge('Human text', marker)
+        def task = Task.builder().id('recurring').content('Recurring').labels(['smartplanner-seen'])
+            .priority(2).effectiveDuration(Duration.ofMinutes(30)).durationSource('test')
+            .todoistDue(due).deadlineDate(LocalDate.parse('2026-10-05')).description(description)
+            .createdAt(Instant.parse('2026-10-01T12:00:00Z'))
+            .updatedAt(Instant.parse('2026-10-02T12:00:00Z')).completedCount(4).build()
+        def plan = Plan.builder().id('recurrence-round-trip').createdAt(Instant.parse('2026-10-02T12:00:00Z'))
+            .mode('approval_required').tasks([task]).build()
+        def store = new PlanStore(dir)
+
+        when:
+        store.save(plan)
+        def restored = store.load(plan.id).tasks[0]
+
+        then:
+        restored.todoistDue.snapshotMap() == due.snapshotMap()
+        restored.completedCount == 4
+        restored.deadlineDate == LocalDate.parse('2026-10-05')
+        restored.description == description
+        restored.lifecycleMarker.markerGeneration == 3
+        restored.createdAt == Instant.parse('2026-10-01T12:00:00Z')
+        restored.updatedAt == Instant.parse('2026-10-02T12:00:00Z')
     }
 
     def "load returns null when not found"() {

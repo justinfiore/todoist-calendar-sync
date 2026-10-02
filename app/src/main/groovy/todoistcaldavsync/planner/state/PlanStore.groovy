@@ -10,6 +10,9 @@ import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.domain.TimeSlot
 import todoistcaldavsync.planner.domain.UnscheduledTask
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
+import todoistcaldavsync.planner.recurrence.MarkerStatus
+import todoistcaldavsync.planner.recurrence.TodoistDue
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.AtomicMoveNotSupportedException
@@ -20,6 +23,7 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 
 /**
  * Local preview plan snapshot persistence. No remote I/O.
@@ -32,7 +36,7 @@ import java.time.Instant
  */
 class PlanStore {
     /** Current on-disk snapshot schema. Bump when wire format changes incompatibly. */
-    static final int SCHEMA_VERSION = 2
+    static final int SCHEMA_VERSION = 3
     /** Hex chars of id hash used in collision-free filenames. */
     static final int FILENAME_HASH_HEX_CHARS = 16
 
@@ -387,7 +391,13 @@ class PlanStore {
             effectiveMinutes: t.effectiveDuration.toMinutes(),
             durationSource  : t.durationSource,
             manual          : t.manual,
-            allDayDue       : t.allDayDue
+            allDayDue       : t.allDayDue,
+            todoistDue      : t.todoistDue?.snapshotMap(),
+            deadlineDate    : t.deadlineDate?.toString(),
+            description     : t.description,
+            createdAt       : t.createdAt?.toString(),
+            updatedAt       : t.updatedAt?.toString(),
+            completedCount  : t.completedCount
         ]
     }
 
@@ -413,6 +423,10 @@ class PlanStore {
                     "Invalid nativeDuration for task ${m.id}: ${m.nativeDuration}", path, 'parse', e)
             }
         }
+        TodoistDue todoistDue = m.todoistDue instanceof Map ?
+            TodoistDue.fromSnapshotMap(m.todoistDue as Map) : null
+        String description = m.description?.toString() ?: ''
+        def markerRead = new LifecycleMarkerCodec().read(description)
         return Task.builder()
             .id(m.id.toString())
             .content(m.content?.toString() ?: '')
@@ -427,6 +441,13 @@ class PlanStore {
             .durationSource(m.durationSource?.toString() ?: 'default')
             .manual(Boolean.valueOf(m.manual?.toString() ?: 'false'))
             .allDayDue(Boolean.valueOf(m.allDayDue?.toString() ?: 'false'))
+            .todoistDue(todoistDue)
+            .deadlineDate(m.deadlineDate ? LocalDate.parse(m.deadlineDate.toString()) : null)
+            .description(description)
+            .createdAt(m.createdAt ? parseInstant(m.createdAt, "task[${m.id}].createdAt", path) : null)
+            .updatedAt(m.updatedAt ? parseInstant(m.updatedAt, "task[${m.id}].updatedAt", path) : null)
+            .completedCount(m.completedCount != null ? m.completedCount as long : 0L)
+            .lifecycleMarker(markerRead.status == MarkerStatus.VALID ? markerRead.marker : null)
             .build()
     }
 

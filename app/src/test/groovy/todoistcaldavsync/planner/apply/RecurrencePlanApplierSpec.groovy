@@ -7,10 +7,13 @@ import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.recurrence.*
 import todoistcaldavsync.planner.state.ApplicationStateStore
+import todoistcaldavsync.planner.state.PlanStore
 
 import java.nio.file.Files
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 class RecurrencePlanApplierSpec extends Specification {
     static final String CALENDAR = 'Todoist Planned'
@@ -18,7 +21,9 @@ class RecurrencePlanApplierSpec extends Specification {
     def "two native occurrences use distinct UIDs and retain the historical event"() {
         given:
         def dir = Files.createTempDirectory('recurrence-apply')
+        def plansDir = Files.createTempDirectory('recurrence-plan-store')
         def state = new ApplicationStateStore(dir)
+        def planStore = new PlanStore(plansDir)
         def calendar = new InMemoryCalendarGateway(CALENDAR, true)
         def config = PlannerConfig.fromMap(planner: [mode: 'approval_required', timezone: 'America/New_York',
             output_calendar: CALENDAR,
@@ -31,12 +36,15 @@ class RecurrencePlanApplierSpec extends Specification {
         TodoistLifecycleGateway todoist = lifecycleGateway(raw)
         def applier = new PlanApplier(config, new ManagedCalendarWriteGateway(calendar, CALENDAR),
             calendar, todoist, todoist, state, { Instant.parse('2026-10-02T12:00:00Z') })
-        def first = plan(Task.fromTodoistMap(raw, config.durationResolver, config.manualLabel, config.timezone),
+        def firstPreview = plan(Task.fromTodoistMap(raw, config.durationResolver, config.manualLabel, config.timezone),
             'plan-1', Instant.parse('2026-10-05T14:00:00Z'))
+        planStore.save(firstPreview)
+        def first = planStore.load(firstPreview.id)
 
         when:
         def firstReceipt = applier.apply(first, approval(first))
         String firstUid = firstReceipt.items[0].eventUid
+        String firstDue = raw.due.date
 
         and: 'Todoist natively advances and lifecycle polling has verified the next occurrence'
         raw.completed_count = 1
@@ -45,8 +53,10 @@ class RecurrencePlanApplierSpec extends Specification {
         raw.deadline = [date: '2026-10-06']
         raw.description = codec.merge('Human description', marker(1,
             '2026-10-06T09:00:00', '2026-10-06', 3))
-        def second = plan(Task.fromTodoistMap(raw, config.durationResolver, config.manualLabel, config.timezone),
+        def secondPreview = plan(Task.fromTodoistMap(raw, config.durationResolver, config.manualLabel, config.timezone),
             'plan-2', Instant.parse('2026-10-06T15:00:00Z'))
+        planStore.save(secondPreview)
+        def second = planStore.load(secondPreview.id)
         def secondReceipt = applier.apply(second, approval(second))
         String secondUid = secondReceipt.items[0].eventUid
         def events = calendar.fetchEvents(Instant.parse('2026-10-01T00:00:00Z'),
@@ -54,11 +64,78 @@ class RecurrencePlanApplierSpec extends Specification {
 
         then:
         firstReceipt.success()
+        firstDue == '2026-10-05T10:00:00'
+        raw.due.timezone == 'America/New_York'
         secondReceipt.success()
         firstUid != secondUid
         events*.uid.toSet() == [firstUid, secondUid] as Set
         events.every { it.description.contains('https://app.todoist.com/app/task/series-1') }
         state.loadHistoricalMappings().keySet() == ['series-1:0', 'series-1:1'] as Set
+
+        cleanup:
+        dir?.toFile()?.deleteDir()
+        plansDir?.toFile()?.deleteDir()
+    }
+
+    def "floating recurrence receives planner-zone civil time and preserves explicit null timezone"() {
+        expect:
+        PlanApplier.formatRecurringDueIso(
+            Instant.parse('2026-10-05T14:30:00Z'),
+            TodoistDue.from([date: '2026-10-05T09:00:00', string: 'every day',
+                is_recurring: true, lang: 'en', timezone: null], ZoneId.of('America/New_York'),
+                { String value, ZoneId zone -> LocalDateTime.parse(value).atZone(zone).toInstant() }),
+            ZoneId.of('America/New_York')) == '2026-10-05T10:30:00'
+    }
+
+    def "retry after marker success and rate-limited Due write completes without duplicate event"() {
+        given:
+        def dir = Files.createTempDirectory('recurrence-rate-limit-retry')
+        def calendar = new InMemoryCalendarGateway(CALENDAR, true)
+        def config = PlannerConfig.fromMap(planner: [mode: 'approval_required', timezone: 'America/New_York',
+            output_calendar: CALENDAR,
+            availability: [working_windows: [weekday: ['09:00-17:00']],
+                calendars: [[calendar: CALENDAR, default_role: 'managed_output']]],
+            tasks: [recurrence: [enabled: true, rollout_cutoff: '2026-01-01T00:00:00Z']]])
+        Map raw = recurringRaw(0, '2026-10-05T09:00:00', '2026-10-05',
+            marker(0, '2026-10-05T09:00:00', '2026-10-05', 1))
+        int dueAttempts = 0
+        TodoistLifecycleGateway todoist = [
+            fetchTasks: { -> [new LinkedHashMap(raw)] },
+            fetchTask: { String ignored -> new LinkedHashMap(raw) },
+            updateLifecycleFields: { mutation ->
+                raw.description = mutation.description
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
+            },
+            updateRecurringDue: { String ignored, TodoistDue due, String replacement, String commandId ->
+                dueAttempts++
+                if (dueAttempts == 1) {
+                    throw new TodoistRestGateway.TodoistGatewayException(
+                        'HTTP_STATUS', 'Todoist Sync failed with HTTP 429', null, 429)
+                }
+                raw.due = new LinkedHashMap(due.syncTuple(replacement))
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+            },
+            updateTaskDue: { String ignored, String value -> throw new AssertionError('REST Due write used') },
+            updateTaskDeadline: { String ignored, String value -> throw new AssertionError('Deadline write used') },
+            syncItems: { String ignored -> throw new AssertionError('poll not expected') }
+        ] as TodoistLifecycleGateway
+        def proposed = plan(Task.fromTodoistMap(raw, config.durationResolver, config.manualLabel, config.timezone),
+            'rate-limit-plan', Instant.parse('2026-10-05T14:00:00Z'))
+        def applier = new PlanApplier(config, new ManagedCalendarWriteGateway(calendar, CALENDAR),
+            calendar, todoist, todoist, new ApplicationStateStore(dir),
+            { Instant.parse('2026-10-02T12:00:00Z') })
+
+        when:
+        def first = applier.apply(proposed, approval(proposed))
+        def second = applier.apply(proposed, approval(proposed))
+
+        then:
+        first.overallStatus == ApplyItemStatus.FAILED
+        second.success()
+        dueAttempts == 2
+        raw.due.date == '2026-10-05T10:00:00'
+        calendar.fetchEvents(Instant.parse('2026-10-01T00:00:00Z'),
+            Instant.parse('2026-10-10T00:00:00Z')).size() == 1
 
         cleanup:
         dir?.toFile()?.deleteDir()

@@ -117,7 +117,8 @@ final class Task {
             .todoistDue(todoistDue)
             .deadlineDate(deadlineDate)
             .description(description)
-            .createdAt(parseTimestamp(raw.created_at ?: raw.createdAt, 'created_at'))
+            .createdAt(parseTimestamp(raw.created_at ?: raw.createdAt ?: raw.added_at ?: raw.addedAt,
+                'created_at/added_at'))
             .updatedAt(parseTimestamp(raw.updated_at ?: raw.updatedAt, 'updated_at'))
             .completedCount(completedCount)
             .lifecycleMarker(marker)

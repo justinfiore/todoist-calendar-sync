@@ -37,7 +37,8 @@ final class RecurrenceLifecycleManager {
             case LifecycleState.ADVANCED:
                 return advance(live, classification)
             case LifecycleState.INITIALIZED:
-                return LifecycleTransition.noop('current')
+                return has(live, config.recurrence.onboardLabel) ? finalizeOnboarding(live) :
+                    LifecycleTransition.noop('current')
             default:
                 return LifecycleTransition.frozen(classification.reason ?: classification.state.name().toLowerCase())
         }
@@ -57,15 +58,15 @@ final class RecurrenceLifecycleManager {
         LocalDate deadline = existingDeadline ? task.deadlineDate : (managed ? source : null)
         List<String> labels = new ArrayList<>(task.labels)
         if (managed && !has(task, config.recurrence.seenLabel)) labels << config.recurrence.seenLabel
-        LifecycleMarker marker = marker(task, deadline, managed ? 'managed' : 'legacy', deadlineSource,
+        LifecycleMarker initialMarker = marker(task, deadline, managed ? 'managed' : 'legacy', deadlineSource,
             managed ? null : source, 1L)
-        Task verified = writer.write(task, marker, deadline?.toString(), labels)
+        Task verified = writer.write(task, initialMarker, deadline?.toString(), labels)
         if (requested && managed) {
             List<String> finalLabels = verified.labels.findAll {
                 !it.equalsIgnoreCase(config.recurrence.onboardLabel)
             }
             LifecycleMarker finalMarker = marker(verified, deadline, 'managed', deadlineSource,
-                null, marker.markerGeneration + 1L)
+                null, initialMarker.markerGeneration + 1L)
             verified = writer.write(verified, finalMarker, deadline?.toString(), finalLabels)
         }
         new LifecycleTransition('initialized', verified, 0, false)
@@ -88,6 +89,17 @@ final class RecurrenceLifecycleManager {
             null, staged.markerGeneration + 1L)
         verified = writer.write(verified, committed, deadline.toString(), finalLabels)
         new LifecycleTransition('onboarded', verified, 0, false)
+    }
+
+    private LifecycleTransition finalizeOnboarding(Task task) {
+        LifecycleMarker previous = task.lifecycleMarker
+        List<String> finalLabels = task.labels.findAll {
+            !it.equalsIgnoreCase(config.recurrence.onboardLabel)
+        }
+        LifecycleMarker committed = marker(task, previous.deadlineDate, previous.deadlineMode,
+            previous.deadlineSource, previous.pendingLegacySourceDate, previous.markerGeneration + 1L)
+        Task verified = writer.write(task, committed, previous.deadlineDate?.toString(), finalLabels)
+        new LifecycleTransition('onboarding_finalized', verified, 0, false)
     }
 
     private LifecycleTransition advance(Task task, LifecycleClassification classification) {
