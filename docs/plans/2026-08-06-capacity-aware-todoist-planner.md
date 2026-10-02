@@ -1,5 +1,11 @@
 # Capacity-Aware Todoist Planner Implementation Plan
 
+> **Historical plan.** This document records the original August design and implementation sequence.
+> Its blanket Deadline-invariance and fixed-Due rules were later refined for native recurring tasks by
+> `openspec/changes/add-deadline-recurrence-support/`. Current behavior is documented in
+> `docs/SMART_PLANNER_CONFIGURATION.md` and `ARCHITECTURE.md`; do not use this plan as the operational
+> recurrence contract.
+
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** Evolve `todoist-calendar-sync` from a due-date-to-calendar renderer into a capacity-aware planner that uses Todoist deadlines, calendars, task metadata, weather, and user policy to propose and safely apply realistic daily, short-range, and medium-range plans.

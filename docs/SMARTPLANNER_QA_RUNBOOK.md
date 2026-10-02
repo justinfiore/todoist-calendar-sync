@@ -107,7 +107,8 @@ todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
   plan ID/version/hash/diff, classification, unscheduled reasons, and local state changes.
 - [ ] Repeat preview and prove stable output and zero Todoist or Google Calendar mutations.
 - [ ] Review evidence for global UID collision checks, managed-output routing, no credential leakage,
-  and Todoist deadline invariance.
+  ordinary/unmanaged Todoist Deadline invariance, plus only the explicitly expected recurrence
+  lifecycle Deadline proposals when that feature is enabled.
 - [ ] Obtain explicit review approval before changing from `preview`.
 
 ## E. Refusal and scoped-write gates
@@ -115,8 +116,9 @@ todoist-caldav-sync -f .qa/smartplanner-qa.yaml -l conf/log4j.groovy \
 - [ ] In `approval_required`, preview again; apply once without approval and once with a stale/wrong
   hash. Require refused receipts and zero remote writes.
 - [ ] Back up/export providers and all four state directories. Approve one exact small plan, apply once,
-  and prove only the expected owned managed-calendar event and Todoist due time changed; deadlines are
-  byte-for-byte unchanged.
+  and prove only the expected owned managed-calendar event and Todoist Due changed; ordinary/unmanaged
+  Deadlines are byte-for-byte unchanged. Any recurrence-lifecycle Deadline transition must match its
+  authorized provenance and verified marker.
 - [ ] Rerun the same apply and prove idempotent/no-op behavior.
 - [ ] With separate approval, exercise `apply-safe` using one ordinary and one protected change; prove
   only the ordinary change occurred and all protected changes are withheld.
@@ -234,10 +236,18 @@ disabled.
 ### Provider-normalization and recovery invariants
 
 The 2026-10-02 disposable campaign established additional operator-visible invariants. A recurring
-Todoist Due may contain a present-but-null `timezone`; this is a complete tuple, and recurring moves
-must send a planner/Due-zone civil datetime rather than a UTC `Z` value so Todoist does not reinterpret
-the wall-clock time or recurrence. Compare recurrence fingerprints independently of the changing Due
-date, but treat an actual recurrence timezone change as drift.
+Todoist Due may contain a present-but-null `timezone`; this is a complete floating-time tuple, and its
+moves must send a planner-zone civil datetime rather than a UTC `Z` value. A Due with a non-null IANA
+timezone is fixed-zone instead: send the replacement as a UTC instant while preserving that timezone.
+The live fixed-zone case retained 03:30 local time across a DST boundary; sending a civil datetime
+instead normalized the recurrence to floating time. Compare recurrence fingerprints independently of
+the changing Due date, but treat an actual recurrence timezone change as drift.
+
+Advance recurrence through Todoist's native recurring-completion behavior. In the live fixed-zone
+case, simplified REST and Sync `close` operations reported success but removed the future Due;
+SmartPlanner does not call either operation to complete tasks. Retain the full tuple and verify the
+next active occurrence after any completion-path QA rather than treating a successful response as
+proof of advancement.
 
 Persisted plans used by `apply` must use the current plan schema and retain the complete Due tuple,
 Deadline, lifecycle marker source, timestamps, and `completed_count`. If a plan predates that schema,

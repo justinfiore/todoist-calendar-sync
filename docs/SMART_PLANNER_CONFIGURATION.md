@@ -16,7 +16,10 @@ or state paths are missing. Relative state paths resolve from the config file di
 
 The calendar write boundary accepts only deterministic planner UIDs with the ownership marker on
 `planner.output_calendar`. UID lookup searches every configured calendar; cross-calendar collisions
-are errors. Todoist writes send only `due_datetime`; the production adapter refuses deadline writes.
+are errors. Ordinary Todoist scheduling writes send only fixed `due_datetime`, and that path refuses
+Deadline writes. Native recurring tasks instead use Todoist Sync `item_update`, preserving the opaque
+recurrence tuple. The explicitly enabled recurrence lifecycle is the only path permitted to initialize
+or advance Deadline, and it verifies the live postcondition before Calendar mutation.
 
 ## Production integration
 
@@ -177,13 +180,17 @@ printed by the launcher locally; the callback returns through the tunnel without
 `rollout_cutoff` is mandatory when enabled. Tasks created at or after it are classified before the
 planner first changes Due. A user Due contributes only its local calendar date to Todoist Deadline;
 an existing Deadline is preserved; an initially undated task records the later planner Due as
-planner-authored and never copies it back into Deadline.
+planner-authored and never copies it back into Deadline. The cutoff compares Todoist creation time;
+missing creation time is treated as legacy. Lifecycle processing applies only to native recurring
+tasks.
 
 Pre-cutoff Due-only tasks remain recurrence-safe but are only logged as legacy candidates. Add
 `smartplanner-onboard` in Todoist to migrate one candidate. SmartPlanner preserves its original Due
 date in the description marker, writes and verifies Deadline and `smartplanner-seen`, and removes the
-request label last. `%hard` means the date-only Deadline is a finish-by constraint. Without it,
-Deadline is a soft target and work may be placed late with an increasing penalty. Hard urgency is
+request label last. A pre-cutoff task that already has Deadline can be classified without conversion
+or the request label. The configured `hard` label means the date-only Deadline is a finish-by
+constraint. Without it, Deadline is a soft target and work may be placed late with an increasing
+penalty. Hard urgency is
 boosted only inside `hard_deadline_soon_days`; outside the window, Todoist priority remains the
 ordinary ordering signal.
 
@@ -191,6 +198,15 @@ The final description suffix beginning `**SmartPlanner metadata — do not edit*
 lifecycle authority. Human text before it remains owned by the user. A malformed, moved, duplicated,
 missing, or unsupported marker freezes writes. Rollback means disable recurrence apply and return to
 preview; it deliberately leaves marker, sentinel, mappings, and historical events intact for repair.
+Disabling recurrence also restores the legacy scheduler policy in which every Deadline is hard, so
+compare a fresh disabled preview before treating rollback output as equivalent.
+
+Recurring Due movement preserves Todoist's full opaque tuple. A floating tuple (`timezone` present
+but null) receives a planner-zone civil datetime; a fixed tuple with an IANA timezone receives a UTC
+instant while retaining that timezone, preserving local wall-clock time across DST. Users complete
+recurring tasks through Todoist's native recurring-completion behavior. SmartPlanner only observes the
+result: it does not complete tasks, uncomplete them, or use Todoist's simplified REST/Sync `close`
+operations, which live QA found can remove the future Due of a fixed-zone recurrence.
 
 Mobile and voice capture use the same Todoist workflow: capture the task normally, then add its native
 recurrence and Due. Post-cutoff tasks are classified automatically; pre-cutoff tasks stay in legacy-log
@@ -205,3 +221,28 @@ they agree; deterministic UID lookup then rebuilds the active index without crea
 Conflicting, corrupt, or duplicate provider authority is a stop condition. Rollback never deletes
 provider events or metadata; disposable or obsolete history is removed only by an explicitly approved,
 inventory-based cleanup using the QA runbook.
+
+The daemon starts a dedicated Todoist `items` Sync poll immediately and repeats it every five minutes.
+Its cursor and pending-delta inbox are atomically stored at
+`applications_dir/recurrence/todoist-items-sync.json`, isolated from the legacy synchronizer token.
+Restart drains the inbox before another fetch. Missing/corrupt cursor state bootstraps a full item
+snapshot; empty deltas remain incremental no-ops. Poll transport/rate-limit failures retain the state
+for the next cadence, while required-provider 401/403 responses stop the daemon. Todoist mutations are
+not blindly retried: ambiguous results require a live re-read and matching preconditions.
+
+Occurrence history is also durable under `applications_dir`: the active mapping remains indexed by
+task, while `mapping-history.json` retains mappings by `(task ID, completed_count)`. Back up and restore
+the complete applications directory with the other three state directories.
+
+### Recurrence reconciliation guide
+
+| Observed state | Required operator action |
+| --- | --- |
+| Same count with a user Due or recurrence-rule edit | Leave provider state untouched; review the new intent and generate a fresh preview before reconciling. |
+| User Deadline or `hard` edit | Treat the old plan/approval as stale and replan from the live value. |
+| Missing sentinel with valid marker | Repair or explicitly retire management; never repeat first-observation conversion. |
+| Missing, malformed, duplicate, moved, or unsupported marker | Preserve the raw description and stop writes until an explicit repair is reviewed. |
+| Recurrence removed | Stop lifecycle advancement and explicitly reconcile the task into ordinary non-recurring planning. |
+| `completed_count` jumps | Schedule only Todoist's current active occurrence; retain known history and review the reported unobserved gap. |
+| Counter regression or incomplete recurrence tuple | Stop writes; capture provider state and investigate rather than rewriting authority. |
+| Todoist committed but Calendar failed, or response was ambiguous | Preserve receipts/state, re-read both providers, and resume only the same occurrence after postconditions are classified. |

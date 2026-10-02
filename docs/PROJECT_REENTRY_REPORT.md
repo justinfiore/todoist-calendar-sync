@@ -4,6 +4,13 @@
 **Repository:** `justinfiore/todoist-calendar-sync`
 **Default branch assessed:** `master` at [`42d33c3`](https://github.com/justinfiore/todoist-calendar-sync/commit/42d33c3)
 
+> **Historical assessment.** This report intentionally preserves the October 1 branch/PR and risk
+> snapshot. The recurring-Due finding below was subsequently addressed by
+> [PR #13](https://github.com/justinfiore/todoist-calendar-sync/pull/13) and the disposable campaign in
+> `docs/qa/evidence/2026-10-02-recurrence-deadline/`. Other Slack, Weather, LLM, CalDAV, legacy-sync,
+> and production-rollout findings remain open unless a later artifact explicitly closes them. Use
+> current operational guides—not this snapshot—for present recurrence behavior.
+
 ## Executive summary
 
 The project is not currently at a production-ready SmartPlanner release.

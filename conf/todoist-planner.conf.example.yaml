@@ -170,7 +170,10 @@ planner:
       seen_label: smartplanner-seen
       onboard_label: smartplanner-onboard
       hard_label: hard
+      # Compared with Todoist task creation time. Set to the enablement instant;
+      # missing/pre-cutoff creation times remain legacy until explicitly onboarded.
       rollout_cutoff: '2026-10-02T00:00:00Z'
+      # Only controls approaching-hard urgency; Due time remains a preference.
       hard_deadline_soon_days: 5
     default_duration_minutes: 30
     duration_labels:

@@ -128,6 +128,37 @@ Preview performs Todoist/selected-calendar-provider reads and local plan persist
 hash/diff, calendar classification, unscheduled tasks, and plan file before enabling a write-capable
 mode.
 
+### Optional: native recurring tasks and Deadline onboarding
+
+The example keeps `planner.tasks.recurrence.enabled: false`. Leave it disabled until the isolated
+recurrence campaign in `docs/SMARTPLANNER_QA_RUNBOOK.md` passes for your provider/account. To enable
+it, set an ISO-8601 `rollout_cutoff` to the deployment instant and keep the default distinct labels:
+
+```yaml
+planner:
+  tasks:
+    recurrence:
+      enabled: true
+      rollout_cutoff: '2026-10-02T00:00:00Z'
+      seen_label: smartplanner-seen
+      onboard_label: smartplanner-onboard
+      hard_label: hard
+      hard_deadline_soon_days: 5
+```
+
+The cutoff compares Todoist task creation time. A post-cutoff recurring task with a user Due can copy
+that Due's local date into Deadline before SmartPlanner schedules it. Missing creation time is treated
+as legacy. Pre-cutoff Due-only tasks remain recurrence-safe and are logged for review; add
+`smartplanner-onboard` to convert one, after which verified initialization adds
+`smartplanner-seen` and removes the request label. An existing Deadline is preserved.
+
+Due time is always a scheduling preference. Deadline is soft unless `hard` is present; `hard` makes
+the local date a finish-by boundary and adds urgency only inside the configured soon window. The
+long-running daemon detects native completions on a fixed five-minute Todoist items poll. Its separate
+cursor/inbox lives at `applications_dir/recurrence/todoist-items-sync.json`, so back up and restore it
+with the applications store. Disabling recurrence stops this lifecycle but also returns scheduling to
+the legacy all-Deadlines-hard policy; generate and inspect a fresh preview before and after toggling it.
+
 ### Optional: SmartPlanner Google Calendar API bootstrap
 
 For Google, select `planner.integration.calendar.provider: google_calendar_api`, remove the CalDAV
