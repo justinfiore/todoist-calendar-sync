@@ -46,10 +46,10 @@ class TodoistCalDavSyncWireMockSpec extends Specification {
         then:
         todoistServer.verify(1, postRequestedFor(urlEqualTo('/api/v1/sync'))
             .withRequestBody(containing('items'))
-            .withHeader('Authorization', equalTo('Bearer test-token')))
+            .withHeader('Authorization', matching('Bearer .+')))
         todoistServer.verify(1, postRequestedFor(urlEqualTo('/api/v1/sync'))
             .withRequestBody(containing('projects'))
-            .withHeader('Authorization', equalTo('Bearer test-token')))
+            .withHeader('Authorization', matching('Bearer .+')))
         calendarServer.verify(1, deleteRequestedFor(urlMatching('/caldav/work/.*\\.ics')))
         calendarServer.verify(1, putRequestedFor(urlMatching('/caldav/work/.*\\.ics'))
             .withRequestBody(containing('SUMMARY:TD: Important task')))

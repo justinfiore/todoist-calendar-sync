@@ -14,6 +14,11 @@ import todoistcaldavsync.planner.messaging.MessagingService
 import todoistcaldavsync.planner.policy.EventClassifier
 import todoistcaldavsync.planner.report.CapacityReportFormatter
 import todoistcaldavsync.planner.report.CapacityReportService
+import todoistcaldavsync.planner.recurrence.ItemsSyncStateStore
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerWriter
+import todoistcaldavsync.planner.recurrence.PollResult
+import todoistcaldavsync.planner.recurrence.RecurrenceLifecycleManager
+import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
 import todoistcaldavsync.planner.scheduling.AvailabilityCalculator
 import todoistcaldavsync.planner.scheduling.DeterministicScheduler
 import todoistcaldavsync.planner.state.*
@@ -41,6 +46,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private final Supplier<Instant> clock
     private final Closure<WeatherReadGateway> weatherGatewayFactory
     private final Closure aiSuggestionProvider
+    private final TodoistItemsPoller itemsPoller
 
     ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock = { Instant.now() }) {
         this(configFile, clock,
@@ -89,6 +95,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.todoistWrite = todoistGateway
         this.calendarRead = calendarGateway
         this.calendarWrite = calendarGateway
+        this.itemsPoller = createItemsPoller(todoistGateway)
     }
 
     /** Dependency-injected composition seam used by hermetic end-to-end tests/embedders. */
@@ -117,6 +124,32 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.todoistWrite = todoistWrite
         this.calendarRead = calendarRead
         this.calendarWrite = calendarWrite
+        this.itemsPoller = createItemsPoller(todoistRead)
+    }
+
+    private TodoistItemsPoller createItemsPoller(Object gateway) {
+        if (!plannerConfig.recurrence.enabled) return null
+        if (!(gateway instanceof TodoistLifecycleGateway)) {
+            throw new IllegalArgumentException(
+                'recurrence lifecycle requires a TodoistLifecycleGateway with Sync support')
+        }
+        TodoistLifecycleGateway lifecycle = gateway as TodoistLifecycleGateway
+        def manager = new RecurrenceLifecycleManager(plannerConfig,
+            new LifecycleMarkerWriter(lifecycle, plannerConfig),
+            { String message -> System.err.println("SmartPlanner recurrence: ${message}") })
+        def state = new ItemsSyncStateStore(integrationConfig.applicationsDir.resolve('recurrence'))
+        new TodoistItemsPoller(lifecycle, state, { Map item ->
+            if (item.is_deleted == true || item.isDeleted == true) return
+            Task task = Task.fromTodoistMap(item, plannerConfig.durationResolver,
+                plannerConfig.manualLabel, plannerConfig.timezone)
+            manager.process(task)
+        })
+    }
+
+    /** Execute one crash-safe incremental Todoist items lifecycle poll. */
+    PollResult pollTodoistItems() {
+        if (itemsPoller == null) throw new IllegalStateException('recurrence lifecycle is disabled')
+        itemsPoller.poll()
     }
 
     /** Read-only live capacity operation. */

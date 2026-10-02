@@ -5,10 +5,15 @@ import groovy.json.JsonSlurper
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
+import todoistcaldavsync.planner.adapters.LifecycleMutation
 import todoistcaldavsync.planner.adapters.SlackMessagingGateway
+import todoistcaldavsync.planner.adapters.TodoistCommandResult
+import todoistcaldavsync.planner.adapters.TodoistCommandState
+import todoistcaldavsync.planner.adapters.TodoistLifecycleGateway
 import todoistcaldavsync.planner.adapters.TodoistReadGateway
 import todoistcaldavsync.planner.adapters.TodoistWriteGateway
 import todoistcaldavsync.planner.adapters.TodoistRestGateway
+import todoistcaldavsync.planner.adapters.TodoistSyncPage
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.Message
 import todoistcaldavsync.planner.messaging.InMemoryMessagingSurface
@@ -16,6 +21,7 @@ import todoistcaldavsync.planner.messaging.MessagingEvent
 import todoistcaldavsync.planner.messaging.MessagingSurface
 import todoistcaldavsync.planner.messaging.PublishedMessage
 import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
+import todoistcaldavsync.planner.recurrence.TodoistDue
 import todoistcaldavsync.planner.state.ConversationStore
 
 import java.nio.file.Files
@@ -35,6 +41,7 @@ class SmartPlannerDaemonSpec extends Specification {
 
     private static final class ManualScheduler extends ScheduledThreadPoolExecutor {
         final List<Runnable> fixed = []
+        final List<Long> fixedDelayMillis = []
         final List<Map> oneShot = []
 
         ManualScheduler() { super(1) }
@@ -42,6 +49,7 @@ class SmartPlannerDaemonSpec extends Specification {
         @Override
         ScheduledFuture<?> scheduleWithFixedDelay(Runnable command, long initialDelay, long delay, TimeUnit unit) {
             fixed << command
+            fixedDelayMillis << TimeUnit.MILLISECONDS.convert(delay, unit)
             super.schedule({ } as Runnable, 1L, TimeUnit.DAYS)
         }
 
@@ -49,6 +57,27 @@ class SmartPlannerDaemonSpec extends Specification {
         ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
             oneShot << [command: command, delayMillis: TimeUnit.MILLISECONDS.convert(delay, unit)]
             super.schedule({ } as Runnable, 1L, TimeUnit.DAYS)
+        }
+    }
+
+    private static final class LifecycleGateway extends InMemoryTodoistGateway implements TodoistLifecycleGateway {
+        final List<String> syncTokens = []
+
+        LifecycleGateway(List<Map> tasks = []) { super(tasks) }
+
+        @Override Map fetchTask(String taskId) { getTask(taskId) }
+        @Override TodoistCommandResult updateRecurringDue(String taskId, TodoistDue liveDue,
+                                                           String replacementDate, String commandId) {
+            new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+        }
+        @Override TodoistCommandResult updateLifecycleFields(LifecycleMutation mutation) {
+            new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
+        }
+        @Override TodoistSyncPage syncItems(String syncToken) {
+            syncTokens << syncToken
+            syncToken == '*'
+                ? new TodoistSyncPage('bootstrap-token', true, '2026-08-16T13:00:00Z', [])
+                : new TodoistSyncPage('caught-up-token', false, null, [])
         }
     }
 
@@ -115,8 +144,9 @@ class SmartPlannerDaemonSpec extends Specification {
     private List build(File stateRoot, AtomicReference<Instant> now,
                        MessagingSurface surface = new InMemoryMessagingSurface(), Closure aiProvider = null,
                        TodoistReadGateway todoistRead = null, TodoistWriteGateway todoistWrite = null,
-                       ScheduledThreadPoolExecutor scheduler = null, ConversationStore conversationStore = null) {
-        Map root = config(stateRoot)
+                       ScheduledThreadPoolExecutor scheduler = null, ConversationStore conversationStore = null,
+                       Map configExtra = [:]) {
+        Map root = config(stateRoot, configExtra)
         if (aiProvider != null) {
             root.planner.ai = [enabled: true, provider: 'fixture', model: 'fixture-model',
                 allowed_suggestion_types: ['conversational_feedback_interpretation', 'temporary_planning_overrides']]
@@ -474,6 +504,35 @@ class SmartPlannerDaemonSpec extends Specification {
         surface.proposals.size() == 2
         daemon.statusSnapshot().daily.state == 'WAITING_FOR_FEEDBACK'
         daemon.statusSnapshot().daily.nextRunAt == initial.plusSeconds(10).toString()
+
+        cleanup:
+        daemon?.close()
+    }
+
+    def 'recurrence-enabled daemon schedules five-minute item sync and catches up after bootstrap'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-recurrence-schedule-').toFile()
+        def now = new AtomicReference<>(initial)
+        def scheduler = new ManualScheduler()
+        def gateway = new LifecycleGateway()
+        Map tasks = [scheduling_eligible_labels: ['schedule'], default_duration_minutes: 30,
+            recurrence: [enabled: true, rollout_cutoff: '2026-01-01T00:00:00Z']]
+        SmartPlannerDaemon daemon = build(state, now, new InMemoryMessagingSurface(), null,
+            gateway, gateway, scheduler, null, [tasks: tasks])[0]
+
+        when:
+        daemon.start()
+
+        then: 'two planning loops plus the independent item-delta lifecycle loop are registered'
+        scheduler.fixed.size() == 3
+        scheduler.fixedDelayMillis == [10_000L, 86_400_000L, 300_000L]
+        gateway.syncTokens.empty
+
+        when: 'the recurrence loop runs without completion or activity feeds'
+        scheduler.fixed[2].run()
+
+        then: 'bootstrap is immediately followed by an incremental empty-state catch-up'
+        gateway.syncTokens == ['*', 'bootstrap-token']
 
         cleanup:
         daemon?.close()
