@@ -1,0 +1,105 @@
+{
+  "cases": [
+    {
+      "case": "daily-canary",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "existing-deadline",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "explicit-time",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "monthly",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "rich-weekday",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "strict-relative",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "timezone-attempt",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "weekday-specific",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "weekly-date-only",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    },
+    {
+      "case": "yearly",
+      "count_advanced_by_one": true,
+      "count_after": 2,
+      "count_before": 1,
+      "due_advanced": true,
+      "same_task_id": true,
+      "still_active": true,
+      "tuple_fields_preserved": true
+    }
+  ],
+  "cycle": "final-cycle-2"
+}

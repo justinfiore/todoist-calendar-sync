@@ -230,3 +230,22 @@ deltas; inventory both providers; and require zero leftovers. Sanitize copies, r
 scan, hash every evidence file, record hashes in the manifest, verify the manifest, and store explicit
 cleanup totals/status. If cleanup is not zero, the campaign is incomplete and the feature must remain
 disabled.
+
+### Provider-normalization and recovery invariants
+
+The 2026-10-02 disposable campaign established additional operator-visible invariants. A recurring
+Todoist Due may contain a present-but-null `timezone`; this is a complete tuple, and recurring moves
+must send a planner/Due-zone civil datetime rather than a UTC `Z` value so Todoist does not reinterpret
+the wall-clock time or recurrence. Compare recurrence fingerprints independently of the changing Due
+date, but treat an actual recurrence timezone change as drift.
+
+Persisted plans used by `apply` must use the current plan schema and retain the complete Due tuple,
+Deadline, lifecycle marker source, timestamps, and `completed_count`. If a plan predates that schema,
+regenerate preview rather than applying a snapshot that lacks recurrence authority.
+
+A retry after a partial Todoist write may encounter the exact original or exact intended marker/Due
+state. Re-read first, finish only the missing side with the same stable command identities, and verify
+the postcondition; never recreate an already-owned Calendar event. Likewise, restart drains a durable
+pending `items` inbox before fetching another delta. Todoist Sync creation time is `added_at` (legacy
+fixtures may use `created_at`), and deletion tombstones are acknowledged but excluded from active-task
+onboarding and scheduling.

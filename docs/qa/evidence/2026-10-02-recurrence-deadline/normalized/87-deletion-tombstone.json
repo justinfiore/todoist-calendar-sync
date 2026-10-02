@@ -1,0 +1,6 @@
+{
+  "creation_delta_processed": true,
+  "deletion_delta_processed": true,
+  "excluded_from_active_inventory": true,
+  "provider_tombstone_visible": true
+}

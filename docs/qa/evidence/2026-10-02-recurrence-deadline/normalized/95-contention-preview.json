@@ -1,0 +1,31 @@
+{
+  "explanation_codes": [
+    "unscheduled"
+  ],
+  "hard_urgent_before_ordinary": false,
+  "infeasible_hard_reported": true,
+  "scheduled": [],
+  "soft_overdue_scheduled": false,
+  "unscheduled": [
+    {
+      "case": "soft-overdue",
+      "code": "no_capacity",
+      "reason_present": true
+    },
+    {
+      "case": "hard-urgent",
+      "code": "deadline_infeasible",
+      "reason_present": true
+    },
+    {
+      "case": "hard-infeasible",
+      "code": "deadline_infeasible",
+      "reason_present": true
+    },
+    {
+      "case": "ordinary-high",
+      "code": "no_capacity",
+      "reason_present": true
+    }
+  ]
+}

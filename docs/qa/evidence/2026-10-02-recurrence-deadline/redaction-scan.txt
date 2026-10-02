@@ -1,0 +1,22 @@
+Scan target: docs/qa/evidence/2026-10-02-recurrence-deadline
+Scan date (UTC): 2026-10-02
+Result: PASS
+
+High-confidence credential patterns:
+  Google/OAuth credential material, provider authorization header values,
+  known provider key prefixes, and Slack webhook secret paths
+  matching files: 0
+
+Email-address pattern:
+  matching files: 0
+
+OAuth/consent/account URL pattern:
+  matching files: 0
+
+Repository checks:
+  tracked .qa/private or .qa/secrets files: 0
+  tracked credential/token JSON files: 0
+  only .qa.example fixture/config paths matched the broad '.qa' filename audit
+
+The scan intentionally covered sanitized tracked evidence, not ignored private
+credential stores. Private raw provider payloads and credentials remain untracked.
