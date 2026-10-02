@@ -99,10 +99,12 @@ class RecurrencePlanApplierSpec extends Specification {
         Map raw = recurringRaw(0, '2026-10-05T09:00:00', '2026-10-05',
             marker(0, '2026-10-05T09:00:00', '2026-10-05', 1))
         int dueAttempts = 0
+        int markerWrites = 0
         TodoistLifecycleGateway todoist = [
             fetchTasks: { -> [new LinkedHashMap(raw)] },
             fetchTask: { String ignored -> new LinkedHashMap(raw) },
             updateLifecycleFields: { mutation ->
+                markerWrites++
                 raw.description = mutation.description
                 new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
             },
@@ -133,6 +135,7 @@ class RecurrencePlanApplierSpec extends Specification {
         first.overallStatus == ApplyItemStatus.FAILED
         second.success()
         dueAttempts == 2
+        markerWrites == 1
         raw.due.date == '2026-10-05T10:00:00'
         calendar.fetchEvents(Instant.parse('2026-10-01T00:00:00Z'),
             Instant.parse('2026-10-10T00:00:00Z')).size() == 1

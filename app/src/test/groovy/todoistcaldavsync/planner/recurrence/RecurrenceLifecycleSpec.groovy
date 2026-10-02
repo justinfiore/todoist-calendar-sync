@@ -72,6 +72,21 @@ class RecurrenceLifecycleSpec extends Specification {
         task.todoistDue.instant.toString() == '2026-10-03T13:00:00Z'
     }
 
+    def "provider-normalized date and timezone alias retain fingerprint while zone drift does not"() {
+        given:
+        TodoistDue original = task([date: '2026-10-03T09:00:00', string: 'every day @ 09:00',
+            is_recurring: true, lang: 'en', timezone: null], 0).todoistDue
+        TodoistDue normalized = task([date: '2026-10-04T10:30:00', string: 'every day @ 09:00',
+            is_recurring: true, lang: 'en', time_zone: null], 1).todoistDue
+        TodoistDue drifted = task([date: '2026-10-04T10:30:00', string: 'every day @ 09:00',
+            is_recurring: true, lang: 'en', timezone: 'America/New_York'], 1).todoistDue
+
+        expect:
+        original.timezonePresent && normalized.timezonePresent
+        LifecycleSupport.fingerprint(normalized) == LifecycleSupport.fingerprint(original)
+        LifecycleSupport.fingerprint(drifted) != LifecycleSupport.fingerprint(original)
+    }
+
     def "marker codec preserves exact human prefix and canonical suffix without duplication"() {
         given:
         def codec = new LifecycleMarkerCodec()
@@ -616,15 +631,21 @@ class RecurrenceLifecycleSpec extends Specification {
         store.load().pendingItems*.id == ['a']
         syncCalls == 0
 
-        when:
+        when: 'a newly constructed process reopens the durable inbox'
         fail = false
-        def replay = poller.poll()
+        def restartedStore = new ItemsSyncStateStore(dir)
+        def restartedPoller = new TodoistItemsPoller(gateway, restartedStore, { Map item ->
+            processCalls++
+            assert item.id == 'a'
+        })
+        def replay = restartedPoller.poll()
 
         then:
         replay.status == 'processed'
         processCalls == 2
         syncCalls == 0
-        store.load().pendingItems.isEmpty()
+        restartedStore.load().syncToken == 'token-2'
+        restartedStore.load().pendingItems.isEmpty()
     }
 
     def "items poller immediately follows a full snapshot token and checkpoints its delta"() {

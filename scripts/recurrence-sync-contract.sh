@@ -12,4 +12,7 @@ fi
 
 exec ./gradlew :app:test \
   --tests 'todoistcaldavsync.planner.adapters.TodoistSyncGatewayWireMockSpec' \
-  --tests 'todoistcaldavsync.planner.recurrence.RecurrenceLifecycleSpec'
+  --tests 'todoistcaldavsync.planner.recurrence.RecurrenceLifecycleSpec' \
+  --tests 'todoistcaldavsync.planner.state.PlanStoreSpec' \
+  --tests 'todoistcaldavsync.planner.apply.RecurrencePlanApplierSpec' \
+  --tests 'todoistcaldavsync.planner.ProductionPlannerOrchestratorIntegrationSpec'

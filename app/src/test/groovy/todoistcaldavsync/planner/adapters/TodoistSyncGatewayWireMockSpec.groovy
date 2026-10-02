@@ -3,10 +3,12 @@ package todoistcaldavsync.planner.adapters
 import com.github.tomakehurst.wiremock.WireMockServer
 import groovy.json.JsonSlurper
 import spock.lang.Specification
+import todoistcaldavsync.planner.apply.PlanApplier
 import todoistcaldavsync.planner.domain.Task
 
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 import java.time.ZoneId
 import todoistcaldavsync.planner.recurrence.TodoistDue
 
@@ -45,7 +47,7 @@ class TodoistSyncGatewayWireMockSpec extends Specification {
             is_recurring: true, lang: 'en', timezone: 'America/New_York']]]]
     }
 
-    def "Sync item_update preserves an explicitly null floating timezone"() {
+    def "civil-time Sync item_update preserves an explicitly null floating recurrence tuple"() {
         given:
         String uuid = '12111111-1111-1111-1111-111111111111'
         server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(okJson(
@@ -54,14 +56,17 @@ class TodoistSyncGatewayWireMockSpec extends Specification {
             due: [date: '2026-10-03T09:00:00', string: 'every day @ 09:00',
                 is_recurring: true, lang: 'en', timezone: null]],
             new Task.DurationResolver(30, [:]), 'manual', ZoneId.of('America/New_York')).todoistDue
+        String replacement = PlanApplier.formatRecurringDueIso(
+            Instant.parse('2026-10-04T14:30:00Z'), due, ZoneId.of('America/New_York'))
 
         when:
-        gateway().updateRecurringDue('t1', due, '2026-10-04T09:00:00', uuid)
+        gateway().updateRecurringDue('t1', due, replacement, uuid)
 
         then:
+        replacement == '2026-10-04T10:30:00'
         Map form = parseForm(server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync')))[0].bodyAsString)
         new JsonSlurper().parseText(form.commands)[0].args.due == [
-            date: '2026-10-04T09:00:00', string: 'every day @ 09:00',
+            date: '2026-10-04T10:30:00', string: 'every day @ 09:00',
             is_recurring: true, lang: 'en', timezone: null]
     }
 
@@ -86,6 +91,44 @@ class TodoistSyncGatewayWireMockSpec extends Specification {
         def forms = server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync')))*.bodyAsString.collect { parseForm(it) }
         forms*.sync_token == ['*', 'one']
         forms*.resource_types == ['["items"]', '["items"]']
+    }
+
+    def "items Sync preserves added_at and deletion tombstone shapes"() {
+        given:
+        server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(okJson('''{
+          "sync_token":"next","items":[
+            {"id":"new","added_at":"2026-10-02T12:34:56Z","completed_count":0},
+            {"id":"gone","is_deleted":true}
+          ]
+        }''')))
+
+        when:
+        def page = gateway().syncItems('prior')
+
+        then:
+        page.items == [
+            [id: 'new', added_at: '2026-10-02T12:34:56Z', completed_count: 0],
+            [id: 'gone', is_deleted: true]
+        ]
+        Map form = parseForm(server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync')))[0].bodyAsString)
+        form.sync_token == 'prior'
+        form.resource_types == '["items"]'
+    }
+
+    def "HTTP 429 mutation is surfaced after one request without blind retry"() {
+        given:
+        server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(aResponse()
+            .withStatus(429).withHeader('Retry-After', '2').withBody('{"error":"rate_limited"}')))
+
+        when:
+        gateway().updateRecurringDue('t1', completeDue(), '2026-10-04T09:00:00',
+            '13111111-1111-1111-1111-111111111111')
+
+        then:
+        def error = thrown(TodoistRestGateway.TodoistGatewayException)
+        error.statusCode == 429
+        error.classification == 'HTTP_STATUS'
+        server.countRequestsMatching(postRequestedFor(urlEqualTo('/api/v1/sync')).build()).count == 1
     }
 
     def "lifecycle boundary alone can combine Deadline labels and description"() {
