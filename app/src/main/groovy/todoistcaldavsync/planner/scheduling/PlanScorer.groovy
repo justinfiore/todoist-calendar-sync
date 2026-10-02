@@ -56,8 +56,19 @@ class PlanScorer {
         if (task.deadline == null) {
             return 10L
         }
+        boolean hard = isHard(task)
         if (placementEnd != null && placementEnd.isAfter(task.deadline)) {
-            return INFEASIBLE
+            if (hard) return INFEASIBLE
+            long lateMinutes = Math.max(1L, Duration.between(task.deadline, placementEnd).toMinutes())
+            return -Math.min(800L, 100L + lateMinutes / 15L)
+        }
+        if (hard && config.recurrence?.enabled == true) {
+            Instant soonBoundary = now.atZone(config.timezone)
+                .plusDays(config.recurrence.hardDeadlineSoonDays).toInstant()
+            if (!task.deadline.isBefore(soonBoundary)) return 0L
+            long remainingMinutes = Math.max(0L, Duration.between(now, task.deadline).toMinutes())
+            long windowMinutes = Math.max(1L, Duration.between(now, soonBoundary).toMinutes())
+            return 600L + Math.round(600d * (1d - Math.min(1d, remainingMinutes / (double) windowMinutes)))
         }
         Instant horizon = rangeEnd ?: (now + Duration.ofDays(14))
         long totalSec = Math.max(1L, Duration.between(now, horizon).seconds)
@@ -173,7 +184,7 @@ class PlanScorer {
         if (start == null || end == null || !end.isAfter(start)) {
             return INFEASIBLE
         }
-        if (task.deadline != null && end.isAfter(task.deadline)) {
+        if (isHard(task) && task.deadline != null && end.isAfter(task.deadline)) {
             return INFEASIBLE
         }
         long score = 0L
@@ -192,12 +203,18 @@ class PlanScorer {
         score -= contextSwitchPenalty(previousProjectId, task)
         score -= churnPenalty(task, start, previousStart, manualOverride, now)
         long needMins = Duration.between(start, end).toMinutes()
-        long slotMins = usableSlotMinutes(placeableSlot, start, end, task.deadline)
+        long slotMins = usableSlotMinutes(placeableSlot, start, end, isHard(task) ? task.deadline : null)
         score -= fragmentedSlotPenalty(slotMins, needMins)
         // Prefer earlier starts as mild stable tie preference inside score (still secondary to id tie-break)
         long minutesFromNow = Duration.between(now, start).toMinutes()
         score -= Math.min(50L, Math.max(0L, minutesFromNow / 60L))
         return score
+    }
+
+    boolean isHard(Task task) {
+        if (config.recurrence?.enabled != true) return task?.deadline != null
+        String hardLabel = config.recurrence?.hardLabel ?: 'hard'
+        task?.labels?.any { it.equalsIgnoreCase(hardLabel) } == true
     }
 
     /**

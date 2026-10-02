@@ -1,5 +1,6 @@
 package todoistcaldavsync.planner.state
 
+import groovy.json.JsonOutput
 import spock.lang.Specification
 import todoistcaldavsync.planner.domain.ApplicationReceipt
 import todoistcaldavsync.planner.domain.AppliedMapping
@@ -54,6 +55,51 @@ class ApplicationStateStoreSpec extends Specification {
         loaded['t1'].eventUid == m.eventUid
         loaded['t1'].fullyApplied()
         new String(Files.readAllBytes(store.mappingsPath()), StandardCharsets.UTF_8).contains('"schemaVersion"')
+    }
+
+    def "historical mappings retain multiple occurrences of the same task"() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        def firstMap = new LinkedHashMap(sample('series-1').toMap())
+        firstMap.occurrenceKey = 'series-1:4'
+        firstMap.eventUid = 'series-1-4@todoist-planner.local'
+        def secondMap = new LinkedHashMap(sample('series-1').toMap())
+        secondMap.occurrenceKey = 'series-1:5'
+        secondMap.eventUid = 'series-1-5@todoist-planner.local'
+
+        when:
+        store.putMapping(AppliedMapping.fromMap(firstMap))
+        store.putMapping(AppliedMapping.fromMap(secondMap))
+        def history = new ApplicationStateStore(dir).loadHistoricalMappings()
+
+        then:
+        history.keySet() == ['series-1:4', 'series-1:5'] as Set
+        history['series-1:4'].eventUid == 'series-1-4@todoist-planner.local'
+        history['series-1:5'].eventUid == 'series-1-5@todoist-planner.local'
+        store.loadMappings()['series-1'].occurrenceKey == 'series-1:5'
+    }
+
+    def "legacy task-only mapping migrates idempotently into occurrence history without deleting active state"() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        Map legacy = new LinkedHashMap(sample('legacy-series').toMap())
+        legacy.remove('seriesTaskId')
+        legacy.remove('occurrenceKey')
+        Files.createDirectories(dir)
+        Files.writeString(store.mappingsPath(), JsonOutput.prettyPrint(JsonOutput.toJson(
+            [schemaVersion: 1, mappings: [legacy]])), StandardCharsets.UTF_8)
+
+        when:
+        def first = store.loadHistoricalMappings()
+        String firstSnapshot = Files.readString(store.mappingHistoryPath(), StandardCharsets.UTF_8)
+        def second = new ApplicationStateStore(dir).loadHistoricalMappings()
+
+        then:
+        first.keySet() == ['legacy-series:0'] as Set
+        first['legacy-series:0'].eventUid == legacy.eventUid
+        second.keySet() == first.keySet()
+        Files.readString(store.mappingHistoryPath(), StandardCharsets.UTF_8) == firstSnapshot
+        store.loadMappings()['legacy-series'].eventUid == legacy.eventUid
     }
 
     def "receipts are append-only distinct files"() {

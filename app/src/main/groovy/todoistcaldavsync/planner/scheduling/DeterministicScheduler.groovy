@@ -161,7 +161,7 @@ class DeterministicScheduler {
             Instant bEnd = members.collect { it.end }.max()
             boolean deadlinesOk = prevBlock.taskIds.every { tid ->
                 Task t = taskById[tid]
-                t.deadline == null || !previousByTask[tid].end.isAfter(t.deadline)
+                constraintDeadline(t) == null || !previousByTask[tid].end.isAfter(constraintDeadline(t))
             }
             if (!deadlinesOk) {
                 return
@@ -259,7 +259,7 @@ class DeterministicScheduler {
                     }
                 }
                 if (canOccupy(remaining, occupied, prev.start, prev.end, bufferMinutes, rangeStart, rangeEnd) &&
-                    (task.deadline == null || !prev.end.isAfter(task.deadline))) {
+                    (constraintDeadline(task) == null || !prev.end.isAfter(constraintDeadline(task)))) {
                     occupy(remaining, occupied, prev.start, prev.end, bufferMinutes, rangeStart, rangeEnd)
                     boolean frozen = inFreeze || prevFrozen
                     List<MemberInterval> singles = [new MemberInterval(task.id, prev.start, prev.end)]
@@ -553,13 +553,14 @@ class DeterministicScheduler {
         // Each member is still validated to end <= its own deadline below.
         Instant maxMemberDeadline = null
         orderedMembers.each { t ->
-            if (t.deadline != null && (maxMemberDeadline == null || t.deadline.isAfter(maxMemberDeadline))) {
-                maxMemberDeadline = t.deadline
+            Instant memberDeadline = constraintDeadline(t)
+            if (memberDeadline != null && (maxMemberDeadline == null || memberDeadline.isAfter(maxMemberDeadline))) {
+                maxMemberDeadline = memberDeadline
             }
         }
         Instant outerBound = rangeEnd
         if (maxMemberDeadline != null && maxMemberDeadline.isBefore(outerBound) &&
-            orderedMembers.every { it.deadline != null }) {
+            orderedMembers.every { constraintDeadline(it) != null }) {
             outerBound = maxMemberDeadline
         }
 
@@ -593,7 +594,7 @@ class DeterministicScheduler {
                 boolean membersOk = true
                 orderedMembers.each { t ->
                     Instant mEnd = cursor + t.effectiveDuration
-                    if (t.deadline != null && mEnd.isAfter(t.deadline)) {
+                    if (constraintDeadline(t) != null && mEnd.isAfter(constraintDeadline(t))) {
                         membersOk = false
                     }
                     if (mEnd.isAfter(usableEnd)) {
@@ -719,8 +720,8 @@ class DeterministicScheduler {
         for (MutableSlot slot : remaining) {
             Instant usableStart = slot.start.isBefore(rangeStart) ? rangeStart : slot.start
             Instant usableEnd = slot.end
-            if (task.deadline != null && usableEnd.isAfter(task.deadline)) {
-                usableEnd = task.deadline
+            if (constraintDeadline(task) != null && usableEnd.isAfter(constraintDeadline(task))) {
+                usableEnd = constraintDeadline(task)
             }
             if (!usableEnd.isAfter(usableStart)) {
                 continue
@@ -1260,17 +1261,17 @@ class DeterministicScheduler {
         }
     }
 
-    private static String unscheduledReason(Task task, List<MutableSlot> remaining, Instant rangeStart, Instant rangeEnd) {
+    private String unscheduledReason(Task task, List<MutableSlot> remaining, Instant rangeStart, Instant rangeEnd) {
         long need = task.effectiveDuration.toMinutes()
-        if (task.deadline != null && task.deadline.isBefore(rangeStart)) {
+        if (constraintDeadline(task) != null && constraintDeadline(task).isBefore(rangeStart)) {
             return "Deadline ${task.deadline} is before planning range start; cannot schedule ${need}m task"
         }
         long maxSlot = remaining.collect { Duration.between(it.start, it.end).toMinutes() }.max() ?: 0L
-        if (task.deadline != null) {
+        if (constraintDeadline(task) != null) {
             long maxBeforeDeadline = 0L
             remaining.each { slot ->
                 Instant uStart = slot.start.isBefore(rangeStart) ? rangeStart : slot.start
-                Instant uEnd = slot.end.isAfter(task.deadline) ? task.deadline : slot.end
+                Instant uEnd = slot.end.isAfter(constraintDeadline(task)) ? constraintDeadline(task) : slot.end
                 if (uEnd.isAfter(uStart)) {
                     maxBeforeDeadline = Math.max(maxBeforeDeadline, Duration.between(uStart, uEnd).toMinutes())
                 }
@@ -1285,16 +1286,16 @@ class DeterministicScheduler {
         return "No feasible slot for ${need}m task within planning horizon"
     }
 
-    private static String reasonCode(Task task, List<MutableSlot> remaining, Instant rangeStart, Instant rangeEnd) {
-        if (task.deadline != null && task.deadline.isBefore(rangeStart)) {
+    private String reasonCode(Task task, List<MutableSlot> remaining, Instant rangeStart, Instant rangeEnd) {
+        if (constraintDeadline(task) != null && constraintDeadline(task).isBefore(rangeStart)) {
             return 'deadline_passed'
         }
         long need = task.effectiveDuration.toMinutes()
-        if (task.deadline != null) {
+        if (constraintDeadline(task) != null) {
             long maxBeforeDeadline = 0L
             remaining.each { slot ->
                 Instant uStart = slot.start.isBefore(rangeStart) ? rangeStart : slot.start
-                Instant uEnd = slot.end.isAfter(task.deadline) ? task.deadline : slot.end
+                Instant uEnd = slot.end.isAfter(constraintDeadline(task)) ? constraintDeadline(task) : slot.end
                 if (uEnd.isAfter(uStart)) {
                     maxBeforeDeadline = Math.max(maxBeforeDeadline, Duration.between(uStart, uEnd).toMinutes())
                 }
@@ -1304,6 +1305,13 @@ class DeterministicScheduler {
             }
         }
         return 'no_capacity'
+    }
+
+    private Instant constraintDeadline(Task task) {
+        if (task?.deadline == null) return null
+        if (config.recurrence?.enabled != true) return task.deadline
+        String hardLabel = config.recurrence?.hardLabel ?: 'hard'
+        task.labels.any { it.equalsIgnoreCase(hardLabel) } ? task.deadline : null
     }
 
     private static String deterministicPlanId(List<Task> tasks, List<TimeSlot> slots,

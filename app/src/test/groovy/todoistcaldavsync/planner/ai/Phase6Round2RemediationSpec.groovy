@@ -231,7 +231,9 @@ class Phase6Round2RemediationSpec extends Specification {
         expect:
         taskChanges.every { change ->
             Plan changed=plan([task(change)])
-            PlanHash.compute(changed)==phase2 && PlanningInputHash.compute(changed,[])!=PlanningInputHash.compute(originalPlan,[])
+            boolean approvalHashMatches = change.containsKey('labels') ?
+                PlanHash.compute(changed) != phase2 : PlanHash.compute(changed) == phase2
+            approvalHashMatches && PlanningInputHash.compute(changed,[])!=PlanningInputHash.compute(originalPlan,[])
         }
         PlanningInputHash.compute(plan([task(id:'t2'),task(id:'t1')]),[])==
             PlanningInputHash.compute(plan([task(id:'t1'),task(id:'t2')]),[])

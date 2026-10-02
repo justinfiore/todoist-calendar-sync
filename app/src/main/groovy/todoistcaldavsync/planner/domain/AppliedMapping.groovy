@@ -8,6 +8,8 @@ import java.util.Collections
  */
 final class AppliedMapping {
     final String taskId
+    final String seriesTaskId
+    final String occurrenceKey
     final String blockId
     final String eventUid
     final Instant slotStart
@@ -26,6 +28,8 @@ final class AppliedMapping {
 
     private AppliedMapping(Builder b) {
         this.taskId = b.taskId
+        this.seriesTaskId = b.seriesTaskId ?: b.taskId
+        this.occurrenceKey = b.occurrenceKey ?: b.metadata?.occurrenceKey?.toString() ?: "${b.taskId}:0"
         this.blockId = b.blockId
         this.eventUid = b.eventUid
         this.slotStart = b.slotStart
@@ -69,6 +73,8 @@ final class AppliedMapping {
                                 Instant at = null) {
         builder()
             .taskId(taskId)
+            .seriesTaskId(seriesTaskId)
+            .occurrenceKey(occurrenceKey)
             .blockId(blockId)
             .eventUid(eventUid)
             .slotStart(slotStart)
@@ -90,6 +96,8 @@ final class AppliedMapping {
     Map<String, Object> toMap() {
         [
             taskId         : taskId,
+            seriesTaskId   : seriesTaskId,
+            occurrenceKey  : occurrenceKey,
             blockId        : blockId,
             eventUid       : eventUid,
             slotStart      : slotStart?.toString(),
@@ -114,6 +122,8 @@ final class AppliedMapping {
         }
         builder()
             .taskId(m.taskId?.toString())
+            .seriesTaskId((m.seriesTaskId ?: m.taskId)?.toString())
+            .occurrenceKey((m.occurrenceKey ?: "${m.taskId}:0").toString())
             .blockId(m.blockId?.toString())
             .eventUid(m.eventUid?.toString())
             .slotStart(m.slotStart != null ? Instant.parse(m.slotStart.toString()) : null)
@@ -134,6 +144,8 @@ final class AppliedMapping {
 
     static final class Builder {
         private String taskId
+        private String seriesTaskId
+        private String occurrenceKey
         private String blockId
         private String eventUid
         private Instant slotStart
@@ -151,6 +163,8 @@ final class AppliedMapping {
         private Map<String, Object> metadata = [:]
 
         Builder taskId(String v) { this.taskId = v; this }
+        Builder seriesTaskId(String v) { this.seriesTaskId = v; this }
+        Builder occurrenceKey(String v) { this.occurrenceKey = v; this }
         Builder blockId(String v) { this.blockId = v; this }
         Builder eventUid(String v) { this.eventUid = v; this }
         Builder slotStart(Instant v) { this.slotStart = v; this }

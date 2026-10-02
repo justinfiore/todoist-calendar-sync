@@ -91,6 +91,11 @@ final class PlanningInputHash {
             id: t.id, content: t.content, projectId: t.projectId, projectName: t.projectName,
             labels: (t.labels ?: []).toSorted(), priority: t.priority,
             deadline: instant(t.deadline), dueTime: instant(t.dueTime),
+            deadlineDate: t.deadlineDate?.toString(), completedCount: t.completedCount,
+            dueDate: t.todoistDue?.date, recurrence: t.todoistDue?.recurrenceFingerprintInput(),
+            lifecycleMode: t.lifecycleMarker?.deadlineMode,
+            lifecycleSource: t.lifecycleMarker?.deadlineSource,
+            markerGeneration: t.lifecycleMarker?.markerGeneration,
             nativeDuration: duration(t.nativeDuration), effectiveDuration: duration(t.effectiveDuration),
             durationSource: t.durationSource, manual: t.manual, allDayDue: t.allDayDue
         ]

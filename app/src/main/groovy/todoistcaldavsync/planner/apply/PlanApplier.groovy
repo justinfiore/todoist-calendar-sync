@@ -4,6 +4,8 @@ import todoistcaldavsync.planner.adapters.CalendarReadGateway
 import todoistcaldavsync.planner.adapters.CalendarWriteGateway
 import todoistcaldavsync.planner.adapters.TodoistReadGateway
 import todoistcaldavsync.planner.adapters.TodoistWriteGateway
+import todoistcaldavsync.planner.adapters.TodoistLifecycleGateway
+import todoistcaldavsync.planner.adapters.TodoistCommandState
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.ApplicationReceipt
 import todoistcaldavsync.planner.domain.AppliedMapping
@@ -18,6 +20,8 @@ import todoistcaldavsync.planner.domain.PlanChange
 import todoistcaldavsync.planner.domain.PlanHash
 import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
+import todoistcaldavsync.planner.recurrence.LifecycleMarker
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerWriter
 import todoistcaldavsync.planner.state.ApplicationStateStore
 
 import java.nio.charset.StandardCharsets
@@ -31,12 +35,14 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicLong
 import java.util.function.Supplier
+import java.util.UUID
 
 /**
  * Applies an approved plan to the managed calendar and Todoist due times.
  * Never mutates deadlines. Never writes in preview. Never mutates external events.
  *
- * Order per item: create/move managed event → cleanup superseded UID → update Todoist due → persist mapping.
+ * Order for ordinary items: Calendar → Todoist → mapping. Recurring items preflight and
+ * update Todoist through Sync before any Calendar mutation, then persist occurrence mapping.
  * Partial calendar-success / Todoist-failure is recorded and recoverable on rerun.
  * Idempotent skip requires live read confirmation of owned managed event matching proposed times.
  */
@@ -319,7 +325,11 @@ class PlanApplier {
                             List<String> errors,
                             ApprovalGateResult gate,
                             Set<String> cleanedPriorUids) {
-        String eventUid = ManagedEventIds.uidForBlock(block.id)
+        List<Task> blockTasks = block.taskIds.collect { id -> plan.tasks.find { it.id == id } }.findAll { it != null }
+        boolean occurrenceAware = blockTasks.any { it.todoistDue?.recurring }
+        String eventUid = occurrenceAware ?
+            ManagedEventIds.uidForOccurrences(blockTasks.collect { it.occurrenceIdentity().occurrenceKey() }) :
+            ManagedEventIds.uidForBlock(block.id)
         Instant now = clock.get()
 
         // Protect frozen / manualOverride blocks without explicit per-item approval escalation
@@ -375,7 +385,7 @@ class PlanApplier {
         }
 
         // Drift / manual override detection against last applied mapping + live state
-        DriftCheck drift = detectBlockDrift(block, eventUid, existingMappings)
+        DriftCheck drift = detectBlockDrift(block, eventUid, existingMappings, blockTasks)
         if (drift.blocked) {
             drifts.addAll(drift.entries)
             block.taskIds.each { String taskId ->
@@ -399,6 +409,78 @@ class PlanApplier {
                     .build()
             }
             return
+        }
+
+        // Recurring tasks use the guarded Sync boundary before Calendar mutation. A fresh
+        // provider read binds the approved occurrence and complete recurrence tuple.
+        Map<String, ApplyItemStatus> recurringTodoistStatus = [:]
+        Map<String, String> recurringTodoistErrors = [:]
+        List<Task> recurringTasks = blockTasks.findAll { it.todoistDue?.recurring }
+        CalendarEvent preflightCollision = findEventByUid(eventUid)
+        if (preflightCollision != null && !ManagedEventIds.isOwned(preflightCollision, config.outputCalendar)) {
+            throw new IllegalStateException(externalUidCollisionReason(preflightCollision, eventUid, block))
+        }
+        Map<String, Task> recurringLive = [:]
+        for (Task plannedTask : recurringTasks) {
+            if (!(todoistWrite instanceof TodoistLifecycleGateway)) {
+                throw new IllegalStateException('Recurring apply requires TodoistLifecycleGateway')
+            }
+            TodoistLifecycleGateway lifecycle = todoistWrite as TodoistLifecycleGateway
+            Map liveRaw = lifecycle.fetchTask(plannedTask.id)
+            if (liveRaw == null) throw new IllegalStateException("todoist task missing: ${plannedTask.id}")
+            Task live = Task.fromTodoistMap(liveRaw, config.durationResolver, config.manualLabel, zoneId)
+            if (live.completedCount != plannedTask.completedCount || !live.todoistDue?.recurring ||
+                !live.todoistDue.completeRecurrenceTuple() ||
+                live.todoistDue.recurrenceFingerprintInput() != plannedTask.todoistDue.recurrenceFingerprintInput() ||
+                live.deadlineDate != plannedTask.deadlineDate || live.labels.toSet() != plannedTask.labels.toSet() ||
+                live.description != plannedTask.description) {
+                throw new IllegalStateException("stale recurring lifecycle preflight for task ${plannedTask.id}")
+            }
+            recurringLive[plannedTask.id] = live
+        }
+        for (Task plannedTask : recurringTasks) {
+            TodoistLifecycleGateway lifecycle = todoistWrite as TodoistLifecycleGateway
+            Task live = recurringLive[plannedTask.id]
+            MemberInterval interval = block.intervalFor(plannedTask.id)
+            String replacement = formatDueIso(interval?.start ?: block.start)
+            if (live.lifecycleMarker != null) {
+                LifecycleMarker marker = live.lifecycleMarker
+                String markerCommandId = UUID.nameUUIDFromBytes(
+                    "${planHash}|${plannedTask.occurrenceIdentity()}|marker|${replacement}"
+                        .getBytes(StandardCharsets.UTF_8)).toString()
+                LifecycleMarker intended = new LifecycleMarker(
+                    taskId: marker.taskId,
+                    completedCount: marker.completedCount,
+                    deadlineMode: marker.deadlineMode,
+                    deadlineSource: marker.deadlineSource,
+                    deadlineDate: marker.deadlineDate,
+                    pendingLegacySourceDate: marker.pendingLegacySourceDate,
+                    lastVerifiedDue: marker.lastVerifiedDue,
+                    recurrenceFingerprint: marker.recurrenceFingerprint,
+                    lastPlannerDue: replacement,
+                    markerGeneration: marker.markerGeneration + 1L,
+                    lastCommandId: markerCommandId)
+                live = new LifecycleMarkerWriter(lifecycle, config).write(live, intended)
+            }
+            String commandId = UUID.nameUUIDFromBytes(
+                "${planHash}|${plannedTask.occurrenceIdentity()}|${replacement}".getBytes(StandardCharsets.UTF_8)).toString()
+            def result = lifecycle.updateRecurringDue(plannedTask.id, live.todoistDue, replacement, commandId)
+            if (result.state == TodoistCommandState.REJECTED) {
+                throw new IllegalStateException("Todoist recurring command rejected for task ${plannedTask.id}")
+            }
+            Map verifiedRaw = lifecycle.fetchTask(plannedTask.id)
+            Task verified = verifiedRaw == null ? null :
+                Task.fromTodoistMap(verifiedRaw, config.durationResolver, config.manualLabel, zoneId)
+            boolean postcondition = verified != null && verified.completedCount == live.completedCount &&
+                verified.todoistDue?.date == replacement &&
+                verified.todoistDue?.recurrenceFingerprintInput() == live.todoistDue.recurrenceFingerprintInput() &&
+                verified.deadlineDate == live.deadlineDate && verified.labels.toSet() == live.labels.toSet() &&
+                verified.description == live.description
+            if (!postcondition) {
+                throw new IllegalStateException("Todoist recurring command outcome is ambiguous for task ${plannedTask.id}")
+            }
+            recurringTodoistStatus[plannedTask.id] = result.state == TodoistCommandState.COMMITTED ?
+                ApplyItemStatus.APPLIED : ApplyItemStatus.SKIPPED_IDEMPOTENT
         }
 
         // External UID collision: refuse adoption/overwrite when deterministic UID is present
@@ -472,7 +554,7 @@ class PlanApplier {
             return
         }
 
-        // --- Calendar first ---
+        // --- Calendar (after recurring Todoist preflight/update; first for ordinary tasks) ---
         ApplyItemStatus calStatus
         String calError = null
         boolean calendarOk = false
@@ -482,12 +564,15 @@ class PlanApplier {
 
         // Collect prior UID for superseded cleanup (when proposed UID differs from mapping)
         AppliedMapping anyPrior = block.taskIds.collect { existingMappings[it] }.find { it != null }
-        if (anyPrior != null && anyPrior.eventUid && anyPrior.eventUid != eventUid) {
+        Task priorTask = anyPrior == null ? null : blockTasks.find { it.id == anyPrior.taskId }
+        boolean sameOccurrence = anyPrior != null && priorTask != null &&
+            anyPrior.occurrenceKey == priorTask.occurrenceIdentity().occurrenceKey()
+        if (sameOccurrence && anyPrior.eventUid && anyPrior.eventUid != eventUid) {
             priorUidToCleanup = anyPrior.eventUid
             priorBlockIdForCleanup = anyPrior.blockId ?: block.id
         }
         // Also track priorUid stored in metadata from earlier partial cleanup
-        if (priorUidToCleanup == null && anyPrior?.metadata?.priorEventUid) {
+        if (sameOccurrence && priorUidToCleanup == null && anyPrior?.metadata?.priorEventUid) {
             priorUidToCleanup = anyPrior.metadata.priorEventUid.toString()
             priorBlockIdForCleanup = (anyPrior.metadata.priorBlockId ?: anyPrior.blockId ?: block.id).toString()
         }
@@ -556,6 +641,11 @@ class PlanApplier {
                 blockStart: block.start.toString(),
                 blockEnd  : block.end.toString()
             ]
+            Task domainTask = blockTasks.find { it.id == taskId }
+            if (domainTask != null) {
+                meta.seriesTaskId = domainTask.id
+                meta.occurrenceKey = domainTask.occurrenceIdentity().occurrenceKey()
+            }
             if (priorUidToCleanup && priorUidToCleanup != eventUid) {
                 meta.priorEventUid = priorUidToCleanup
                 meta.priorBlockId = priorBlockIdForCleanup
@@ -625,6 +715,8 @@ class PlanApplier {
                 tdStatus = ApplyItemStatus.SKIPPED_IDEMPOTENT
                 AppliedMapping done = AppliedMapping.builder()
                     .taskId(taskId)
+                    .seriesTaskId(domainTask?.id ?: taskId)
+                    .occurrenceKey(domainTask?.occurrenceIdentity()?.occurrenceKey() ?: "${taskId}:0")
                     .blockId(block.id)
                     .eventUid(eventUid)
                     .slotStart(slotStart)
@@ -704,7 +796,9 @@ class PlanApplier {
                 continue
             }
 
-            if (prior?.todoistStatus == ApplyItemStatus.UNKNOWN) {
+            if (recurringTodoistStatus.containsKey(taskId)) {
+                tdStatus = recurringTodoistStatus[taskId]
+            } else if (prior?.todoistStatus == ApplyItemStatus.UNKNOWN) {
                 tdStatus = ApplyItemStatus.UNKNOWN
                 tdError = 'Todoist outcome requires reconciliation before another write'
                 errors << "todoist task ${taskId}: ${tdError}"
@@ -721,6 +815,8 @@ class PlanApplier {
 
             AppliedMapping mapping = AppliedMapping.builder()
                 .taskId(taskId)
+                .seriesTaskId(domainTask?.id ?: taskId)
+                .occurrenceKey(domainTask?.occurrenceIdentity()?.occurrenceKey() ?: "${taskId}:0")
                 .blockId(block.id)
                 .eventUid(eventUid)
                 .slotStart(slotStart)
@@ -844,7 +940,8 @@ class PlanApplier {
         if (!calName) {
             throw new IllegalStateException('planner.output_calendar is required for apply')
         }
-        String description = ManagedEventIds.buildDescription(block.id, plan.id, block.reason)
+        List<Task> tasks = block.taskIds.collect { id -> plan.tasks.find { it.id == id } }.findAll { it != null }
+        String description = ManagedEventIds.buildOccurrenceDescription(block.id, plan.id, tasks, block.reason)
         return CalendarEvent.builder()
             .id(eventUid)
             .uid(eventUid)
@@ -881,7 +978,8 @@ class PlanApplier {
     }
 
     private DriftCheck detectBlockDrift(ScheduledBlock block, String eventUid,
-                                        Map<String, AppliedMapping> existingMappings) {
+                                        Map<String, AppliedMapping> existingMappings,
+                                        List<Task> blockTasks) {
         List<Map<String, Object>> entries = []
         boolean blocked = false
         if (!config.stability?.keepManualMoves) {
@@ -943,6 +1041,11 @@ class PlanApplier {
         for (String taskId : block.taskIds) {
             AppliedMapping prior = existingMappings[taskId]
             if (prior == null || !prior.todoistApplied()) {
+                continue
+            }
+            Task currentTask = blockTasks.find { it.id == taskId }
+            if (currentTask != null &&
+                prior.occurrenceKey != currentTask.occurrenceIdentity().occurrenceKey()) {
                 continue
             }
             MemberInterval mi = block.intervalFor(taskId)
