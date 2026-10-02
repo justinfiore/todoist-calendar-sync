@@ -70,6 +70,31 @@ class TodoistSyncGatewayWireMockSpec extends Specification {
             is_recurring: true, lang: 'en', timezone: null]
     }
 
+    def "fixed-zone Sync item_update sends UTC date with non-null IANA timezone"() {
+        given:
+        String uuid = '13111111-1111-1111-1111-111111111111'
+        server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(okJson(
+            "{\"sync_status\":{\"${uuid}\":\"ok\"}}")))
+        def due = Task.fromTodoistMap([id: 't1', content: 'x', labels: [], priority: 1,
+            due: [date: '2027-03-13T08:30:00Z',
+                string: 'every day at 3:30am starting March 13 2027',
+                is_recurring: true, lang: 'en', timezone: 'America/New_York']],
+            new Task.DurationResolver(30, [:]), 'manual', ZoneId.of('America/New_York')).todoistDue
+        String replacement = PlanApplier.formatRecurringDueIso(
+            Instant.parse('2027-03-14T07:30:00Z'), due, ZoneId.of('America/New_York'))
+
+        when:
+        gateway().updateRecurringDue('t1', due, replacement, uuid)
+
+        then:
+        replacement == '2027-03-14T07:30:00Z'
+        Map form = parseForm(server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync')))[0].bodyAsString)
+        new JsonSlurper().parseText(form.commands)[0].args.due == [
+            date: '2027-03-14T07:30:00Z',
+            string: 'every day at 3:30am starting March 13 2027',
+            is_recurring: true, lang: 'en', timezone: 'America/New_York']
+    }
+
     def "full then incremental items Sync uses isolated token and accepts empty delta"() {
         given:
         server.stubFor(post(urlEqualTo('/api/v1/sync')).inScenario('items')

@@ -64,7 +64,7 @@ class RecurrencePlanApplierSpec extends Specification {
 
         then:
         firstReceipt.success()
-        firstDue == '2026-10-05T10:00:00'
+        firstDue == '2026-10-05T14:00:00Z'
         raw.due.timezone == 'America/New_York'
         secondReceipt.success()
         firstUid != secondUid
@@ -85,6 +85,18 @@ class RecurrencePlanApplierSpec extends Specification {
                 is_recurring: true, lang: 'en', timezone: null], ZoneId.of('America/New_York'),
                 { String value, ZoneId zone -> LocalDateTime.parse(value).atZone(zone).toInstant() }),
             ZoneId.of('America/New_York')) == '2026-10-05T10:30:00'
+    }
+
+    def "fixed-zone recurrence receives UTC instant and preserves IANA timezone authority"() {
+        expect:
+        PlanApplier.formatRecurringDueIso(
+            Instant.parse('2027-03-14T07:30:00Z'),
+            TodoistDue.from([date: '2027-03-13T08:30:00Z',
+                string: 'every day at 3:30am starting March 13 2027',
+                is_recurring: true, lang: 'en', timezone: 'America/New_York'],
+                ZoneId.of('America/New_York'),
+                { String value, ZoneId ignored -> Instant.parse(value) }),
+            ZoneId.of('America/New_York')) == '2027-03-14T07:30:00Z'
     }
 
     def "retry after marker success and rate-limited Due write completes without duplicate event"() {
@@ -136,7 +148,7 @@ class RecurrencePlanApplierSpec extends Specification {
         second.success()
         dueAttempts == 2
         markerWrites == 1
-        raw.due.date == '2026-10-05T10:00:00'
+        raw.due.date == '2026-10-05T14:00:00Z'
         calendar.fetchEvents(Instant.parse('2026-10-01T00:00:00Z'),
             Instant.parse('2026-10-10T00:00:00Z')).size() == 1
 

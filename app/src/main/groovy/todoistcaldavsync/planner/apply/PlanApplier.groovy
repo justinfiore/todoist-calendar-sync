@@ -1328,13 +1328,19 @@ class PlanApplier {
         return DateTimeFormatter.ISO_INSTANT.format(start)
     }
 
-    /** Todoist combines a civil datetime with its separate recurrence timezone field. */
+    /**
+     * Todoist fixed-zone recurrence requires a UTC instant plus its IANA timezone. Floating
+     * recurrence requires a zone-less civil datetime; sending Z would convert it to fixed time.
+     */
     static String formatRecurringDueIso(Instant start, TodoistDue due, ZoneId plannerZone) {
         if (start == null || due == null || plannerZone == null) {
             throw new IllegalArgumentException('start, recurring Due, and planner zone are required')
         }
-        ZoneId dueZone = due.timezone ? ZoneId.of(due.timezone) : plannerZone
-        DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(start.atZone(dueZone).toLocalDateTime())
+        if (due.timezone) {
+            ZoneId.of(due.timezone) // validate before issuing the provider mutation
+            return DateTimeFormatter.ISO_INSTANT.format(start)
+        }
+        DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(start.atZone(plannerZone).toLocalDateTime())
     }
 
     /**
