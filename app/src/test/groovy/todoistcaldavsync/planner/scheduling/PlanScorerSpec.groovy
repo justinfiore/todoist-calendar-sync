@@ -58,6 +58,20 @@ class PlanScorerSpec extends Specification {
             .build()
     }
 
+    private PlanScorer recurrenceScorer(int soonDays = 5) {
+        new PlanScorer(PlannerConfig.fromMap(planner: [
+            mode        : 'preview',
+            timezone    : 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-17:00']]],
+            tasks       : [
+                default_duration_minutes: 30,
+                recurrence: [enabled: true, rollout_cutoff: '2026-01-01T00:00:00Z',
+                    seen_label: 'smartplanner-seen', onboard_label: 'smartplanner-onboard',
+                    hard_label: 'hard', hard_deadline_soon_days: soonDays]
+            ]
+        ]))
+    }
+
     def "P1–P4 priority weights order P1 highest"() {
         expect:
         PlanScorer.priorityWeight(4) > PlanScorer.priorityWeight(3)
@@ -90,6 +104,65 @@ class PlanScorerSpec extends Specification {
 
         expect:
         scorer.scorePlacement(p1, start, end, null, [], now, rangeEnd, null, null, false, false) == PlanScorer.INFEASIBLE
+    }
+
+    def "recurrence-enabled soft Deadline permits lateness with a monotonic penalty"() {
+        given:
+        def enabled = recurrenceScorer()
+        def deadline = now + Duration.ofHours(2)
+        def soft = task(deadline: deadline, priority: 2)
+
+        expect:
+        enabled.deadlineUrgency(soft, deadline + Duration.ofMinutes(15), now, rangeEnd) >
+            enabled.deadlineUrgency(soft, deadline + Duration.ofHours(3), now, rangeEnd)
+        enabled.deadlineUrgency(soft, deadline + Duration.ofHours(3), now, rangeEnd) != PlanScorer.INFEASIBLE
+    }
+
+    def "hard Deadline urgency starts strictly inside configured soon window"() {
+        given:
+        def enabled = recurrenceScorer(5)
+
+        expect:
+        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: now + Duration.ofDays(6)),
+            now + Duration.ofMinutes(30), now, rangeEnd) == 0L
+        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: now + Duration.ofDays(5)),
+            now + Duration.ofMinutes(30), now, rangeEnd) == 0L
+        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: now + Duration.ofDays(5) - Duration.ofMinutes(1)),
+            now + Duration.ofMinutes(30), now, rangeEnd) >= 600L
+    }
+
+    def "hard soon boundary advances by local days across DST rather than fixed hours"() {
+        given:
+        def enabled = recurrenceScorer(2)
+        def beforeSpringForward = LocalDate.of(2026, 3, 7).atTime(8, 0).atZone(zone).toInstant()
+        def localBoundary = beforeSpringForward.atZone(zone).plusDays(2).toInstant()
+
+        expect:
+        Duration.between(beforeSpringForward, localBoundary).toHours() == 47L
+        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: localBoundary),
+            beforeSpringForward + Duration.ofMinutes(30), beforeSpringForward,
+            beforeSpringForward + Duration.ofDays(7)) == 0L
+        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: localBoundary - Duration.ofMinutes(1)),
+            beforeSpringForward + Duration.ofMinutes(30), beforeSpringForward,
+            beforeSpringForward + Duration.ofDays(7)) >= 600L
+    }
+
+    def "approaching hard P4 outranks ordinary P1 while late hard placement is infeasible"() {
+        given:
+        def enabled = recurrenceScorer(5)
+        def start = now + Duration.ofHours(1)
+        def end = start + Duration.ofMinutes(30)
+        def hardP4 = task(id: 'hard-p4', labels: ['schedule', 'hard'], priority: 1,
+            deadline: now + Duration.ofDays(1))
+        def softP1 = task(id: 'soft-p1', priority: 4, deadline: now + Duration.ofDays(10))
+
+        expect:
+        enabled.scorePlacement(hardP4, start, end, null, [], now, now + Duration.ofDays(14),
+            null, null, false, false) >
+            enabled.scorePlacement(softP1, start, end, null, [], now, now + Duration.ofDays(14),
+                null, null, false, false)
+        enabled.scorePlacement(hardP4, hardP4.deadline, hardP4.deadline + Duration.ofMinutes(30),
+            null, [], now, now + Duration.ofDays(14), null, null, false, false) == PlanScorer.INFEASIBLE
     }
 
     def "preferred context window scores higher than avoided window"() {

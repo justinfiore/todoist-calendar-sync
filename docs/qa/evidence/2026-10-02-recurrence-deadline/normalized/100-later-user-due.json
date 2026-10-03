@@ -1,0 +1,6 @@
+{
+  "deadline_initialized_from_user_due": true,
+  "marker_source": "initial_user_due",
+  "sentinel_present": true,
+  "user_recurrence_present": true
+}

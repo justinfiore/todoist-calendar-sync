@@ -3,6 +3,7 @@ package todoistcaldavsync.planner
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.feedback.RegexFeedbackEngine
 import todoistcaldavsync.planner.messaging.*
+import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
 import todoistcaldavsync.planner.state.ConversationRecord
 import todoistcaldavsync.planner.state.ConversationStore
 
@@ -80,6 +81,11 @@ final class SmartPlannerDaemon implements AutoCloseable {
                     nextRunAt: clock.get().plusMillis(initialMillis).toString()]
                 scheduler.scheduleWithFixedDelay({ safeScheduledRun(run) } as Runnable,
                     initialMillis, intervalMillis, TimeUnit.MILLISECONDS)
+            }
+            if (orchestrator.plannerConfig.recurrence.enabled) {
+                runtimeStatus['todoist-items'] = [state: 'SCHEDULED', nextRunAt: clock.get().toString()]
+                scheduler.scheduleWithFixedDelay({ safeItemsPoll() } as Runnable, 0L,
+                    TodoistItemsPoller.POLL_INTERVAL.toMillis(), TimeUnit.MILLISECONDS)
             }
         } catch (Throwable failure) {
             started.set(false)
@@ -402,6 +408,21 @@ final class SmartPlannerDaemon implements AutoCloseable {
         } finally {
             guard.set(false)
             schedulePending(run)
+        }
+    }
+
+    private void safeItemsPoll() {
+        try {
+            def result
+            synchronized (mutationLock) { result = orchestrator.pollTodoistItems() }
+            runtimeStatus['todoist-items'] = [state: result.status.toUpperCase(Locale.ROOT),
+                completedAt: clock.get().toString(), processed: result.processed,
+                nextRunAt: clock.get().plus(TodoistItemsPoller.POLL_INTERVAL).toString()]
+        } catch (Throwable t) {
+            runtimeStatus['todoist-items'] = [state: 'RETRYABLE_FAILURE', at: clock.get().toString(),
+                error: safeError(t), nextRunAt: clock.get().plus(TodoistItemsPoller.POLL_INTERVAL).toString()]
+            if (isFatalRequiredProviderAuth(t)) requestFatalShutdown(t)
+            else System.err.println("SmartPlanner Todoist items poll failed: ${safeError(t)}")
         }
     }
 

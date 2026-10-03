@@ -1,0 +1,24 @@
+{
+  "completed_count": 2,
+  "deadline": {
+    "date": "2026-10-05",
+    "lang": "en"
+  },
+  "due": {
+    "date": "2026-10-05T09:00:00",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day @ 09:00",
+    "timezone": null
+  },
+  "has_lifecycle_marker": true,
+  "human_description_preserved": true,
+  "id_hash": "c6375021f83ffbb5",
+  "labels": [
+    "schedule",
+    "smartplanner-seen",
+    "t30"
+  ],
+  "marker_completed_count": 2,
+  "marker_deadline_date": "2026-10-05"
+}

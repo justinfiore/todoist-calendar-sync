@@ -1,0 +1,28 @@
+{
+  "after": {
+    "date": "2027-03-14T07:30:00Z",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": "America/New_York"
+  },
+  "before": {
+    "date": "2027-03-13T08:30:00Z",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": "America/New_York"
+  },
+  "case": "fixed-IANA-timezone-DST-explicit-recurring-completion-retest",
+  "completed_count_advanced_by_one": true,
+  "completion_status": "ok",
+  "crosses_new_york_2027_dst_start": true,
+  "date_advanced": true,
+  "non_null_iana_reread_after": true,
+  "non_null_iana_reread_before": true,
+  "recurrence_tuple_preserved": true,
+  "same_task_id": true,
+  "update_status": "ok",
+  "utc_hour_changed_for_same_civil_time": true,
+  "verdict": "PASS"
+}

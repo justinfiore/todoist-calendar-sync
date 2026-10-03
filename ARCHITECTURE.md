@@ -13,7 +13,7 @@ SmartPlanner is deliberately divided into three authority levels:
 
 - **Read and calculate:** fetch provider data, normalize it, classify availability, and generate a plan.
 - **Suggest and decide:** render/deliver proposals, parse deterministic feedback, and optionally request bounded AI suggestions.
-- **Mutate:** apply a stored plan through `PlanApplier`, managed-calendar ownership checks, Todoist due-time-only writes, and durable receipts.
+- **Mutate:** apply a stored plan through `PlanApplier`, managed-calendar ownership checks, recurrence-aware Todoist writes, and durable receipts. Ordinary tasks use the fixed-Due REST boundary; opted-in recurring tasks use guarded Sync commands and may initialize or advance their lifecycle-owned Deadline.
 
 Neither the deterministic scheduler, Slack text, nor an LLM has direct provider mutation authority.
 
@@ -54,7 +54,7 @@ flowchart LR
     Orch --> Stores[(Plans / applications / decisions / deliveries)]
     Orch --> Apply[PlanApplier]
 
-    Apply --> TWrite[Todoist due-time write gateway]
+    Apply --> TWrite[Todoist REST / recurrence-safe Sync writes]
     Apply --> Managed[ManagedCalendarWriteGateway]
     Managed --> CWrite[CalDAV or Google Calendar API]
 ```
@@ -168,10 +168,10 @@ flowchart TD
 
 The scheduler:
 
-1. sorts tasks deterministically by deadline, priority, and ID;
+1. sorts tasks deterministically by Deadline policy, priority, and ID;
 2. preserves eligible frozen or manually moved prior placements according to stability policy;
 3. builds same-project focus units when batching is enabled;
-4. finds feasible placements within free slots, deadlines, duration, and bilateral block buffers;
+4. finds feasible placements within free slots, hard Deadline dates where configured, duration, and bilateral block buffers;
 5. applies deterministic scoring for priority, deadline risk, context, batching, churn, soft conflicts, fragmentation, and weather suitability;
 6. splits an unplaceable focus unit back into individual tasks;
 7. records scheduled blocks, unscheduled reasons, changes, explanations, and weather displacement links;
@@ -179,6 +179,12 @@ The scheduler:
 9. computes stable plan identity and a human-readable diff.
 
 The current scheduler is greedy and deterministic, not an optimization solver. Given the same normalized inputs, configuration, prior plan, and fixed clock, it produces the same result.
+
+When native recurrence lifecycle support is enabled, an ordinary Todoist Deadline is a soft target:
+the scheduler may place work after it with an increasing lateness penalty. The configured `hard`
+label makes the date a finish-by boundary; urgency escalates only within
+`hard_deadline_soon_days`. With recurrence support disabled, the legacy planner policy treats every
+Deadline as hard. Operators must therefore inspect a new preview when toggling the feature.
 
 ### 6.3 Calendar providers
 
@@ -221,7 +227,8 @@ stateDiagram-v2
 3. If `startup_connectivity_check` is true, the orchestrator performs bounded read-only Todoist and calendar probes. A failure is deliberately uncaught and startup fails before readiness.
 4. The Slack surface resolves its bot and app tokens, registers command/event handlers, starts an outbound Socket Mode connection, and creates the Web API outbound gateway.
 5. Persisted inbound events left `PENDING` or owned by a prior interrupted process are offered for recovery.
-6. Each configured `planning_run` is scheduled independently.
+6. When native recurrence is enabled, a dedicated Todoist `items` poll starts immediately and then runs every five minutes.
+7. Each configured `planning_run` is scheduled independently.
 
 ### 7.2 Planning runs, intervals, and sleep behavior
 
@@ -239,14 +246,29 @@ A run reads current provider data, creates and persists a plan, publishes a Slac
 
 The main CLI thread calls `awaitTermination`, which sleeps for one second at a time only to keep the process alive and observe shutdown/fatal state. This one-second sleep does not determine planning cadence.
 
-### 7.3 Overlap, coalescing, and serialization
+### 7.3 Native recurrence polling
+
+The recurrence poll is independent of planning-run intervals and of the legacy synchronizer's token.
+It uses a dedicated Todoist Sync cursor with `resource_types=["items"]`, stored with a pending-delta
+inbox at `applications_dir/recurrence/todoist-items-sync.json`. Each provider response atomically
+checkpoints its replacement token and deltas before processing. A restart drains the durable inbox
+before fetching again; a missing or corrupt state file performs a full items bootstrap. Empty deltas
+do not trigger a full scan.
+
+The poll compares the active task's recurrence tuple, `completed_count`, Due, Deadline, labels, and
+portable description marker. A count increase advances the lifecycle; a deletion tombstone is removed
+from active inventory. Same-count edits, marker/sentinel damage, recurrence removal, or counter
+regression fail closed for operator reconciliation. Poll transport/rate-limit failures retain the
+current checkpoint and wait for the next poll; required-provider 401/403 failures stop the daemon.
+
+### 7.4 Overlap, coalescing, and serialization
 
 - Every named run has a `running` flag and a one-bit `pending` flag.
 - A trigger arriving while that run is active is coalesced into exactly one pending rerun rather than queued without bound.
 - A process-wide `mutationLock` serializes plan/publish and replan sections across all runs and feedback events. This prevents concurrent state transitions from exposing inconsistent current-plan identities.
 - When work finishes, a pending trigger is scheduled immediately.
 
-### 7.4 Retry and failure classification
+### 7.5 Retry and failure classification
 
 A non-fatal scheduled-run failure increments a per-run retry counter and schedules an additional retry with:
 
@@ -259,8 +281,9 @@ The exponent is bounded, and the regular fixed-delay schedule remains alive. A s
 - Optional Weather failure becomes missing forecast data so the configured `fail_open`/`fail_closed` policy decides placement.
 - Slack working-status failure is logged but never changes authority or daemon liveness.
 - Ambiguous provider mutation or delivery outcomes are recorded as unknown/reconciliation-required and are not blindly retried.
+- Planning-run exponential retry does not control the five-minute Todoist items poll. A failed poll keeps its cursor/inbox and retries on the next cadence; Todoist mutations are attempted once and classified by live re-read before any replay.
 
-### 7.5 Shutdown
+### 7.6 Shutdown
 
 The CLI installs a JVM shutdown hook. `close()`:
 
@@ -273,7 +296,7 @@ The CLI installs a JVM shutdown hook. `close()`:
 
 If a fatal required-provider authentication failure stopped the daemon, `awaitTermination` throws so the CLI exits nonzero.
 
-### 7.6 Scheduled delivery intents versus daemon planning runs
+### 7.7 Scheduled delivery intents versus daemon planning runs
 
 SmartPlanner contains two scheduling concepts that must not be confused:
 
@@ -298,9 +321,14 @@ flowchart TD
     Protected -->|yes; no exact approval| Withhold[Withhold protected item]
     Protected -->|no, or exact approval| Ownership{Managed ownership and global UID checks pass?}
     Ownership -->|no| Collision[Refuse item]
-    Ownership -->|yes| Calendar[Upsert owned managed event]
-    Calendar --> Todoist[Update Todoist due time only]
-    Todoist --> Receipt[Persist mapping and append-only receipt]
+    Ownership -->|yes| TaskKind{Managed native recurrence?}
+    TaskKind -->|no| CalendarFirst[Upsert owned managed event]
+    CalendarFirst --> FixedDue[Update fixed Todoist Due]
+    TaskKind -->|yes| RecurrencePreflight[Re-read lifecycle and occurrence]
+    RecurrencePreflight --> SyncWrite[Verified recurrence-safe Todoist Sync writes]
+    SyncWrite --> RecurringCalendar[Upsert occurrence-owned event]
+    FixedDue --> Receipt[Persist mapping and append-only receipt]
+    RecurringCalendar --> Receipt
 ```
 
 ### 8.1 Operational modes
@@ -341,21 +369,32 @@ Replanning marks the prior identity as `PUBLISHING_REVISION` before exposing a r
 
 ## 9. Mutation ordering, idempotency, and reconciliation
 
-For each scheduled block, `PlanApplier` performs:
+For each scheduled block, `PlanApplier` first performs:
 
 1. mode and approval gates;
 2. protected/manual/frozen and approval-required checks;
 3. drift detection against durable mappings and live state;
 4. global UID and ownership collision checks;
-5. live idempotency reads;
-6. managed calendar upsert;
-7. cleanup of a superseded owned UID, when necessary;
-8. Todoist due-time update for each member task; and
-9. per-task mapping plus append-only application receipt persistence.
+5. live idempotency reads; and
+6. task-specific mutation ordering followed by per-task mapping and append-only receipt persistence.
 
-The calendar is written before Todoist. If calendar succeeds and Todoist fails, the partial state is persisted and may be reconciled. Full idempotent skip requires both a live matching owned calendar event and a live matching Todoist due time; a local mapping alone is insufficient.
+For an ordinary or non-recurring task, Calendar is written before the fixed Todoist Due update. If
+Calendar succeeds and Todoist fails, the partial state is persisted and may be reconciled. For a
+managed native recurrence, apply re-fetches and validates the lifecycle marker, occurrence identity,
+Due tuple, Deadline, and labels; performs and verifies any recurrence-safe marker/Deadline/Due Sync
+writes; and only then writes the occurrence-owned Calendar event. A later Calendar failure therefore
+leaves verified Todoist state plus a partial receipt for reconciliation rather than rolling Todoist
+back blindly.
 
-The Todoist write interface used by the applier updates **due time only**. It never mutates the Todoist deadline. Unknown outcomes create a reconciliation barrier, preventing another blind write until live state proves the result.
+Ordinary planner paths cannot mutate Deadline. The recurrence lifecycle is the narrow exception: it
+may initialize Deadline from an authorized user Due or advance a managed Deadline after Todoist's
+native completion. Recurring Due writes use Sync `item_update` with the opaque recurrence tuple;
+floating tuples receive a planner-zone civil datetime, while fixed-IANA tuples receive a UTC instant
+with the timezone retained so local wall-clock time survives DST. Fixed REST `due_datetime` is not
+used for native recurrences. SmartPlanner observes native completion but never calls simplified REST
+or Sync `close`, which live QA found can remove the future fixed-zone Due. Full idempotent skip requires
+matching live provider state, not a local mapping alone. Unknown outcomes create a reconciliation
+barrier and are resolved by re-read before any retry.
 
 ## 10. Durable state
 
@@ -370,19 +409,24 @@ flowchart LR
     Daemon --> Conversations[(deliveries_dir/conversations)]
 
     Plans --> P[Immutable plan snapshots + index]
-    Apps --> A[Task mappings + append-only receipts]
+    Apps --> A[Active/history mappings + receipts + recurrence cursor/inbox]
     Decisions --> D[Decision records + replay index]
     Deliveries --> L[Delivery ledger / idempotency state]
     Conversations --> C[Thread identity + inbound event state]
 ```
 
 - **PlanStore:** immutable, versioned JSON snapshots with deterministic IDs/hashes and an index.
-- **ApplicationStateStore:** task-to-applied-event mappings and append-only application receipts.
+- **ApplicationStateStore:** active task mappings, occurrence-keyed `mapping-history.json`, and append-only application receipts.
+- **ItemsSyncStateStore:** dedicated recurrence cursor plus pending Todoist item deltas at `applications_dir/recurrence/todoist-items-sync.json`.
 - **DecisionStore:** authorized feedback decisions and correlation/message replay protection.
 - **DeliveryLedger:** pre-send claims and terminal delivery receipts keyed by idempotency key.
 - **ConversationStore:** Slack channel/thread to exact current plan/proposal correlation plus bounded inbound event deduplication/recovery.
 
-State stores use process-level synchronization, filesystem locks, temporary files, flush, and atomic replace when supported. Malformed/truncated state fails explicitly rather than silently authorizing work.
+State stores use process-level synchronization, filesystem locks, temporary files, flush, and atomic
+replace when supported. Malformed/truncated authority-bearing plan, application, decision, delivery,
+or conversation state fails explicitly rather than silently authorizing work. The replaceable
+Todoist items cursor/inbox is the deliberate exception: corrupt cursor delivery state is discarded
+and bootstrapped from live Todoist authority before lifecycle processing resumes.
 
 Conversation events move through `PROCESSING`, `PENDING`, and `COMPLETED`. A completed event is ignored on replay. Work interrupted under a prior daemon owner is reclaimable after restart. Delivery state distinguishes `PENDING`, `DELIVERED`, `FAILED`, and ambiguous/unknown outcomes so provider success cannot be guessed from a failed local finalization.
 
@@ -589,7 +633,8 @@ Tests are organized by boundary:
 - AI tests validate strict schemas, isolation, size bounds, and WireMock request/response contracts;
 - Weather tests cover clear/rain fixtures, failure policy, malformed payloads, and DST fold/gap behavior;
 - state tests cover atomicity, locking, idempotency, replay, malformed state, and restart recovery; and
-- apply tests verify preview refusal, exact approval, safe-only withholding, ownership, drift, partial failure, reconciliation, idempotency, and deadline invariance.
+- recurrence tests cover opaque tuple preservation, lifecycle classification, Deadline provenance, occurrence history, cursor/inbox replay, provider normalization, partial-rate-limit recovery, and fail-closed drift; and
+- apply tests verify preview refusal, exact approval, safe-only withholding, ownership, drift, partial failure, reconciliation, idempotency, ordinary Deadline invariance, and authorized recurrence-lifecycle Deadline transitions.
 
 Live provider QA is intentionally separate from hermetic test execution and follows `docs/SMARTPLANNER_QA_RUNBOOK.md` with disposable accounts, explicit phase approval, before/after snapshots, redaction, cleanup, and stop conditions.
 
@@ -603,7 +648,8 @@ Live provider QA is intentionally separate from hermetic test execution and foll
 6. AI suggestions have no direct mutation authority and require deterministic user confirmation where used by the daemon.
 7. Weather is optional, read-only, and applies only to matching task rules.
 8. Calendar writes target only planner-owned events in the configured managed-output calendar.
-9. Todoist apply changes due time only and never silently changes deadlines.
+9. Ordinary Todoist apply cannot change Deadline; only an explicitly enabled, classified recurrence lifecycle may initialize or advance it, with verified provider postconditions.
 10. Ambiguous provider outcomes require reconciliation and are never blindly retried.
 11. Delivery and inbound events are durably idempotent across retries and restarts.
 12. Plans, applications, decisions, and deliveries are separate durable stores and must be backed up/restored as one coherent state set.
+13. A recurring occurrence is identified by `(Todoist task ID, completed_count)`; rescheduling updates that occurrence's event and native completion creates a distinct retained event.

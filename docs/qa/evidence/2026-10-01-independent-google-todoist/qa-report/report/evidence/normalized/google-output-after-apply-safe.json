@@ -1,0 +1,40 @@
+[
+  {
+    "end": {
+      "dateTime": "2026-10-05T13:30:00Z",
+      "timeZone": "America/New_York"
+    },
+    "id_fp": "9e1b3e868a4a",
+    "ownership": {
+      "block_id_fp": "1f76fcf39e65",
+      "managed": "1",
+      "planner_uid_fp": "eac6d5fb1104",
+      "qa_run": null
+    },
+    "start": {
+      "dateTime": "2026-10-05T13:00:00Z",
+      "timeZone": "America/New_York"
+    },
+    "status": "confirmed",
+    "summary": "SmartPlanner QA approved spqa-20261001-9b3beb"
+  },
+  {
+    "end": {
+      "dateTime": "2026-10-05T15:10:00Z",
+      "timeZone": "America/New_York"
+    },
+    "id_fp": "93947d1bb5a0",
+    "ownership": {
+      "block_id_fp": "30152c123c67",
+      "managed": "1",
+      "planner_uid_fp": "932a424296da",
+      "qa_run": null
+    },
+    "start": {
+      "dateTime": "2026-10-05T14:40:00Z",
+      "timeZone": "America/New_York"
+    },
+    "status": "confirmed",
+    "summary": "SmartPlanner QA safe ordinary spqa-20261001-9b3beb"
+  }
+]

@@ -1,5 +1,11 @@
 package todoistcaldavsync.planner.domain
 
+import todoistcaldavsync.planner.recurrence.LifecycleMarker
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
+import todoistcaldavsync.planner.recurrence.MarkerStatus
+import todoistcaldavsync.planner.recurrence.OccurrenceIdentity
+import todoistcaldavsync.planner.recurrence.TodoistDue
+
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -26,6 +32,13 @@ final class Task {
     final String durationSource
     final boolean manual
     final boolean allDayDue
+    final TodoistDue todoistDue
+    final LocalDate deadlineDate
+    final String description
+    final Instant createdAt
+    final Instant updatedAt
+    final long completedCount
+    final LifecycleMarker lifecycleMarker
 
     private Task(Builder b) {
         this.id = b.id
@@ -41,6 +54,13 @@ final class Task {
         this.durationSource = b.durationSource
         this.manual = b.manual
         this.allDayDue = b.allDayDue
+        this.todoistDue = b.todoistDue
+        this.deadlineDate = b.deadlineDate
+        this.description = b.description
+        this.createdAt = b.createdAt
+        this.updatedAt = b.updatedAt
+        this.completedCount = b.completedCount
+        this.lifecycleMarker = b.lifecycleMarker
     }
 
     static Builder builder() {
@@ -64,9 +84,17 @@ final class Task {
             throw new IllegalArgumentException("Task priority must be 1-4, got: ${priority}")
         }
 
+        TodoistDue todoistDue = TodoistDue.from(raw.due, zone) { String value, ZoneId dueZone ->
+            parseFlexibleInstant(value, false, dueZone)
+        }
         Instant deadline = parseDeadline(raw, zone)
-        Instant dueTime = parseDueTime(raw, zone)
-        boolean allDayDue = detectAllDayDue(raw)
+        LocalDate deadlineDate = parseDeadlineDate(raw)
+        Instant dueTime = todoistDue?.instant
+        boolean allDayDue = todoistDue?.allDay ?: false
+        long completedCount = parseCompletedCount(raw)
+        String description = raw.description?.toString() ?: ''
+        def markerRead = new LifecycleMarkerCodec().read(description)
+        LifecycleMarker marker = markerRead.status == MarkerStatus.VALID ? markerRead.marker : null
 
         Duration nativeDuration = parseNativeDuration(raw)
         def resolved = durationResolver.resolve(nativeDuration, labels)
@@ -86,7 +114,19 @@ final class Task {
             .durationSource(resolved.source)
             .manual(manual)
             .allDayDue(allDayDue)
+            .todoistDue(todoistDue)
+            .deadlineDate(deadlineDate)
+            .description(description)
+            .createdAt(parseTimestamp(raw.created_at ?: raw.createdAt ?: raw.added_at ?: raw.addedAt,
+                'created_at/added_at'))
+            .updatedAt(parseTimestamp(raw.updated_at ?: raw.updatedAt, 'updated_at'))
+            .completedCount(completedCount)
+            .lifecycleMarker(marker)
             .build()
+    }
+
+    OccurrenceIdentity occurrenceIdentity() {
+        new OccurrenceIdentity(id, completedCount)
     }
 
     private static List<String> normalizeLabels(Map raw) {
@@ -114,6 +154,35 @@ final class Task {
             return parseFlexibleInstant(dateStr, true, zone)
         }
         return parseFlexibleInstant(dl.toString(), true, plannerZone)
+    }
+
+    private static LocalDate parseDeadlineDate(Map raw) {
+        def value = raw.deadline instanceof Map ? raw.deadline.date : raw.deadline
+        if (value == null || value.toString().trim().isEmpty()) return null
+        String text = value.toString().trim()
+        if (text ==~ /\d{4}-\d{2}-\d{2}/) return LocalDate.parse(text)
+        // Compatibility with older fixtures/providers that exposed a datetime-shaped deadline.
+        if (text.size() >= 10 && text.substring(0, 10) ==~ /\d{4}-\d{2}-\d{2}/) {
+            return LocalDate.parse(text.substring(0, 10))
+        }
+        throw new IllegalArgumentException("Invalid Todoist Deadline: ${text}")
+    }
+
+    private static long parseCompletedCount(Map raw) {
+        def value = raw.containsKey('completed_count') ? raw.completed_count : raw.completedCount
+        if (value == null) return 0L
+        try {
+            long count = value as long
+            if (count < 0) throw new IllegalArgumentException('completed_count must be non-negative')
+            count
+        } catch (IllegalArgumentException e) { throw e }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid completed_count: ${value}", e) }
+    }
+
+    private static Instant parseTimestamp(Object value, String field) {
+        if (value == null || value.toString().trim().isEmpty()) return null
+        try { Instant.parse(value.toString()) }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid Todoist ${field}: ${value}", e) }
     }
 
     private static Instant parseDueTime(Map raw, ZoneId plannerZone) {
@@ -287,6 +356,13 @@ final class Task {
         private String durationSource
         private boolean manual
         private boolean allDayDue
+        private TodoistDue todoistDue
+        private LocalDate deadlineDate
+        private String description = ''
+        private Instant createdAt
+        private Instant updatedAt
+        private long completedCount
+        private LifecycleMarker lifecycleMarker
 
         Builder id(String v) { this.id = v; this }
         Builder content(String v) { this.content = v; this }
@@ -301,6 +377,13 @@ final class Task {
         Builder durationSource(String v) { this.durationSource = v; this }
         Builder manual(boolean v) { this.manual = v; this }
         Builder allDayDue(boolean v) { this.allDayDue = v; this }
+        Builder todoistDue(TodoistDue v) { this.todoistDue = v; this }
+        Builder deadlineDate(LocalDate v) { this.deadlineDate = v; this }
+        Builder description(String v) { this.description = v ?: ''; this }
+        Builder createdAt(Instant v) { this.createdAt = v; this }
+        Builder updatedAt(Instant v) { this.updatedAt = v; this }
+        Builder completedCount(long v) { this.completedCount = v; this }
+        Builder lifecycleMarker(LifecycleMarker v) { this.lifecycleMarker = v; this }
 
         Task build() {
             if (!id) {
@@ -317,6 +400,9 @@ final class Task {
             }
             if (!durationSource) {
                 throw new IllegalArgumentException('Task durationSource is required')
+            }
+            if (completedCount < 0) {
+                throw new IllegalArgumentException('Task completedCount must be non-negative')
             }
             return new Task(this)
         }

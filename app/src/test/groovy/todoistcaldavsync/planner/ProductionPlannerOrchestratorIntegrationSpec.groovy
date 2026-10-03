@@ -3,10 +3,16 @@ package todoistcaldavsync.planner
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
+import todoistcaldavsync.planner.adapters.LifecycleMutation
 import todoistcaldavsync.planner.adapters.OpenMeteoWeatherGateway
+import todoistcaldavsync.planner.adapters.TodoistCommandResult
+import todoistcaldavsync.planner.adapters.TodoistCommandState
+import todoistcaldavsync.planner.adapters.TodoistLifecycleGateway
+import todoistcaldavsync.planner.adapters.TodoistSyncPage
 import todoistcaldavsync.planner.adapters.WeatherReadGateway
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
+import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
 import todoistcaldavsync.planner.state.PlanStore
 
 import java.nio.file.Files
@@ -183,6 +189,63 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         td.deadlineUpdates.empty
         cal.upserts.empty
         cal.deletes.empty
+    }
+
+    def "incremental added_at item onboards automatically while tombstone is excluded from active processing"() {
+        given:
+        File stateRoot = Files.createTempDirectory('phase7-recurrence-delta-').toFile()
+        Map cfg = root('preview', stateRoot)
+        cfg.planner.timezone = 'America/New_York'
+        cfg.planner.tasks.recurrence = [enabled: true, rollout_cutoff: '2026-10-02T00:00:00Z']
+        Map active = [id: 'new', content: 'Automatic recurrence', labels: ['schedule'], priority: 2,
+            due: [date: '2026-10-03T09:00:00', string: 'every day @ 09:00',
+                is_recurring: true, lang: 'en', timezone: null],
+            description: '', added_at: '2026-10-02T12:34:56Z',
+            updated_at: '2026-10-02T12:34:56Z', completed_count: 0]
+        Map tombstone = [id: 'gone', is_deleted: true]
+        List<String> fetchedIds = []
+        List<LifecycleMutation> lifecycleWrites = []
+        int inventoryFetches = 0
+        TodoistLifecycleGateway gateway = [
+            fetchTasks: { -> inventoryFetches++; [new LinkedHashMap(active)] },
+            fetchTask: { String id -> fetchedIds << id; id == 'new' ? new LinkedHashMap(active) : null },
+            updateLifecycleFields: { LifecycleMutation mutation ->
+                lifecycleWrites << mutation
+                if (mutation.deadlineDate != null) active.deadline = [date: mutation.deadlineDate]
+                if (mutation.labels != null) active.labels = new ArrayList(mutation.labels)
+                if (mutation.description != null) active.description = mutation.description
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, mutation.commandId)
+            },
+            syncItems: { String token ->
+                assert token == '*'
+                new TodoistSyncPage('after-delta', false, null, [active, tombstone])
+            },
+            updateRecurringDue: { String id, due, String replacement, String commandId ->
+                throw new AssertionError('recurring Due write not expected during onboarding')
+            },
+            updateTaskDue: { String id, String value -> throw new AssertionError('ordinary Due write not expected') },
+            updateTaskDeadline: { String id, String value -> throw new AssertionError('ordinary Deadline write not expected') }
+        ] as TodoistLifecycleGateway
+        def cal = new InMemoryCalendarGateway('Planned', true, [])
+        def app = new ProductionPlannerOrchestrator(PlannerConfig.fromMap(cfg),
+            ProductionIntegrationConfig.fromMap(cfg, Path.of('.').toAbsolutePath()),
+            gateway, gateway, cal, cal, { Instant.parse('2026-10-02T13:00:00Z') })
+
+        when:
+        def result = app.pollTodoistItems()
+
+        then:
+        result.status == 'processed'
+        result.processed == 2
+        inventoryFetches == 0
+        fetchedIds == ['new']
+        lifecycleWrites*.taskId == ['new']
+        active.deadline.date == '2026-10-03'
+        active.labels.toSet() == ['schedule', 'smartplanner-seen'] as Set
+        def marker = new LifecycleMarkerCodec().read(active.description).marker
+        marker.deadlineSource == 'initial_user_due'
+        marker.completedCount == 0
+        !fetchedIds.contains('gone')
     }
 
     def "weather provider failure reaches configured fallback policy through production composition"() {

@@ -1,0 +1,21 @@
+{
+  "after": {
+    "date": "2027-03-14T07:30:00Z",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": "America/New_York"
+  },
+  "before": {
+    "date": "2027-03-13T08:30:00Z",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": "America/New_York"
+  },
+  "case": "fixed-IANA-production-scheduling-native-completion",
+  "completed_count_advanced_by_one": true,
+  "completion_status": "ok",
+  "timezone_preserved": true,
+  "verdict": "PASS"
+}

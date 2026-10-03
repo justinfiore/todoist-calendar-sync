@@ -16,12 +16,14 @@ Run from a clean checkout/worktree:
 ```
 
 Gate: all tasks execute and pass; the distribution exists under
-`app/build/install/todoist-caldav-sync`. The tests cover Todoist read/due-only write, explicit
+`app/build/install/todoist-caldav-sync`. The tests cover Todoist reads, ordinary fixed-Due writes,
+recurrence-preserving Sync writes and lifecycle-controlled Deadline transitions, explicit
 CalDAV/Google routing, CalDAV REPORT/GET/PUT/DELETE, Google OAuth/store isolation and Calendar API
 contracts, QA-only provisioning, all-calendar UID search, Open-Meteo, Slack webhook/chat, the
 OpenAI-compatible boundary, preview no-write, exact approvals, safe-only application,
-idempotency/failure behavior, full-auto refusal, CLI help, tracked-example parsing, and token-log
-redaction. Launcher-help review must show `google-oauth-bootstrap`, `google-oauth-bootstrap-qa`,
+occurrence history, cursor/inbox restart recovery, idempotency/failure behavior, full-auto refusal,
+CLI help, tracked-example parsing, and token-log redaction. Launcher-help review must show
+`google-oauth-bootstrap`, `google-oauth-bootstrap-qa`,
 `google-oauth-import-legacy-qa`, `google-qa-calendars-list`, and
 `google-qa-calendars-provision`.
 
@@ -89,8 +91,11 @@ and a dedicated selected-provider calendar (for example `Planner Test Output`). 
 `output_calendar` at a personal/work calendar. Add one separately configured read-only test calendar
 with a few blockers so classification can be observed.
 
-Create test tasks covering: no deadline, date-only deadline, timed due, native duration, duration
-label, `@manual`, high/low priority, and one task that cannot fit. Create calendar events covering:
+Create test tasks covering: no Deadline, date-only Deadline, timed Due, native duration, duration
+label, `@manual`, high/low priority, and one task that cannot fit. If recurrence is enabled, also
+cover post-cutoff automatic onboarding, an existing Deadline, a pre-cutoff legacy candidate,
+`smartplanner-onboard`, soft and `hard` Deadline behavior, and at least one native recurring task.
+Create calendar events covering:
 hard/soft/informational rules, all-day events, and an unknown calendar. Use test credentials with the
 smallest permissions possible. Back up/export both isolated datasets.
 
@@ -117,8 +122,10 @@ Make a backup/export immediately before each gate.
    run apply without approval and with a deliberately wrong hash. Gate: durable refused receipts and
    zero remote writes.
 2. Create an exact approval file for the stored plan and apply it. Gate: only planner-owned events
-   appear in the test output calendar; each has the planner UID/ownership marker; Todoist `due_datetime`
-   matches each block start; Todoist deadlines are byte-for-byte unchanged.
+   appear in the test output calendar; each has the planner UID/ownership marker; Todoist Due matches
+   each block start. Ordinary/unmanaged Deadlines remain byte-for-byte unchanged. An enabled recurring
+   lifecycle may initialize or advance only its classified Deadline and must preserve the full Due
+   recurrence tuple, portable marker, occurrence identity, and prior occurrence events.
 3. Rerun the same apply. Gate: idempotent/no-op results and no duplicate events or blind resend.
 4. Generate a plan containing one ordinary and one protected/approval-required change. Run
    `apply-safe`. Gate: only the ordinary change is written; protected/frozen/manual changes are listed
@@ -126,8 +133,9 @@ Make a backup/export immediately before each gate.
 5. Test delete/reconcile only with a planner-owned test event. Gate: external or wrong-calendar UID
    collisions refuse; owned block metadata must match before DELETE.
 
-Rollback: stop the process, retain receipts/logs, restore the test calendar export and Todoist due
-values from the backup, and restore all four state directories as one snapshot. Never delete state
+Rollback: stop the process, retain receipts/logs, restore the test calendar export and Todoist
+Due/Deadline/description/label values from the backup, and restore all four state directories as one
+snapshot. Never delete state
 selectively to force a retry after an ambiguous provider success.
 
 For Google credential compromise or retirement, revoke the app grant in the dedicated account and
@@ -182,8 +190,9 @@ set of production tasks. Set `mode: approval_required`; generate a fresh plan af
 Exercise missing and stale approval refusals, then apply one exact approved small plan. Observe the
 managed calendar, Todoist due/deadline fields, receipts, and collision checks for at least 24 hours.
 
-Acceptance gate: every write is expected and traceable to a receipt; deadlines never change; rerun is
-idempotent; backup restore instructions have been rehearsed.
+Acceptance gate: every write is expected and traceable to a receipt; ordinary Deadlines never change;
+any recurrence-lifecycle Deadline transition matches the documented provenance and provider
+postcondition; rerun is idempotent; backup restore instructions have been rehearsed.
 
 ### Run — apply_safe_changes
 
@@ -199,11 +208,14 @@ as a rollout stage.
 
 Monitor provider HTTP failures/rate limits, plan churn, unknown calendar diagnostics, UID collisions,
 partial calendar/Todoist outcomes, delivery `UNKNOWN/NEEDS_RECONCILIATION`, state filesystem space,
-and deadline invariance. On any unexplained write or ambiguous success: stop further apply/delivery,
+ordinary Deadline invariance, recurrence tuple preservation, lifecycle drift, and items-cursor inbox
+health. On any unexplained write or ambiguous success: stop further apply/delivery,
 do not blindly retry, save logs/receipts/state, compare live resources to the last backup, restore
 remote data if necessary, restore the matching state snapshot, return to `preview`, and diagnose
 before resuming.
 
 Production acceptance requires all automated and isolated gates, a successful preview crawl,
-approval-required walk, safe-only run, verified backups, observed idempotent reruns, zero deadline
-mutations, and an operator who can execute rollback without improvisation.
+approval-required walk, safe-only run, verified backups, observed idempotent reruns, zero unauthorized
+Deadline mutations, and an operator who can execute rollback without improvisation. Native recurrence
+also requires the dedicated campaign in `SMARTPLANNER_QA_RUNBOOK.md`; hermetic tests alone are not a
+provider-contract substitute.

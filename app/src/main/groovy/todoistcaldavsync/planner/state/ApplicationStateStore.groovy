@@ -67,6 +67,8 @@ class ApplicationStateStore {
         directory.resolve('mappings.json')
     }
 
+    Path mappingHistoryPath() { directory.resolve('mapping-history.json') }
+
     Path receiptPath(String receiptId) {
         directory.resolve("receipt-${encodeKey(receiptId)}.json")
     }
@@ -113,6 +115,24 @@ class ApplicationStateStore {
             Map<String, AppliedMapping> all = new LinkedHashMap<>(loadMappingsUnlocked())
             all[mapping.taskId] = mapping
             saveMappingsUnlocked(all)
+            Map<String, AppliedMapping> history = loadMappingHistoryUnlocked()
+            history[mapping.occurrenceKey] = mapping
+            saveMappingHistoryUnlocked(history)
+        }
+    }
+
+    Map<String, AppliedMapping> loadHistoricalMappings() {
+        withStoreLock {
+            Map<String, AppliedMapping> history = loadMappingHistoryUnlocked()
+            boolean migrated = false
+            loadMappingsUnlocked().values().each { AppliedMapping active ->
+                if (!history.containsKey(active.occurrenceKey)) {
+                    history[active.occurrenceKey] = active
+                    migrated = true
+                }
+            }
+            if (migrated) saveMappingHistoryUnlocked(history)
+            Collections.unmodifiableMap(history)
         }
     }
 
@@ -237,6 +257,21 @@ class ApplicationStateStore {
         atomicWriteJsonUnlocked(mappingsPath(), JsonOutput.prettyPrint(JsonOutput.toJson(root)))
     }
 
+    private Map<String, AppliedMapping> loadMappingHistoryUnlocked() {
+        if (!Files.exists(mappingHistoryPath())) return new LinkedHashMap<>()
+        return parseMappings(
+            Files.readString(mappingHistoryPath(), StandardCharsets.UTF_8),
+            mappingHistoryPath().toString(),
+            true)
+    }
+
+    private void saveMappingHistoryUnlocked(Map<String, AppliedMapping> history) {
+        Map root = [schemaVersion: SCHEMA_VERSION, mappings: (history ?: [:]).keySet().toSorted().collect {
+            history[it].toMap()
+        }]
+        atomicWriteJsonUnlocked(mappingHistoryPath(), JsonOutput.prettyPrint(JsonOutput.toJson(root)))
+    }
+
     private ApplicationReceipt loadReceiptFromPathUnlocked(Path target) {
         String text = new String(Files.readAllBytes(target), StandardCharsets.UTF_8)
         return parseReceipt(text, target.toString())
@@ -304,7 +339,8 @@ class ApplicationStateStore {
         atomicWriteJsonUnlocked(index, JsonOutput.prettyPrint(JsonOutput.toJson(root)))
     }
 
-    private static Map<String, AppliedMapping> parseMappings(String text, String path) {
+    private static Map<String, AppliedMapping> parseMappings(String text, String path,
+                                                              boolean occurrenceKeys = false) {
         if (text == null || text.trim().isEmpty()) {
             throw new PlanStoreException('Mappings snapshot is empty or truncated', path, 'parse')
         }
@@ -346,7 +382,7 @@ class ApplicationStateStore {
             }
             try {
                 AppliedMapping am = AppliedMapping.fromMap(item as Map)
-                out[am.taskId] = am
+                out[occurrenceKeys ? am.occurrenceKey : am.taskId] = am
             } catch (Exception e) {
                 throw new PlanStoreException(
                     "Invalid mapping entry: ${e.message}", path, 'parse', e)

@@ -15,6 +15,8 @@ final class ManagedEventIds {
     static final String OWNERSHIP_MARKER = 'X-TODOIST-PLANNER-MANAGED:1'
     static final String BLOCK_ID_PREFIX = 'block-id:'
     static final String PLAN_ID_PREFIX = 'plan-id:'
+    static final String SERIES_ID_PREFIX = 'todoist-series-id:'
+    static final String OCCURRENCE_ID_PREFIX = 'todoist-occurrence-id:'
 
     private ManagedEventIds() {}
 
@@ -27,6 +29,13 @@ final class ManagedEventIds {
         }
         String hash = sha256Hex(blockId).substring(0, 24)
         return "${UID_PREFIX}${hash}@${UID_DOMAIN}"
+    }
+
+    static String uidForOccurrences(Collection<String> occurrenceKeys) {
+        List<String> keys = (occurrenceKeys ?: []).findAll { it }.toSorted()
+        if (keys.isEmpty()) throw new IllegalArgumentException('occurrenceKeys are required')
+        String hash = sha256Hex(keys.join('\u0000')).substring(0, 24)
+        "${UID_PREFIX}${hash}@${UID_DOMAIN}"
     }
 
     static boolean isPlannerUid(String uid) {
@@ -65,6 +74,23 @@ final class ManagedEventIds {
             sb.append(titleExtra).append('\n')
         }
         return sb.toString()
+    }
+
+    static String buildOccurrenceDescription(String blockId, String planId,
+                                             Collection<Task> tasks, String titleExtra = null) {
+        StringBuilder sb = new StringBuilder(buildDescription(blockId, planId, titleExtra))
+        (tasks ?: []).findAll { it != null }.toSorted { a, b -> a.id <=> b.id }.each { Task task ->
+            sb.append(SERIES_ID_PREFIX).append(task.id).append('\n')
+            sb.append(OCCURRENCE_ID_PREFIX).append(task.occurrenceIdentity().occurrenceKey()).append('\n')
+        }
+        if (tasks) {
+            sb.append('\nTodoist tasks:\n')
+            tasks.findAll { it != null }.toSorted { a, b -> a.id <=> b.id }.each { Task task ->
+                sb.append('- ').append(task.content).append(': ')
+                    .append('https://app.todoist.com/app/task/').append(task.id).append('\n')
+            }
+        }
+        sb.toString()
     }
 
     static String extractBlockId(String description) {

@@ -841,6 +841,29 @@ class PlannerConfigSpec extends Specification {
         config.stability.requireApprovalForMoveWithin.toDays() == 3
     }
 
+    def "recurrence lifecycle validates rollout safety labels and urgency window"() {
+        given:
+        Map recurrence = [enabled: true, rollout_cutoff: '2026-10-01T00:00:00Z',
+            seen_label: 'smartplanner-seen', onboard_label: 'smartplanner-onboard',
+            hard_label: 'hard', hard_deadline_soon_days: 5] + invalid
+
+        when:
+        PlannerConfig.fromMap(planner: [mode: 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [recurrence: recurrence]])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(expected)
+
+        where:
+        invalid                                                        | expected
+        [rollout_cutoff: null]                                         | 'planner.tasks.recurrence.rollout_cutoff'
+        [seen_label: 'same', onboard_label: 'SAME']                     | 'must be distinct'
+        [hard_deadline_soon_days: 0]                                   | 'planner.tasks.recurrence.hard_deadline_soon_days must be positive'
+        [hard_deadline_soon_days: 'not-an-integer']                    | 'planner.tasks.recurrence.hard_deadline_soon_days must be a positive integer'
+    }
+
     def "Builder.build rejects invalid state that cannot escape"() {
         when:
         PlannerConfig.builder()

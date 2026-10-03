@@ -1,0 +1,3 @@
+Initial cleanup guard refused before sending DELETE because it expected todoistPlannerManaged="true".
+Product source and live events use todoistPlannerManaged="1". Both events also have plannerUid,
+blockId, and the exact run tag in their summary. No provider mutation occurred before correction.

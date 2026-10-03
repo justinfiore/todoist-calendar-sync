@@ -28,6 +28,16 @@ final class PlanHash {
         sb.append('id=').append(plan.id).append('\n')
         sb.append('version=').append(plan.version).append('\n')
         sb.append('mode=').append(plan.mode).append('\n')
+        plan.tasks.toSorted { a, b -> a.id <=> b.id }.each { Task t ->
+            sb.append('task|').append(t.id).append('|').append(t.completedCount).append('|')
+                .append(t.deadlineDate ?: '').append('|')
+                .append((t.labels ?: []).toSorted().join(',')).append('|')
+                .append(t.todoistDue?.date ?: '').append('|')
+                .append(t.todoistDue?.recurrenceFingerprintInput() ?: '').append('|')
+                .append(t.lifecycleMarker?.deadlineMode ?: '').append('|')
+                .append(t.lifecycleMarker?.deadlineSource ?: '').append('|')
+                .append(t.lifecycleMarker?.markerGeneration ?: '').append('\n')
+        }
         plan.scheduledBlocks.toSorted { a, b -> a.id <=> b.id }.each { ScheduledBlock b ->
             sb.append('block|').append(b.id).append('|')
                 .append(b.start).append('|').append(b.end).append('|')
