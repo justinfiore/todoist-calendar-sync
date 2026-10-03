@@ -50,3 +50,9 @@ out-of-range task overrides are rejected. No AI output directly changes a plan, 
 configuration, or decision. Test against a mock/approved test
 endpoint first and verify redaction, schema rejection, token/body bounds, and unchanged remote/local
 write surfaces.
+
+Subscription profiles are documented separately in
+[`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md). Both currently fail closed because neither vendor
+publishes a stable direct tool-free subscription inference contract. SmartPlanner does not invoke
+`codex exec`, `grok -p`, ACP, or coding-agent subprocesses; does not rely on prompt-only tool
+restrictions; and never falls back to separately billed public APIs.

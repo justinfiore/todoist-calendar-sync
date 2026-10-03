@@ -171,6 +171,26 @@ Also inspect the full diff, scan only tracked files for secret patterns, and mec
 documented launcher operation/flag against installed `--help`. These commands must not read `.qa`,
 load credentials, contact providers, mutate staging, or create a commit.
 
+## Authorization-gated AI subscription matrices
+
+Do not run these matrices without owner authorization and disposable subscription accounts. Run Codex
+and Grok independently; one provider's evidence cannot support the other. Before execution, preserve the
+fail-closed state and record only versions, timestamps, safe classes, hashes, outcomes, and cleanup
+inventories—never raw streams, consent URLs, codes, tokens, credentials, emails, or account/workspace IDs.
+
+For each provider, exercise the installed launcher's device login default and explicit browser flow,
+local status, opt-in remote entitlement status, forced refresh/rotation, every allowed suggestion schema,
+preview and daemon use, restart, cancellation, denied/expired/revoked auth, logout, unsupported
+version/protocol, and complete temporary/provider cleanup. Verify each stage's writes are limited to the
+dedicated auth root; personal vendor homes and all planner/provider mutation stores remain byte-identical
+until the normal separately confirmed planner operation writes them.
+
+Staged rollout is: upgrade disabled → authenticate while AI remains disabled → one-provider preview →
+daemon restart/refresh → disable → logout/rollback. There must be no coding-agent subprocess, public API
+fallback, cross-provider fallback, or change before explicit configuration. The current adapters are
+unsupported, so the matrix must first observe exit 3 and make zero filesystem/network changes. The owner
+must additionally obtain a stable tool-free protocol/terms determination before authorizing live login.
+
 ## H. Native recurrence and Deadline campaign (new evidence only)
 
 This campaign is separate from `docs/qa/evidence/2026-10-01-independent-google-todoist`. Never edit,

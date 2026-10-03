@@ -6,6 +6,7 @@ import groovy.yaml.YamlSlurper
 import todoistcaldavsync.planner.adapters.*
 import todoistcaldavsync.planner.ai.AiAssistanceService
 import todoistcaldavsync.planner.ai.OpenAiCompatibleLlmGateway
+import todoistcaldavsync.planner.ai.UnsupportedSubscriptionLlmGateway
 import todoistcaldavsync.planner.apply.PlanApplier
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
@@ -273,7 +274,9 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         Instant end = plan.slots ? plan.slots*.end.max() : plan.createdAt.plusSeconds(86400)
         List<CalendarEvent> events = calendarRead.fetchEvents(start, end)
         def service = AiAssistanceService.create(plannerConfig,
-            { new OpenAiCompatibleLlmGateway(plannerConfig.ai) } as Supplier,
+            { plannerConfig.ai.provider in ['codex_subscription', 'grok_build_subscription']
+                ? new UnsupportedSubscriptionLlmGateway(plannerConfig.ai.provider)
+                : new OpenAiCompatibleLlmGateway(plannerConfig.ai) } as Supplier,
             clock).orElseThrow()
         service.suggest(type, correlationId, plan, events, feedbackText)
     }

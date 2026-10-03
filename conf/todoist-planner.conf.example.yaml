@@ -309,3 +309,23 @@ planner:
       require_structured_output: true
       require_confirmation_for_policy_changes: true
       send_minimum_necessary_data: true
+
+    # Subscription profiles are explicit but currently unsupported and fail closed. These paths are
+    # examples only; no directory or vendor process is touched while enabled remains false.
+    # See docs/AI_SUBSCRIPTION_COMPATIBILITY.md before changing provider.
+    subscription:
+      auth_root: /var/lib/smartplanner/ai-auth
+      experimental_protocol_acknowledged: false
+      login_timeout: PT5M
+      codex:
+        executable: /usr/local/bin/codex
+        min_version: 0.160.0       # observed compatibility-spike version; not a supported range
+        max_version: 0.160.0
+        model: codex-model
+        allowed_hosts: []          # no subscription endpoint is approved
+      grok:
+        executable: /usr/local/bin/grok
+        min_version: 1.0.46        # observed compatibility-spike version; not a supported range
+        max_version: 1.0.46
+        model: grok-model
+        allowed_hosts: []          # api.x.ai substitution is forbidden

@@ -160,6 +160,11 @@ All operations use `TodoistCalDavSync`/the installed `todoist-caldav-sync` launc
 - `google-qa-calendars-provision`: additionally requires `--qa-calendar
   'alias|role|name[;alias|role|name]'`; creates or exactly reuses named calendars and writes returned
   IDs only beneath ignored `.qa/state/calendar-ids.json`.
+- `ai-auth-login`, `ai-auth-status`, `ai-auth-logout`: require `--ai-provider codex|grok`; login
+  defaults to `--auth-flow device`, status alone accepts `--remote`, and all accept `--json`. Both
+  providers currently return the explicit unsupported compatibility state without executing a vendor
+  CLI, reading credentials, or constructing planner/provider services. See
+  [`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md).
 - `planner-daemon`: primary long-running multi-horizon planning, Slack proposal/thread feedback, and graceful shutdown.
 - `capacity`: live read-only capacity report; requires explicit start/end instants.
 - `preview`: live deterministic proposal + local persistence; requires explicit start/end.

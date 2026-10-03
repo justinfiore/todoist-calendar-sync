@@ -12,6 +12,8 @@ import java.time.Instant
 import java.time.LocalTime
 import java.time.ZoneId
 import java.net.URI
+import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.Collections
 import java.util.Locale
 import java.util.regex.Pattern
@@ -405,6 +407,7 @@ final class PlannerConfig {
         boolean requireConfirmation = parseBoolDefault(confirmationRaw, true)
         def redactionRaw = normalized.redactionenabled
         boolean redact = parseBoolDefault(redactionRaw, true)
+        SubscriptionConfig subscription = parseSubscription(normalized.subscription, errors)
         ['never_apply_changes_directly','require_structured_output','send_minimum_necessary_data'].each { key ->
             String normalizedKey=normalizeConfigKey(key)
             if (normalizedSafety.containsKey(normalizedKey) && !parseBoolDefault(normalizedSafety[normalizedKey], false)) {
@@ -413,7 +416,7 @@ final class PlannerConfig {
         }
         AiConfig cfg = new AiConfig(enabled, provider, endpoint, model, secretEnv,
             connectTimeout, requestTimeout, maxRequestBytes, maxResponseBytes, maxItems,
-            maxStringChars, maxTokens, allowed, allowedHosts, redact, requireConfirmation)
+            maxStringChars, maxTokens, allowed, allowedHosts, redact, requireConfirmation, subscription)
         errors.addAll(collectAiErrors(cfg))
         return cfg
     }
@@ -425,7 +428,7 @@ final class PlannerConfig {
             maxrequestbytes:'max_request_bytes', maxresponsebytes:'max_response_bytes', maxitems:'max_items',
             maxstringchars:'max_string_chars', maxtokens:'max_tokens', allowedsuggestiontypes:'allowed_suggestion_types',
             allowedhosts:'allowed_hosts', requireconfirmation:'require_confirmation', redactionenabled:'redaction_enabled',
-            safety:'safety'
+            safety:'safety', subscription:'subscription'
         ]
         Set<String> seen = [] as Set
         raw.each { key, value ->
@@ -438,7 +441,7 @@ final class PlannerConfig {
             } else {
                 errors << 'planner.ai contains an unknown field'
             }
-            if (value instanceof Map && normalized != 'safety') {
+            if (value instanceof Map && !(normalized in ['safety', 'subscription'])) {
                 errors << "${safePath} must not contain nested map data"
             }
             if (value instanceof Collection && !(normalized in ['allowedsuggestiontypes','allowedhosts'] as Set)) {
@@ -460,6 +463,72 @@ final class PlannerConfig {
                 scanAiValue(value, safePath, false, errors)
             }
         }
+    }
+
+    private static SubscriptionConfig parseSubscription(def raw, List errors) {
+        if (raw == null) return SubscriptionConfig.disabled()
+        if (!(raw instanceof Map)) {
+            errors << 'planner.ai.subscription must be an object'
+            return SubscriptionConfig.disabled()
+        }
+        Map normalized = [:]
+        (raw as Map).each { key, value -> normalized[normalizeConfigKey(key)] = value }
+        Set allowed = ['authroot', 'experimentalprotocolacknowledged', 'logintimeout',
+            'codex', 'grok'] as Set
+        normalized.keySet().findAll { !(it in allowed) }.each {
+            errors << 'planner.ai.subscription contains an unknown field'
+        }
+        Path authRoot = null
+        String authRootText = normalized.authroot?.toString()?.trim()
+        if (authRootText) {
+            try {
+                Path candidate = Paths.get(authRootText)
+                if (!candidate.isAbsolute()) errors << 'planner.ai.subscription.auth_root must be absolute'
+                else authRoot = candidate.normalize()
+            } catch (Exception ignored) {
+                errors << 'planner.ai.subscription.auth_root is invalid'
+            }
+        }
+        Duration loginTimeout = parseDurationValue(normalized.logintimeout, Duration.ofMinutes(5),
+            'planner.ai.subscription.login_timeout', errors)
+        ProviderProfile codex = parseProviderProfile(normalized.codex, 'codex', errors)
+        ProviderProfile grok = parseProviderProfile(normalized.grok, 'grok', errors)
+        new SubscriptionConfig(authRoot,
+            parseBoolDefault(normalized.experimentalprotocolacknowledged, false),
+            loginTimeout, codex, grok)
+    }
+
+    private static ProviderProfile parseProviderProfile(def raw, String provider, List errors) {
+        if (raw == null) return ProviderProfile.disabled(provider)
+        if (!(raw instanceof Map)) {
+            errors << "planner.ai.subscription.${provider} must be an object"
+            return ProviderProfile.disabled(provider)
+        }
+        Map normalized = [:]
+        (raw as Map).each { key, value -> normalized[normalizeConfigKey(key)] = value }
+        Set allowed = ['executable', 'minversion', 'maxversion', 'model', 'allowedhosts'] as Set
+        normalized.keySet().findAll { !(it in allowed) }.each {
+            errors << "planner.ai.subscription.${provider} contains an unknown field"
+        }
+        Path executable = null
+        String executableText = normalized.executable?.toString()?.trim()
+        if (executableText) {
+            try {
+                Path candidate = Paths.get(executableText)
+                if (!candidate.isAbsolute()) errors << "planner.ai.subscription.${provider}.executable must be absolute"
+                else executable = candidate.normalize()
+            } catch (Exception ignored) {
+                errors << "planner.ai.subscription.${provider}.executable is invalid"
+            }
+        }
+        Set<String> hosts = [] as LinkedHashSet
+        if (normalized.allowedhosts != null && !(normalized.allowedhosts instanceof Collection)) {
+            errors << "planner.ai.subscription.${provider}.allowed_hosts must be a list"
+        } else {
+            (normalized.allowedhosts ?: []).each { if (it != null) hosts << it.toString().trim().toLowerCase(Locale.ROOT) }
+        }
+        new ProviderProfile(provider, executable, normalized.minversion?.toString()?.trim(),
+            normalized.maxversion?.toString()?.trim(), normalized.model?.toString()?.trim(), hosts)
     }
 
     private static void scanAiValue(Object value, String path, boolean allowedSpecial, List errors) {
@@ -492,19 +561,22 @@ final class PlannerConfig {
     static List<String> collectAiErrors(AiConfig a) {
         List<String> errors = []
         if (a == null) return ['planner.ai is required']
-        if (!(a.provider in ['none', 'disabled', 'fixture', 'openai_compatible'] as Set)) {
+        if (!(a.provider in ['none', 'disabled', 'fixture', 'openai_compatible',
+                             'codex_subscription', 'grok_build_subscription'] as Set)) {
             errors << 'planner.ai.provider is unsupported'
         }
         if (a.enabled && (a.provider in ['none', 'disabled'])) {
             errors << 'planner.ai.provider must select an implemented provider when AI is enabled'
         }
-        URI endpoint = null
-        try { endpoint = URI.create(a.endpoint ?: '') } catch (Exception ignored) {}
-        if (endpoint == null || endpoint.scheme?.toLowerCase(Locale.ROOT) != 'https' || !endpoint.host ||
-            endpoint.userInfo || endpoint.fragment || !(endpoint.port in [-1, 443])) {
-            errors << 'planner.ai.endpoint must be an absolute HTTPS URL on port 443 without credentials or fragment'
-        } else if (!a.allowedHosts.contains(endpoint.host.toLowerCase(Locale.ROOT))) {
-            errors << 'planner.ai.endpoint host is not in allowed_hosts'
+        if (!(a.provider in ['codex_subscription', 'grok_build_subscription'])) {
+            URI endpoint = null
+            try { endpoint = URI.create(a.endpoint ?: '') } catch (Exception ignored) {}
+            if (endpoint == null || endpoint.scheme?.toLowerCase(Locale.ROOT) != 'https' || !endpoint.host ||
+                endpoint.userInfo || endpoint.fragment || !(endpoint.port in [-1, 443])) {
+                errors << 'planner.ai.endpoint must be an absolute HTTPS URL on port 443 without credentials or fragment'
+            } else if (!a.allowedHosts.contains(endpoint.host.toLowerCase(Locale.ROOT))) {
+                errors << 'planner.ai.endpoint host is not in allowed_hosts'
+            }
         }
         if (a.enabled && !a.model) {
             errors << 'planner.ai.model is required when AI is enabled'
@@ -514,6 +586,18 @@ final class PlannerConfig {
         }
         if (a.enabled && a.provider == 'openai_compatible' && !a.secretEnv) {
             errors << 'planner.ai.secret_env is required when AI is enabled'
+        }
+        if (a.provider in ['codex_subscription', 'grok_build_subscription']) {
+            if (a.secretEnv) errors << 'planner.ai.secret_env is not allowed for subscription providers'
+            if (a.enabled && !a.subscription?.experimentalProtocolAcknowledged) {
+                errors << 'planner.ai.subscription.experimental_protocol_acknowledged must be true for subscription providers'
+            }
+            if (a.enabled && !a.subscription?.authRoot) {
+                errors << 'planner.ai.subscription.auth_root is required for subscription providers'
+            }
+            if (a.enabled) {
+                errors << "planner.ai.provider ${a.provider} is unsupported: no stable tool-free subscription inference protocol has been proven"
+            }
         }
         if (a.secretEnv && !(a.secretEnv ==~ /^[A-Za-z_][A-Za-z0-9_]*$/)) {
             errors << 'planner.ai.secret_env must be an environment variable name'
@@ -1707,12 +1791,14 @@ final class PlannerConfig {
         final Set<String> allowedHosts
         final boolean redactionEnabled
         final boolean requireConfirmation
+        final SubscriptionConfig subscription
 
         AiConfig(boolean enabled, String provider, String endpoint, String model, String secretEnv,
                  Duration connectTimeout, Duration requestTimeout, int maxRequestBytes,
                  int maxResponseBytes, int maxItems, int maxStringChars, int maxTokens,
                  Set<String> allowedSuggestionTypes, Set<String> allowedHosts,
-                 boolean redactionEnabled, boolean requireConfirmation) {
+                 boolean redactionEnabled, boolean requireConfirmation,
+                 SubscriptionConfig subscription = SubscriptionConfig.disabled()) {
             this.enabled = enabled
             this.provider = provider ?: 'none'
             this.endpoint = endpoint ?: 'https://api.openai.com/v1/chat/completions'
@@ -1730,15 +1816,63 @@ final class PlannerConfig {
             this.allowedHosts = Collections.unmodifiableSet(new LinkedHashSet<>(allowedHosts ?: []))
             this.redactionEnabled = redactionEnabled
             this.requireConfirmation = requireConfirmation
+            this.subscription = subscription ?: SubscriptionConfig.disabled()
         }
 
         static AiConfig disabled() {
             new AiConfig(false, 'none', 'https://api.openai.com/v1/chat/completions', null, null,
                 Duration.ofSeconds(5), Duration.ofSeconds(30), 65536, 65536, 100, 500, 1200,
-                AI_SUGGESTION_TYPES, ['api.openai.com'] as Set, true, true)
+                AI_SUGGESTION_TYPES, ['api.openai.com'] as Set, true, true, SubscriptionConfig.disabled())
         }
 
         boolean allows(String type) { enabled && allowedSuggestionTypes.contains(type) }
+    }
+
+    static final class SubscriptionConfig {
+        final Path authRoot
+        final boolean experimentalProtocolAcknowledged
+        final Duration loginTimeout
+        final ProviderProfile codex
+        final ProviderProfile grok
+
+        SubscriptionConfig(Path authRoot, boolean acknowledged, Duration loginTimeout,
+                           ProviderProfile codex, ProviderProfile grok) {
+            this.authRoot = authRoot
+            this.experimentalProtocolAcknowledged = acknowledged
+            this.loginTimeout = loginTimeout
+            this.codex = codex ?: ProviderProfile.disabled('codex')
+            this.grok = grok ?: ProviderProfile.disabled('grok')
+        }
+
+        static SubscriptionConfig disabled() {
+            new SubscriptionConfig(null, false, Duration.ofMinutes(5),
+                ProviderProfile.disabled('codex'), ProviderProfile.disabled('grok'))
+        }
+
+        ProviderProfile profile(String provider) { provider == 'codex' ? codex : provider == 'grok' ? grok : null }
+    }
+
+    static final class ProviderProfile {
+        final String provider
+        final Path executable
+        final String minVersion
+        final String maxVersion
+        final String model
+        final Set<String> allowedHosts
+
+        ProviderProfile(String provider, Path executable, String minVersion, String maxVersion,
+                        String model, Set<String> allowedHosts) {
+            this.provider = provider
+            this.executable = executable
+            this.minVersion = minVersion
+            this.maxVersion = maxVersion
+            this.model = model
+            this.allowedHosts = Collections.unmodifiableSet(new LinkedHashSet<>(allowedHosts ?: []))
+        }
+
+        static ProviderProfile disabled(String provider) {
+            new ProviderProfile(provider, null, null, null, null, [] as Set)
+        }
     }
 
     static final class MessageSchedule {

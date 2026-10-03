@@ -44,6 +44,7 @@ dependencies {
 }
 
 tasks.withType(Test).configureEach {
+    dependsOn tasks.named('installDist')
     useJUnitPlatform()
     reports {
         junitXml.required = true
