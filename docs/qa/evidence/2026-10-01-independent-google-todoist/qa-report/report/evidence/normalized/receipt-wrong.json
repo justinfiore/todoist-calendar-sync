@@ -1,0 +1,24 @@
+{
+  "approvalId": "qa-wrong-hash",
+  "drifts": [],
+  "errors": [
+    "approval planHash mismatch (stale or tampered proposal)"
+  ],
+  "finishedAt": "2026-10-01T12:21:23.519898596Z",
+  "id": "ar-c3243532daf749ee-1",
+  "items": [],
+  "metadata": {
+    "approvalInvalidReason": "approval planHash mismatch (stale or tampered proposal)",
+    "approvalValid": false,
+    "explicitApproval": false,
+    "gate": "approval planHash mismatch (stale or tampered proposal)",
+    "writeCount": 0
+  },
+  "mode": "approval_required",
+  "overallStatus": "skipped_unapproved",
+  "planHash": "dfb73000fb409a48db94ed2771f99e1208983c8685c753bb23393a531c35dac5",
+  "planId": "plan-6447db439a9dc380",
+  "planVersion": 1,
+  "schemaVersion": 1,
+  "startedAt": "2026-10-01T12:21:23.423582167Z"
+}

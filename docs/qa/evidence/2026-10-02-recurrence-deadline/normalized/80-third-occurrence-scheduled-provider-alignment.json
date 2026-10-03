@@ -1,0 +1,142 @@
+{
+  "all_expected_history": true,
+  "all_links_present": true,
+  "all_managed_metadata_present": true,
+  "all_times_aligned": true,
+  "case_count": 10,
+  "cases": [
+    {
+      "case": "daily-canary",
+      "event_count": 3,
+      "event_id_hashes": [
+        "fb41478d860825fe",
+        "4df9ddca885812f7",
+        "38dd2b9edaa4575e"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "existing-deadline",
+      "event_count": 3,
+      "event_id_hashes": [
+        "ec17a9c7fbf8b0ca",
+        "a7e62b5fdedc491b",
+        "dfab4224fbdc5fd1"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "explicit-time",
+      "event_count": 3,
+      "event_id_hashes": [
+        "f4605f3cde2032e8",
+        "fadac2fdd9503680",
+        "d7198a42178e91c3"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "monthly",
+      "event_count": 3,
+      "event_id_hashes": [
+        "474ad97f08f7c0db",
+        "df2ce10a1663b127",
+        "d9c6b74559222731"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "rich-weekday",
+      "event_count": 3,
+      "event_id_hashes": [
+        "dfc8a2e3469503ce",
+        "68705a75b0c4d0eb",
+        "f26233b06183defc"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "strict-relative",
+      "event_count": 3,
+      "event_id_hashes": [
+        "aa33ac29f5d584ec",
+        "eb32c5b5c15a4e9b",
+        "d7ad47134f627693"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "timezone-attempt",
+      "event_count": 3,
+      "event_id_hashes": [
+        "042e8f53ae4461c5",
+        "f3a04345c1249b7c",
+        "6d3c8e8fcaa7a002"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "weekday-specific",
+      "event_count": 3,
+      "event_id_hashes": [
+        "dd6c2ac438d73b9a",
+        "89f155e5a7e8fa62",
+        "3f30a1db7e86467b"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "weekly-date-only",
+      "event_count": 3,
+      "event_id_hashes": [
+        "e2ce551422b2f587",
+        "1d415c075c53851e",
+        "87f349484192bef6"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    },
+    {
+      "case": "yearly",
+      "event_count": 3,
+      "event_id_hashes": [
+        "8a31eaaeab3a6bc4",
+        "c0e7d630affba0a4",
+        "032a8be028a4281b"
+      ],
+      "expected_history_count": true,
+      "id_only_link_present": true,
+      "managed_metadata_present": true,
+      "todoist_google_time_aligned": true
+    }
+  ],
+  "expected_events_per_case": 3,
+  "label": "80-third-occurrence-scheduled",
+  "provider_event_total": 30
+}

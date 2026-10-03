@@ -1,0 +1,16 @@
+{
+  "all_edits_preserved": true,
+  "assertions": {
+    "deadline_edit_preserved": true,
+    "duplicate_marker_preserved": true,
+    "hard_edit_preserved": true,
+    "malformed_marker_preserved": true,
+    "marker_removal_preserved": true,
+    "recurrence_edit_preserved": true,
+    "recurrence_removal_preserved": true,
+    "same_count_due_preserved": true,
+    "sentinel_removal_preserved": true,
+    "unsupported_marker_preserved": true
+  },
+  "label": "82-live-drift"
+}

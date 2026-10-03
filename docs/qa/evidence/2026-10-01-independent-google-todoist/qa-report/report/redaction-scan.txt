@@ -1,0 +1,2 @@
+PASS: no high-confidence OAuth access/refresh/client secret, bearer header, Slack token, or Google consent URL pattern exists in the fresh run evidence tree.
+Archived credentials and prior evidence are quarantined outside this run directory.

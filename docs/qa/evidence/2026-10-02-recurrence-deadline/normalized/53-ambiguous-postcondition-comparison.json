@@ -1,0 +1,82 @@
+[
+  {
+    "actual": "2026-10-03T01:20:00Z",
+    "case": "daily-canary",
+    "equal": true,
+    "planned": "2026-10-03T01:20:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T18:00:00Z",
+    "case": "existing-deadline",
+    "equal": true,
+    "planned": "2026-10-03T18:00:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T00:40:00Z",
+    "case": "explicit-time",
+    "equal": true,
+    "planned": "2026-10-03T00:40:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T18:40:00Z",
+    "case": "monthly",
+    "equal": true,
+    "planned": "2026-10-03T18:40:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T14:20:00Z",
+    "case": "rich-weekday",
+    "equal": true,
+    "planned": "2026-10-03T14:20:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T13:00:00Z",
+    "case": "strict-relative",
+    "equal": true,
+    "planned": "2026-10-03T13:00:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T00:00:00Z",
+    "case": "timezone-attempt",
+    "equal": true,
+    "planned": "2026-10-03T00:00:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T13:40:00Z",
+    "case": "weekday-specific",
+    "equal": true,
+    "planned": "2026-10-03T13:40:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T15:00:00Z",
+    "case": "weekly-date-only",
+    "equal": true,
+    "planned": "2026-10-03T15:00:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  },
+  {
+    "actual": "2026-10-03T19:20:00Z",
+    "case": "yearly",
+    "equal": true,
+    "planned": "2026-10-03T19:20:00Z",
+    "recurring": true,
+    "timezone": "America/New_York"
+  }
+]

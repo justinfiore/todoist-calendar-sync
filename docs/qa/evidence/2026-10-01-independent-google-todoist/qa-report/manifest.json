@@ -1,0 +1,74 @@
+{
+  "branch": "qa-google-calendar-independent",
+  "cleanup": {
+    "google_blockers_baseline_restored": true,
+    "google_calendar_inventory_restored": true,
+    "google_output_baseline_restored": true,
+    "google_owned_blockers_deleted": 1,
+    "google_owned_output_events_deleted": 2,
+    "state_directories_restored": [
+      "plans",
+      "applications",
+      "decisions",
+      "deliveries"
+    ],
+    "todoist_final_labels": 0,
+    "todoist_final_projects": 1,
+    "todoist_final_tasks": 0,
+    "todoist_labels_deleted": 4,
+    "todoist_projects_deleted": 1,
+    "todoist_tasks_deleted": 2
+  },
+  "credentials": {
+    "consent_urls_in_evidence": false,
+    "credential_artifacts_in_evidence": false,
+    "google_reauthentication_required": false
+  },
+  "finished_utc": "2026-10-01T12:37:21.918306+00:00",
+  "hermetic": {
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "tests": 299
+  },
+  "known_finding": "Recurring Todoist Due is untested; current normalization/apply may remove recurrence. Requires separate post-fix live safety case.",
+  "provider_cases": {
+    "apply_safe_mixed": "PASS",
+    "capacity": "PASS",
+    "exact_approved_apply": "PASS",
+    "fully_automated_apply": "PASS",
+    "fully_automated_apply_safe": "PASS",
+    "idempotent_replay": "PASS",
+    "missing_approval": "PASS",
+    "preview_stability": "PASS",
+    "preview_zero_write": "PASS",
+    "rollback_cleanup": "PASS",
+    "wrong_hash": "PASS"
+  },
+  "reviewed_base_commit": "939edefde61c2cefad52503c3b22420ec10976ab",
+  "schema_version": 1,
+  "scope": {
+    "excluded": [
+      "Slack",
+      "Weather",
+      "LLM",
+      "combined integrations",
+      "CalDAV",
+      "production rollout",
+      "recurring Todoist tasks"
+    ],
+    "included": [
+      "Google Calendar API",
+      "Todoist API v1",
+      "hermetic Google/Todoist/planning/apply"
+    ]
+  },
+  "started_utc": "2026-10-01T12:07:59Z",
+  "tested_commit": "9b3bebf43bfe2d02d6a241d8dd52391bc4b1a76b",
+  "verdict": "PASS",
+  "visuals": {
+    "native_provider_ui": "unavailable: orb browser was not authenticated",
+    "report_screenshot_inspected": true,
+    "report_walkthrough_video_inspected": true
+  }
+}

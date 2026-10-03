@@ -1,0 +1,80 @@
+# Sanitized command/status index. Private config paths, account values, IDs, approvals, and tokens are omitted.
+00	./gradlew --no-daemon test && npx -y @fission-ai/openspec@1.14.0 validate add-deadline-recurrence-support --strict	0	pre-live automated gate
+01	./gradlew --no-daemon installDist	0	install exact campaign build
+02	installed launcher --operation google-qa-calendars-list --confirm-dedicated-qa-account	0	account/scope preflight
+03	python3 .qa/private/live_qa.py inventory	0	Todoist preflight
+04	python3 .qa/private/live_qa.py canary	0	canary provision
+05	python3 .qa/private/live_qa.py setup-google	0	isolated calendar provision
+06	python3 .qa/private/live_qa.py matrix-create	0	ten-class matrix provision
+07	groovy .qa/private/poll-campaign.groovy	1	initial floating-timezone tuple rejection retained
+08	focused recurrence regression + installDist	0	present-null timezone fix
+09	groovy .qa/private/poll-campaign.groovy	1	multi-item onboarding restart defect retained
+10	focused onboarding recovery regression + installDist	0	shadowing/restart fix
+11	installed launcher --operation preview [campaign config/range]	0	preview-first gate
+12	installed launcher --operation apply --plan-id <recorded> --approval <exact>	0	initial apply command completed; provider assertion exposed UTC normalization
+13	python3 .qa/private/live_qa.py matrix-complete --cycle 1	0	native cycle control
+14	focused civil-Due regression + installDist	0	civil recurrence write fix
+15	installed launcher preview/apply from saved plan	0	command completed; provider assertion exposed schema-v2 recurrence loss
+16	PlanStore round-trip regression + installDist	0	schema-v3 lifecycle persistence fix
+17	python3 .qa/private/live_qa.py fresh-reset	0	fresh final matrix reset
+18	groovy .qa/private/poll-campaign.groovy	0	final onboarding bootstrap
+19	installed launcher preview/apply exact approval	0	10 first occurrences applied
+20	python3 .qa/private/live_qa.py verify-schedule --expected 1	0	10/10 provider alignment
+21	python3 .qa/private/live_qa.py matrix-complete --cycle 1	0	10/10 native cycle 1
+22	groovy .qa/private/poll-campaign.groovy	0	cycle-1 incremental processing
+23	installed launcher preview/apply exact approval	0	partial marker writes followed by injected 429
+24	installed launcher apply retry same plan/approval	0	command returned failed; own partial markers rejected (retained)
+25	focused 429 resume regression + installDist	0	partial-state recovery fix
+26	installed launcher apply retry same plan/approval	0	six missing writes resumed
+27	python3 .qa/private/live_qa.py verify-schedule --expected 2	0	10/10 two-event history
+28	python3 .qa/private/live_qa.py matrix-complete --cycle 2	0	10/10 native cycle 2
+29	groovy .qa/private/poll-campaign.groovy [injected lifecycle-write failure]	1	six pending inbox rows retained
+30	groovy .qa/private/poll-campaign.groovy [new process]	0	pending inbox replayed before fetch
+31	installed launcher preview/apply exact approval	0	third occurrence schedule
+32	python3 .qa/private/live_qa.py verify-schedule --expected 3	0	10/10 three-event history
+33	python3 .qa/private/live_qa.py drift-matrix && verify-drift-matrix	0	provider API edit matrix preserved fail-closed
+34	provider task rename + normalized Google event read	0	three historical links retained
+35	delete local items cursor + groovy .qa/private/poll-campaign.groovy	0	12-item bootstrap_caught_up
+36	poll with manufactured invalid token	0	Todoist accepted token; no live 400 produced
+37	create/delete disposable task + groovy .qa/private/poll-campaign.groovy	0	creation and tombstone deltas processed
+38	post-cutoff automatic task + groovy .qa/private/poll-campaign.groovy	0	command completed; assertion failed legacy classification
+39	added_at focused regression + installDist	0	creation alias fix
+40	post-cutoff automatic task retest + poll	0	Deadline/sentinel/marker initialized
+41	make-rollout-configs + legacy/labelled/post-cutoff poll sequence	0	three rollout gates observed
+42	installed launcher preview with recurrence disabled	0	zero writes and equal provider hash
+43	forward reconciliation poll	0	state reconciled before re-enable
+44	installed launcher preview [contention]	0	command completed; assertion found historical-event no-capacity fixture
+45	delete already-evidenced disposable history + preview [contention]	0	soft/hard matrix passed
+46	preview/apply initially-undated task	0	planner Due set and Deadline absent
+47	provider recurring Due edit + poll	0	later genuine user Due initialized Deadline
+48	provider cleanup preflight	0	18 tasks, 2 calendars, 1 project, 5 labels, 1 event
+49	delete owned events/tasks/project/labels/calendars and poll tombstones	0	destructive disposable cleanup
+50	provider final inventory	0	all_zero=true
+51	bash scripts/recurrence-sync-contract.sh	0	80/80 focused tests passed
+52	./gradlew --no-daemon -Dorg.gradle.workers.max=1 test	terminated	orb memory stall; no test result claimed
+53	./gradlew test	terminated	stale Gradle daemon + worker memory stall; no test result claimed
+54	./gradlew --no-daemon -Dorg.gradle.jvmargs='-Xmx256m -Xms64m -XX:MaxMetaspaceSize=192m' -Dorg.gradle.workers.max=1 test	0	961/961 passed
+55	npx -y @fission-ai/openspec@1.14.0 validate add-deadline-recurrence-support --strict	0	valid
+56	git diff --check	0	clean
+57	focused REST/Sync fixed-IANA Due creation and REST close	0	Sync update re-read America/New_York; REST close removed Due, failed assertion retained
+58	focused Sync item_close fixed-IANA retest	0	command reported ok but removed Due; failed assertion retained
+59	delete first fixed-IANA fixtures and inventory	0	all tagged resources zero
+60	focused item_update_date_complete DST retest	0	America/New_York tuple preserved across 2027 DST boundary with same task and count +1
+61	delete explicit-completion fixture and inventory	0	all tagged resources zero
+62	focused non-empty property lifecycle case	0	description label/project comment subtask reminder passed; owner self-assignment normalized null
+63	delete property fixture and final tagged inventory	0	all tagged resources zero
+64	production fixed-IANA poll/preview/apply	0	apply receipt failed postcondition after Todoist normalized timezone null; Calendar write withheld
+65	focused fixed-IANA unit/WireMock tests	1	new tests passed but existing fixed-zone retry expectation exposed outdated civil assertion
+66	focused fixed-IANA unit/WireMock tests + installDist	0	18/18 passed after independently updating expected UTC fixed-zone shape
+67	delete initial production fixed-IANA fixtures and inventory	0	all tagged tasks projects labels and calendars zero
+68	production fixed-IANA setup/poll/preview/apply retest	0	Todoist retained America/New_York and first owned linked event was created
+69	provider alignment checker	0	provider states passed but textual offset-vs-Z assertion failed; retained
+70	instant-normalized provider alignment retest	0	03:30-05:00 equals 08:30Z; one event and fixed Due passed
+71	explicit recurring completion + incremental poll + second preview/apply	0	count advanced; fixed timezone retained; second occurrence applied
+72	second fixed-IANA provider alignment	0	two distinct owned linked events at 03:30 across -05:00/-04:00 DST offset
+73	delete fixed-IANA production retest fixtures and final inventory	0	all tagged tasks projects labels and calendars zero
+74	bash scripts/recurrence-sync-contract.sh	0	82/82 focused tests passed
+75	constrained full Gradle suite	terminated	stale daemon/worker memory stall; no test result claimed
+76	stop daemons + constrained full Gradle suite	0	963/963 passed
+77	npx -y @fission-ai/openspec@1.14.0 validate add-deadline-recurrence-support --strict	0	valid
+78	git diff --check + independent evidence tree digest	0	clean; independent digest unchanged

@@ -1,0 +1,47 @@
+{
+  "labels": [
+    {
+      "id": "2185399184",
+      "name": "schedule"
+    },
+    {
+      "id": "2185399185",
+      "name": "t30"
+    },
+    {
+      "id": "2185399186",
+      "name": "manual"
+    },
+    {
+      "id": "2185399187",
+      "name": "spqa-20261001-9b3beb"
+    }
+  ],
+  "projects": [
+    {
+      "id": "6hJRf22r2FC58V37",
+      "name": "Inbox"
+    },
+    {
+      "id": "6hg64966HfrhF6Xc",
+      "name": "SmartPlanner QA spqa-20261001-9b3beb"
+    }
+  ],
+  "tasks": [
+    {
+      "content": "SmartPlanner QA approved spqa-20261001-9b3beb",
+      "deadline": {
+        "date": "2026-10-08",
+        "lang": "en"
+      },
+      "due": null,
+      "id": "6hg649G4CVhh4386",
+      "labels": [
+        "schedule",
+        "spqa-20261001-9b3beb",
+        "t30"
+      ],
+      "project_id": "6hg64966HfrhF6Xc"
+    }
+  ]
+}

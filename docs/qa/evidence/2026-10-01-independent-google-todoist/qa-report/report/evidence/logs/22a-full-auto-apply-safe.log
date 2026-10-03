@@ -1,0 +1,3 @@
+COMMAND: installed launcher --operation apply-safe --plan-id <fully-automated-plan>
+STARTED_UTC: 2026-10-01T12:22:37Z
+EXIT_STATUS: 0

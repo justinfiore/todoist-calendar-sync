@@ -1,0 +1,14 @@
+{
+  "case": "fixed-IANA-production-scheduling-setup",
+  "due": {
+    "date": "2027-03-13T08:30:00Z",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": "America/New_York"
+  },
+  "isolated_calendars_created": 2,
+  "non_null_iana_reread": true,
+  "sync_update_status": "ok",
+  "task_id_hash": "c92ef5aaa55972ce"
+}

@@ -1,0 +1,24 @@
+{
+  "approvalId": null,
+  "drifts": [],
+  "errors": [
+    "missing approval record"
+  ],
+  "finishedAt": "2026-10-01T12:20:33.004461955Z",
+  "id": "ar-b0a5f95b9c290582-1",
+  "items": [],
+  "metadata": {
+    "approvalInvalidReason": "missing approval record",
+    "approvalValid": false,
+    "explicitApproval": false,
+    "gate": "missing approval record",
+    "writeCount": 0
+  },
+  "mode": "approval_required",
+  "overallStatus": "skipped_unapproved",
+  "planHash": "dfb73000fb409a48db94ed2771f99e1208983c8685c753bb23393a531c35dac5",
+  "planId": "plan-6447db439a9dc380",
+  "planVersion": 1,
+  "schemaVersion": 1,
+  "startedAt": "2026-10-01T12:20:32.916811591Z"
+}

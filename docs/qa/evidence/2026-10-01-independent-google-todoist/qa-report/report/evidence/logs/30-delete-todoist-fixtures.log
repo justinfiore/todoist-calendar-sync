@@ -1,0 +1,7 @@
+COMMAND: provider_qa.py todoist-delete-fixtures for manifest-owned 2 tasks, 4 labels, 1 project
+STARTED_UTC: 2026-10-01T12:28:39Z
+todoist_tasks_deleted=2
+todoist_labels_deleted=4
+todoist_projects_deleted=1
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:28:42Z

@@ -1,0 +1,6 @@
+VERDICT: PASS after verifier correction
+The apply and all provider snapshots completed before the verifier failed.
+Todoist API v1 represents the fixed datetime in due.date, not due.datetime.
+Observed due.date equals planned start 2026-10-05T13:00:00Z; deadline unchanged.
+Exactly one owned Google event exists at 13:00-13:30Z with ownership metadata.
+No apply retry was performed during reconciliation.

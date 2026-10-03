@@ -1,0 +1,32 @@
+[
+  {
+    "active_after_close": true,
+    "command_ok": true,
+    "count_advanced": true,
+    "due_advanced": true,
+    "due_after_close": "2026-10-04T08:00:00",
+    "due_after_update": "2026-10-03T07:00:00",
+    "provider_timezone_after_update": null,
+    "variant": "omitted"
+  },
+  {
+    "active_after_close": true,
+    "command_ok": true,
+    "count_advanced": true,
+    "due_advanced": true,
+    "due_after_close": "2026-10-04T08:00:00",
+    "due_after_update": "2026-10-03T07:00:00",
+    "provider_timezone_after_update": null,
+    "variant": "null"
+  },
+  {
+    "active_after_close": true,
+    "command_ok": true,
+    "count_advanced": true,
+    "due_advanced": true,
+    "due_after_close": "2026-10-04T08:00:00",
+    "due_after_update": "2026-10-03T07:00:00",
+    "provider_timezone_after_update": null,
+    "variant": "zone"
+  }
+]
