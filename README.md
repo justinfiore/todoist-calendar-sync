@@ -17,6 +17,7 @@ Sync Todoist tasks into one or more CalDAV calendars.
 
 Start with the [system architecture](ARCHITECTURE.md). Feature guides: [SmartPlanner configuration](docs/SMART_PLANNER_CONFIGURATION.md),
 [end-to-end rollout/testing](docs/PLANNER_END_TO_END_TESTING.md),
+[optional integration QA setup](docs/OPTIONAL_INTEGRATIONS_QA_SETUP.md),
 [Slack](docs/SLACK_INTEGRATION.md), [LLM](docs/LLM_INTEGRATION.md), and
 [weather](docs/WEATHER_INTEGRATION.md). The bounded suggestion and confirmation contracts are in
 [AI Assistance](docs/AI_ASSISTANCE.md).

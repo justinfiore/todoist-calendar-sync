@@ -219,7 +219,7 @@ use the matching procedure below. A stored plan retains the mode under which it 
 
 | Mode | How to use it | Remote-write behavior |
 | --- | --- | --- |
-| `preview` | Run `capacity` and `preview` only. | Never writes Todoist or CalDAV. `apply` and `apply-safe` refuse. |
+| `preview` | Run `capacity` and `preview` only for a no-provider-write rollout. | `apply` refuses. The explicit `apply-safe` operation remains write-capable, as does recurrence lifecycle processing when separately enabled. |
 | `approval_required` | Preview, create an approval matching the stored plan ID, version, and full hash, then run `apply --plan-id ID --approval FILE`. | Writes only after exact approval; missing, stale, or mismatched approvals refuse. |
 | `apply_safe_changes` | Preview, inspect the diff, then run `apply-safe --plan-id ID` (or `apply` for the stored mode). | Writes ordinary safe changes only; protected, frozen, manual, drifted, and approval-required changes are withheld. |
 | `fully_automated` | Do not use. | Unavailable by design; all apply paths refuse with zero writes. |

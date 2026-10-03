@@ -1,9 +1,10 @@
-# Example planner configuration — safe preview / read-only defaults.
-# Phase 1: use with PlannerCli --mode capacity-report (no remote writes).
+# Example planner configuration — safe one-shot preview defaults.
+# Phase 1: run only capacity/preview for no provider writes. Explicit apply-safe
+# and separately enabled recurrence lifecycle processing remain write-capable.
 
 planner:
   # preview | approval_required | apply_safe_changes | fully_automated
-  # Safe default: preview (calculate/report only; no Todoist or calendar writes)
+  # Safe default for normal apply: preview (normal apply refuses provider writes)
   mode: preview
   timezone: America/New_York
   output_calendar: Todoist Planned

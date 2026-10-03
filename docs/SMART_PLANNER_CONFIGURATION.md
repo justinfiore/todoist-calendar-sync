@@ -6,7 +6,9 @@ or state paths are missing. Relative state paths resolve from the config file di
 
 ## Safety and modes
 
-- `preview` is the default and makes no Todoist or calendar writes.
+- `preview` is the default and makes the normal `apply` path refuse Todoist/calendar writes.
+  `capacity` and `preview` themselves make no provider writes. The explicit `apply-safe` operation and
+  separately enabled recurrence lifecycle processing remain write-capable.
 - `approval_required` writes only with an approval whose plan id, version, and full semantic hash
   exactly match the stored plan.
 - `apply_safe_changes` may write only ordinary blocks. Frozen, manual-override, and
