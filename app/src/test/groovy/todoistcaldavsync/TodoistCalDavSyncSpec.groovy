@@ -87,4 +87,10 @@ class TodoistCalDavSyncSpec extends Specification {
         1               || 4
         0               || 5
     }
+
+    def "renders the Todoist task deeplink in the event description"() {
+        expect:
+        syncer.renderDescription([project_name: 'Home', label_names: ['focus'], priority: 4, id: 'task-1'])
+            .contains('Todoist: https://app.todoist.com/app/task/task-1')
+    }
 }

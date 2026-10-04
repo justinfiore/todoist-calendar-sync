@@ -1221,6 +1221,7 @@ class TodoistCalDavSync {
         """Project: ${item.project_name}
         |Labels: ${item.label_names.join(", ")}
         |Priority: p${5-item.priority}
+        |Todoist: https://app.todoist.com/app/task/${item.id}
         """.stripMargin()
     }
 
