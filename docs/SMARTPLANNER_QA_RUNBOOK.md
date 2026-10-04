@@ -178,18 +178,21 @@ and Grok independently; one provider's evidence cannot support the other. Before
 fail-closed state and record only versions, timestamps, safe classes, hashes, outcomes, and cleanup
 inventories—never raw streams, consent URLs, codes, tokens, credentials, emails, or account/workspace IDs.
 
-For each provider, exercise the installed launcher's device login default and explicit browser flow,
-local status, opt-in remote entitlement status, forced refresh/rotation, every allowed suggestion schema,
-preview and daemon use, restart, cancellation, denied/expired/revoked auth, logout, unsupported
-version/protocol, and complete temporary/provider cleanup. Verify each stage's writes are limited to the
-dedicated auth root; personal vendor homes and all planner/provider mutation stores remain byte-identical
-until the normal separately confirmed planner operation writes them.
+For OpenAI, exercise explicit browser SIWC; verify the default Codex device-import path remains
+unsupported. For xAI, exercise the Hermes-style RFC 8628 device flow; verify explicit browser mode
+remains unsupported. For each provider, cover local status, opt-in remote entitlement status, forced
+refresh/rotation, every allowed suggestion schema, preview and daemon use, restart, cancellation,
+denied/expired/revoked auth, logout, unsupported protocol/tier, and complete temporary/provider cleanup.
+Verify each stage's writes are limited to the dedicated auth root; personal vendor homes and all
+planner/provider mutation stores remain byte-identical until a normal separately confirmed planner
+operation writes them.
 
-Staged rollout is: upgrade disabled → authenticate while AI remains disabled → one-provider preview →
-daemon restart/refresh → disable → logout/rollback. There must be no coding-agent subprocess, public API
-fallback, cross-provider fallback, or change before explicit configuration. The current adapters are
-unsupported, so the matrix must first observe exit 3 and make zero filesystem/network changes. The owner
-must additionally obtain a stable tool-free protocol/terms determination before authorizing live login.
+Staged rollout is: upgrade disabled → authenticate while AI remains disabled → remote status →
+one-provider preview and schema checks → daemon restart/refresh → disable → logout/rollback. There must
+be no coding-agent subprocess, API-key/CLI-proxy fallback, cross-provider fallback, or change before
+explicit configuration. Both adapters are hermetically implemented but not live-proven. The owner must
+record the actual model/tier/entitlement result independently for each disposable account; a failed xAI
+direct route is a compatibility result, not permission to impersonate Grok Build or spend an API key.
 
 ## H. Native recurrence and Deadline campaign (new evidence only)
 

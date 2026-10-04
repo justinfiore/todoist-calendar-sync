@@ -249,6 +249,21 @@ Some negative cases require a controlled OpenAI-compatible mock because a live p
 instructed reliably to return malformed envelopes. Treat those mock tests as required complements to
 the live connectivity test.
 
+### Subscription alternative (owner-run post-merge validation)
+
+Instead of an API key, SmartPlanner can use `codex_subscription` or `grok_build_subscription`. Do not
+set `OPENAI_API_KEY` or `secret_env` for those profiles. Keep AI disabled while creating the private
+auth root and authenticating. OpenAI requires interactive browser SIWC on a reachable `127.0.0.1`
+callback; xAI prints an RFC 8628 URL/code that can be completed in any browser. Neither requires an
+installed Codex/Grok/Hermes CLI or a copied auth file.
+
+Run local status, explicit `--remote` status, then enable one provider for preview and the four
+suggestion commands above. Only after that passes should the daemon be restarted with the provider.
+Codex CLI device import remains unsupported; xAI direct OAuth is implemented from the Hermes pattern
+but still needs owner-run tier/entitlement/inference validation. There is no CLI-proxy, API-key, or
+cross-provider fallback. Exact YAML, commands, secure OpenAI VM transfer, rollback, logout, cleanup,
+and authorization text are in [`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md).
+
 ## 4. Test Slack independently
 
 ### Create the Slack app

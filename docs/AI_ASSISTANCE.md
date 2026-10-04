@@ -80,9 +80,17 @@ when `planner.ai.enabled` is false. For `openai_compatible`, inject `OpenAiCompa
 inject `LlmHttpTransport` and make no network calls. Credentials are resolved only through the
 configured environment-variable name at request time.
 
+For `codex_subscription` and `grok_build_subscription`, production composition selects the bounded
+Responses/SSE gateway and a provider-isolated rotating credential service. OpenAI uses official SIWC;
+xAI uses the direct Hermes-style device grant. The same context minimization, schemas, validation,
+confirmation, audit, and no-mutation rules apply. Subscription credentials never enter prompts or API-key
+fallback logic, and coding-agent subprocesses are never used. Both transports are hermetically tested
+but remain pending owner-run disposable live validation; merging alone leaves AI disabled.
+
 Decision-store composition separately resolves its signing key outside `PlannerConfig` and supplies it
 directly to `AiSuggestionDecisionStore`. There is no default durable key and an unconfigured store cannot
 record or authorize a confirmation.
 
-The AI Assistance trial is deliberately a non-sensitive fixture trial covering all four schemas. No live LLM
-or network trial occurred, and AI Assistance does not provision production secrets or daemon/CLI wiring.
+The AI Assistance trial is deliberately a non-sensitive fixture trial covering all four schemas. No live
+subscription account/network trial occurred. Production auth/daemon wiring exists but creates no
+credential or provider traffic until explicitly configured and invoked.

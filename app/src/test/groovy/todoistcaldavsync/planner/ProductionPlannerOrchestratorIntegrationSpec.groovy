@@ -289,13 +289,13 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         'fail_closed' | 0
     }
 
-    def "subscription gateway composition reuses bounded context and has zero mutation authority"() {
+    def "#provider gateway composition reuses bounded context and has zero mutation authority"() {
         given:
         File stateRoot = Files.createTempDirectory('subscription-orchestration-').toFile()
         Map cfg = root('preview', stateRoot)
-        cfg.planner.ai = [enabled:true, provider:'codex_subscription', model:'gpt-test',
+        cfg.planner.ai = [enabled:true, provider:provider, model:model,
             subscription:[auth_root:new File(stateRoot,'auth').absolutePath,
-                experimental_protocol_acknowledged:true,codex:[allowed_hosts:['api.openai.com']]]]
+                experimental_protocol_acknowledged:true,(profile):[allowed_hosts:[host]]]]
         def planner=PlannerConfig.fromMap(cfg)
         def integration=ProductionIntegrationConfig.fromMap(cfg,Path.of('.').toAbsolutePath())
         def td=todoist();def cal=new InMemoryCalendarGateway('Planned',true,[])
@@ -319,9 +319,9 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         def result=app.aiSuggestions(plan.id,'task_suggestions','subscription-corr')
 
         then:
-        selectedProvider=='codex_subscription'
+        selectedProvider==provider
         result.accepted
-        captured.provider=='codex_subscription' && captured.model=='gpt-test'
+        captured.provider==provider && captured.model==model
         captured.allowedTaskIds==['t1'] as Set
         !JsonOutput.toJson(captured.context).contains(stateRoot.absolutePath)
         td.dueUpdates.empty && td.deadlineUpdates.empty
@@ -332,10 +332,15 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
 
         then:
         def authError=thrown(IllegalStateException)
-        authError.message.contains('ai-auth-login --ai-provider codex --auth-flow browser')
+        authError.message.contains("ai-auth-login --ai-provider ${authProvider} --auth-flow ${flow}")
         td.dueUpdates.empty && cal.upserts.empty
 
         cleanup:
         stateRoot?.deleteDir()
+
+        where:
+        provider                  | model      | profile | host             | authProvider | flow
+        'codex_subscription'      | 'gpt-test' | 'codex' | 'api.openai.com' | 'codex'      | 'browser'
+        'grok_build_subscription' | 'grok-test'| 'grok'  | 'api.x.ai'       | 'grok'       | 'device'
     }
 }

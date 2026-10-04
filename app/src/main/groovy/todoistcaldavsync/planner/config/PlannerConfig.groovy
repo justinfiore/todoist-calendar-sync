@@ -602,9 +602,6 @@ final class PlannerConfig {
                     errors << "planner.ai.subscription profile must allow exactly the documented ${requiredHost} inference host"
                 }
             }
-            if (a.enabled && a.provider == 'grok_build_subscription') {
-                errors << 'planner.ai.provider grok_build_subscription is unsupported: xAI has not authorized third-party reuse of the Grok Build OAuth client and the official CLI routes OAuth sessions to its CLI proxy, not api.x.ai'
-            }
         }
         if (a.secretEnv && !(a.secretEnv ==~ /^[A-Za-z_][A-Za-z0-9_]*$/)) {
             errors << 'planner.ai.secret_env must be an environment variable name'

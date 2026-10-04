@@ -5,14 +5,25 @@ import todoistcaldavsync.planner.config.PlannerConfig
 
 /** Safe launcher boundary for isolated subscription authentication profiles. */
 final class AiSubscriptionAuthOperation {
-    static final String GROK_COMPATIBILITY_GATE = 'xAI has not authorized third-party reuse of the Grok Build OAuth client, and its official source routes OAuth sessions to the CLI proxy rather than api.x.ai'
     static final String CODEX_DEVICE_GATE = 'Codex CLI-issued tokens have not passed the owner-authorized public SIWC endpoint capability probe; use the official browser flow locally and securely transfer the protected record to a self-hosted host'
+    static final String XAI_BROWSER_GATE = 'xAI subscription authentication uses the RFC 8628 device flow; browser authorization-code login is not implemented'
 
     private final PlannerConfig.AiConfig config
+    private final SubscriptionOAuthTransport transport
+    private final Closure openAiLoginFactory
+    private final Closure xaiLoginFactory
 
-    AiSubscriptionAuthOperation(PlannerConfig.AiConfig config) {
-        if (config == null) throw new IllegalArgumentException('planner.ai configuration is required')
+    AiSubscriptionAuthOperation(PlannerConfig.AiConfig config,
+                                SubscriptionOAuthTransport transport = new JdkSubscriptionOAuthTransport(),
+                                Closure openAiLoginFactory = null,
+                                Closure xaiLoginFactory = null) {
+        if (config == null || transport == null) throw new IllegalArgumentException('planner.ai configuration is required')
         this.config = config
+        this.transport = transport
+        this.openAiLoginFactory = openAiLoginFactory ?: { store ->
+            new OpenAiSiwcLogin(store, transport, config.subscription.loginTimeout)
+        }
+        this.xaiLoginFactory = xaiLoginFactory ?: { store -> new XaiDeviceLogin(store, transport) }
     }
 
     int execute(String operation, String provider, String flow, boolean remote,
@@ -29,21 +40,23 @@ final class AiSubscriptionAuthOperation {
         if (operation != 'ai-auth-status' && remote) {
             throw new IllegalArgumentException('--remote is allowed only with ai-auth-status')
         }
-        if (provider == 'grok') return unsupported(provider, operation, remote, json, out, GROK_COMPATIBILITY_GATE)
         if (config.subscription.authRoot == null) {
             return unsupported(provider, operation, remote, json, out,
                 'planner.ai.subscription.auth_root is required for subscription authentication')
         }
-        if (operation == 'ai-auth-login' && flow == 'device') {
+        if (operation == 'ai-auth-login' && provider == 'codex' && flow == 'device') {
             return unsupported(provider, operation, remote, json, out, CODEX_DEVICE_GATE)
         }
-        def store = new SubscriptionCredentialStore(config.subscription.authRoot, 'codex')
-        def adapter = new OpenAiSiwcAdapter()
-        def service = new SubscriptionCredentialService(store, adapter)
+        if (operation == 'ai-auth-login' && provider == 'grok' && flow == 'browser') {
+            return unsupported(provider, operation, remote, json, out, XAI_BROWSER_GATE)
+        }
+        def store = new SubscriptionCredentialStore(config.subscription.authRoot, provider)
+        SubscriptionProviderAdapter adapter = provider == 'codex' ? new OpenAiSiwcAdapter() : new XaiDeviceOAuthAdapter()
+        def service = new SubscriptionCredentialService(store, adapter, transport)
         try {
             Map result
             if (operation == 'ai-auth-login') {
-                new OpenAiSiwcLogin(store, new JdkSubscriptionOAuthTransport(), config.subscription.loginTimeout).login(out)
+                (provider == 'codex' ? openAiLoginFactory.call(store) : xaiLoginFactory.call(store)).login(out)
                 result = [provider:provider, operation:operation, state:'ready', adapterRevision:adapter.revision()]
             } else if (operation == 'ai-auth-status') {
                 result = [provider:provider, operation:operation] + service.status(remote)

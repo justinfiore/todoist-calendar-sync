@@ -18,11 +18,15 @@ The providers do not expose one shared integration contract:
   default cache is `$GROK_HOME/auth.json` (`~/.grok/auth.json` by default). Device authorization follows
   RFC 8628 semantics, but official source binds its public client and `grok-build` referrer to the CLI,
   routes OAuth inference to `cli-chat-proxy.grok.com`, and reserves `api.x.ai` for API-key routing.
+- Hermes implements a distinct `xai-oauth` path: it independently runs RFC 8628 with the source-visible
+  client and bounded subscription scopes, owns the rotating credential, and sends the bearer directly to
+  `https://api.x.ai/v1/responses` without Grok Build's referrer, proxy, or personal credential cache.
 - Both coding CLIs can produce structured output, but both are agents with local tools. Neither currently
   provides a sufficiently stable, provable all-tools-off boundary for use as an inference subprocess.
 - OpenAI explicitly authorizes eligible ChatGPT-plan use on its public Responses API through SIWC; this
-  is distinct from API-key billing. xAI has not made the equivalent third-party registration/entitlement
-  authorization, so the Grok profile remains independently fail-closed.
+  is distinct from API-key billing. The owner confirms third-party xAI subscription use is allowed, but
+  the Hermes-style direct route still requires disposable live validation of tier entitlement, model
+  availability, rotating refresh, and direct Responses behavior before it is described as proven.
 
 Credential files are password-equivalent and may contain rotating refresh tokens. Merely pointing
 SmartPlanner at a personal CLI home would create concurrent refresh races and make logout ownership
@@ -74,9 +78,10 @@ refresh ownership, weakens file validation, and cannot represent login/status/lo
 
 Extend the current operation parser with `ai-auth-login`, `ai-auth-status`, and `ai-auth-logout`, plus
 `--ai-provider codex|grok`, `--auth-flow device|browser`, `--remote`, and `--json` where applicable.
-Device remains the launcher default for headless machines, but Codex device import and every Grok flow
-currently report their explicit compatibility gates. OpenAI browser login is the implemented local login
-path; a protected record may then be transferred using the official self-hosted procedure. These
+Device remains the launcher default for headless machines. Codex device import reports its explicit
+capability gate; xAI device login uses the bounded Hermes-style direct RFC 8628 route. OpenAI browser
+login is the implemented local login path; a protected record may then be transferred using the official
+self-hosted procedure. These
 operations load and validate only the configuration slice required for authentication and exit before
 constructing sync, planner, Todoist, calendar, Slack, or weather services.
 
@@ -87,9 +92,11 @@ issuer/audience/expiry/nonce against pinned JWKS, validate granted scopes, and a
 record. Codex device login/import fails closed until a live probe proves CLI-issued scopes work on this
 public endpoint. Official secure credential transfer is the headless/self-hosted path before then.
 
-The xAI RFC 8628 implementation is hermetically tested for pending, slow-down, denial, expiry, endpoint
-pinning, and normalization, but is unreachable from the launcher until xAI authorizes third-party use of
-the registration and a live direct Responses probe passes. No CLI is used for inference.
+The xAI RFC 8628 implementation is reachable from the launcher and hermetically tested for pending,
+slow-down, denial, expiry, endpoint pinning, normalization, refresh, status, and logout. It sends the
+direct authorization request without Grok Build's `referrer` or client-specific inference headers. A
+live direct Responses probe remains required to validate the owner's subscription tier and current
+service behavior. No CLI is used for login, credential import, or inference.
 
 ### 3. Transfer, do not share, credential ownership after official login
 
@@ -152,10 +159,10 @@ bounded request/response sizes, and explicit timeouts.
 OpenAI revision `openai-siwc-2026-10-03-v1` pins the officially documented authorize/token/resource,
 model-list, Responses, and discovery hosts. Requests set `store:false`, `stream:true`, carry complete
 history in `input`, omit tools and unsupported preview fields, and succeed only on `response.completed`.
-The xAI implementation remains hermetic revision `xai-device-responses-hermetic-v1`, not a supported
-adapter revision. Disposable live probes must still prove actual entitlement and compatibility. No raw
-live payload or credential is committed. If a provider cannot prove direct tool-free structured inference
-under an authorized subscription grant, that profile remains unsupported; the implementation does not substitute
+The xAI implementation uses revision `xai-device-responses-hermetic-v1`. Disposable live probes must
+still prove actual entitlement and compatibility before the route is labeled live-validated. No raw live
+payload or credential is committed. If a provider cannot prove direct tool-free structured inference
+under an authorized subscription grant, that profile remains unavailable for that account; the implementation does not substitute
 `codex exec`, `grok -p`, ACP, prompt instructions, OS sandboxing, or public API billing.
 
 This choice uses OpenAI's documented SIWC browser flow as the supported login UX and treats vendor CLIs
@@ -165,8 +172,9 @@ as a working directory or parsing an agent event stream as if it were one model 
 **Alternatives considered:** invoke `codex exec` or `grok -p` with JSON schema (rejected because the
 current tools retain coding-agent capabilities and ambient authority); use an external broker (viable
 future fallback, but adds another service and credential boundary); call undocumented ChatGPT backend
-endpoints (rejected because OpenAI explicitly requires the public SIWC route); treat xAI CLI source as
-service permission (rejected because source licensing does not authorize hosted-service/client use).
+endpoints (rejected because OpenAI explicitly requires the public SIWC route); reuse Grok Build's cache,
+proxy, referrer, or API-key routing (rejected because Hermes demonstrates a narrower independently owned
+direct OAuth route and shared CLI state would violate refresh ownership).
 
 ### 6. Treat provider compatibility as a release gate
 
@@ -190,9 +198,9 @@ versions, timestamps, safe status classes, hashes, and pass/fail results after s
 
 - **[Preview/provider protocols can change]** → Isolate them behind revisioned adapters,
   require explicit acknowledgment and live gates, pin tested CLI ranges, and fail closed per provider.
-- **[Vendor terms may prohibit or narrow third-party subscription use]** → Verify official terms and
-  actual entitlement during the spike; do not ship/document a provider until acceptable. Never route to
-  separately billed API endpoints implicitly.
+- **[Subscription tiers may not entitle the direct route or requested model]** → Verify actual
+  entitlement during owner-run live QA and label the provider live-unvalidated until it passes. Never
+  route to separately billed API endpoints implicitly.
 - **[Credential importer depends on CLI file shapes]** → Parse exact bounded schema only, test pinned
   fixtures, stage login separately, and preserve the prior credential on every import failure.
 - **[A refresh token can rotate during crash]** → One file lock, reread-under-lock, atomic generation
@@ -212,16 +220,19 @@ versions, timestamps, safe status classes, hashes, and pass/fail results after s
 
 1. Land configuration/CLI/storage abstractions with both subscription providers disabled; run all legacy
    and `openai_compatible` regression suites.
-2. Complete provider compatibility spikes and terms review. Implement and mark supported only adapters
-   whose complete tool-free login/refresh/inference/logout contract passes.
+2. Complete provider compatibility spikes and terms review. Implement adapters whose hermetic contract
+   passes, and label them live-validated only after the complete tool-free login/refresh/inference/logout
+   contract passes with a disposable account.
 3. Add hermetic contract matrices, installed-launcher tests, documentation, and ignored private QA
    scaffolding. Keep sample configuration disabled and free of credentials.
-4. Run authorization-gated disposable live matrices and commit secret-free evidence. Enable each profile
-   in documentation only after its own pass.
+4. Run authorization-gated disposable live matrices and commit secret-free evidence. Record each
+   provider's live-validation status independently.
 5. Operators upgrade with no behavior change. To opt in to OpenAI, they configure the subscription
    profile, run `ai-auth-login --ai-provider codex --auth-flow browser` on a local machine (then use the
    protected-record transfer procedure when self-hosting), inspect local then remote status, enable AI in
-   preview, and later run the daemon under existing planner safeguards. Grok remains unavailable.
+   preview, and later run the daemon under existing planner safeguards. To opt in to xAI, run isolated
+   device login, inspect status, then follow the same preview-first rollout while treating the route as
+   live-unvalidated until the owner matrix passes.
 
 Rollback is configuration-first: disable AI or restore `openai_compatible`; subscription code then has
 no execution path. Run `ai-auth-logout` to revoke/remove the dedicated record, remove the provider
@@ -231,7 +242,8 @@ and legacy sync state require no migration or rollback.
 ## Open Questions
 
 - A Codex CLI version range and importer may be added only if an owner-authorized probe proves that its
-  grant carries the documented SIWC public-endpoint scopes. xAI support additionally requires explicit
-  third-party client-registration permission and a public-endpoint entitlement pass.
+  grant carries the documented SIWC public-endpoint scopes. The xAI direct route requires an
+  owner-authorized public-endpoint entitlement/model/refresh pass; no separate terms-permission gate is
+  asserted by this change.
 - Whether a supported provider exposes revocation is recorded per adapter. Local removal remains the
   deterministic logout behavior when remote revocation is unavailable.

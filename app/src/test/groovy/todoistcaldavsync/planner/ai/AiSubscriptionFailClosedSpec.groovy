@@ -3,6 +3,8 @@ package todoistcaldavsync.planner.ai
 import spock.lang.Specification
 import todoistcaldavsync.planner.config.PlannerConfig
 
+import java.time.Instant
+
 class AiSubscriptionFailClosedSpec extends Specification {
     def "subscription provider profiles parse while disabled and retain no secret"() {
         when:
@@ -28,31 +30,24 @@ class AiSubscriptionFailClosedSpec extends Specification {
         provider << ['codex_subscription', 'grok_build_subscription']
     }
 
-    def "OpenAI subscription enables only on the official public inference host"() {
+    def "subscription providers enable only on their exact public inference host"() {
         when:
         def config=PlannerConfig.fromMap(planner: [
             availability: [working_windows: [weekday: ['09:00-12:00']]],
-            ai: [enabled: true, provider: 'codex_subscription', model: 'vendor-model', subscription: [
+            ai: [enabled: true, provider: provider, model: 'vendor-model', subscription: [
                 auth_root: '/var/lib/smartplanner/ai-auth', experimental_protocol_acknowledged: true,
-                codex:[allowed_hosts:['api.openai.com']]
+                (profile):[allowed_hosts:[host]]
             ]]
         ])
 
         then:
         config.ai.enabled
-        config.ai.provider=='codex_subscription'
-    }
+        config.ai.provider==provider
 
-    def "xAI subscription remains at its exact registration and endpoint gate"() {
-        when:
-        PlannerConfig.fromMap(planner: [availability:[working_windows:[weekday:['09:00-12:00']]],
-            ai:[enabled:true,provider:'grok_build_subscription',model:'vendor-model',subscription:[
-                auth_root:'/var/lib/smartplanner/ai-auth',experimental_protocol_acknowledged:true,
-                grok:[allowed_hosts:['api.x.ai']]]]])
-
-        then:
-        def error=thrown(IllegalArgumentException)
-        error.message.contains('third-party reuse of the Grok Build OAuth client')
+        where:
+        provider                  | profile | host
+        'codex_subscription'      | 'codex' | 'api.openai.com'
+        'grok_build_subscription' | 'grok'  | 'api.x.ai'
     }
 
     def "subscription config rejects relative paths unknown fields and API key crossover"() {
@@ -74,22 +69,47 @@ class AiSubscriptionFailClosedSpec extends Specification {
         error.message.contains('secret_env is not allowed')
     }
 
-    def "unsupported xAI gateway never calls another provider and returns its concrete compatibility gate"() {
+    def "xAI auth operation dispatches only the Hermes-style device flow and owns its credential"() {
         given:
-        def request = new LlmRequest(correlationId: 'c1', suggestionType: 'task_suggestions',
-            provider: provider, model: 'm', planId: 'p1', planVersion: 1,
-            planHash: 'a' * 64, planningInputHash: 'b' * 64, context: [:],
-            allowedTaskIds: [], allowedEventIds: [], maxTokens: 64)
+        File root=File.createTempDir('xai-auth-operation-','')
+        def config=PlannerConfig.fromMap(planner:[availability:[working_windows:[weekday:['09:00-12:00']]],
+            ai:[enabled:false,provider:'grok_build_subscription',subscription:[auth_root:root.absolutePath,
+                grok:[allowed_hosts:['api.x.ai']]]]])
+        SubscriptionOAuthTransport noNetwork=[
+            get:{a,b,c->throw new AssertionError('local operation must not use network')},
+            postForm:{a,b,c->throw new AssertionError('local operation must not use network')}] as SubscriptionOAuthTransport
+        int logins=0
+        Closure loginFactory={SubscriptionCredentialStore store->
+            [login:{Appendable ignored->
+                logins++
+                store.save(new SubscriptionCredential(provider:'grok',adapterRevision:XaiDeviceOAuthAdapter.REVISION,
+                    generation:1,issuer:'https://auth.x.ai',clientId:XaiDeviceOAuthAdapter.CLIENT_ID,
+                    accessToken:'fixture-access',refreshToken:'fixture-refresh',expiresAt:Instant.now().plusSeconds(3600),
+                    scopes:XaiDeviceOAuthAdapter.SCOPES))
+            }]
+        }
+        def operation=new AiSubscriptionAuthOperation(config.ai,noNetwork,null,loginFactory)
+        def loginOut=new StringBuilder();def statusOut=new StringBuilder()
+
+        expect:
+        operation.execute('ai-auth-login','grok','device',false,true,loginOut,new StringBuilder())==0
+        operation.execute('ai-auth-status','grok','device',false,true,statusOut,new StringBuilder())==0
+        logins==1
+        loginOut.toString().contains('xai-device-responses-hermetic-v1')
+        statusOut.toString().contains('"state":"ready"')
+        new SubscriptionCredentialStore(root.toPath(),'grok').load().isPresent()
 
         when:
-        def result = new UnsupportedSubscriptionLlmGateway(provider).complete(request)
+        def browserOut=new StringBuilder()
+        int browserCode=operation.execute('ai-auth-login','grok','browser',false,true,browserOut,new StringBuilder())
 
         then:
-        !result.success
-        result.error.errorClass == LlmErrorClass.COMPATIBILITY
-        result.error.detail.contains('third-party reuse')
+        browserCode==3
+        browserOut.toString().contains('RFC 8628 device flow')
+        logins==1
 
-        where:
-        provider << ['grok_build_subscription']
+        cleanup:
+        root?.deleteDir()
     }
+
 }

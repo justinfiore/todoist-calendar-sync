@@ -95,6 +95,52 @@ class AiSubscriptionInstalledLauncherSpec extends Specification {
         dir?.deleteDir()
     }
 
+    def "installed launcher handles configured local xAI auth without Grok CLI cache or network"() {
+        given:
+        File launcher = new File('build/install/todoist-caldav-sync/bin/todoist-caldav-sync').absoluteFile
+        assert launcher.isFile()
+        File dir = File.createTempDir('xai-auth-installed-configured-', '')
+        File home = new File(dir, 'home'); assert home.mkdir()
+        File auth = new File(dir, 'protected-auth')
+        File config = new File(dir, 'planner.yaml')
+        config.text = """planner:
+  mode: preview
+  availability:
+    working_windows:
+      weekday: [\"09:00-12:00\"]
+  ai:
+    enabled: false
+    provider: grok_build_subscription
+    subscription:
+      auth_root: ${auth.path}
+      grok:
+        allowed_hosts: [\"api.x.ai\"]
+"""
+        File logging = new File(dir, 'log4j.groovy')
+        logging.text = 'log4j.rootLogger="OFF"\n'
+
+        when:
+        def status = run(launcher, home, ['-f', config.path, '-l', logging.path,
+            '--operation', 'ai-auth-status', '--ai-provider', 'grok', '--json'])
+        def logout = run(launcher, home, ['-f', config.path, '-l', logging.path,
+            '--operation', 'ai-auth-logout', '--ai-provider', 'grok', '--json'])
+        def browser = run(launcher, home, ['-f', config.path, '-l', logging.path,
+            '--operation', 'ai-auth-login', '--ai-provider', 'grok', '--auth-flow', 'browser', '--json'])
+
+        then:
+        status.code == 0 && new JsonSlurper().parseText(status.out).state == 'absent'
+        logout.code == 0 && new JsonSlurper().parseText(logout.out).state == 'already_absent'
+        browser.code == 3 && new JsonSlurper().parseText(browser.out).reason.contains('RFC 8628 device flow')
+        [status, logout, browser].every { it.err.empty }
+        home.listFiles().length == 0
+        !new File(home, '.codex').exists()
+        !new File(home, '.grok').exists()
+        !new File(auth, 'providers/grok/credential.json').exists()
+
+        cleanup:
+        dir?.deleteDir()
+    }
+
     private static Map run(File launcher, File home, List<String> args) {
         ProcessBuilder builder = new ProcessBuilder(([launcher.path] + args) as List<String>)
         builder.environment().clear()

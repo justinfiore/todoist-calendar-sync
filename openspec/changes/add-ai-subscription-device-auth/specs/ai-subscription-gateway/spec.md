@@ -48,6 +48,10 @@ Each request SHALL enforce configured connect, execution, response-size, token/i
 - **WHEN** an OpenAI subscription request is sent
 - **THEN** it SHALL target exactly `https://api.openai.com/v1/responses`, set `store: false` and `stream: true`, send complete request context in `input`, omit tools and preview-unsupported fields, and succeed only after `response.completed`
 
+#### Scenario: Direct xAI subscription response is streamed
+- **WHEN** an xAI subscription request is sent
+- **THEN** it SHALL target exactly `https://api.x.ai/v1/responses`, use the SmartPlanner-owned OAuth bearer, omit tools and Grok Build proxy/referrer headers, and SHALL NOT fall back to public API-key billing
+
 #### Scenario: Daemon shuts down during a request
 - **WHEN** graceful shutdown begins while subscription inference is active
 - **THEN** no new request SHALL start, the active request SHALL receive bounded cancellation/drain, and late output SHALL not be accepted after shutdown

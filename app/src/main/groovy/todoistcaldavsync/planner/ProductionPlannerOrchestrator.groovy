@@ -11,6 +11,8 @@ import todoistcaldavsync.planner.ai.OpenAiSiwcAdapter
 import todoistcaldavsync.planner.ai.SubscriptionCredentialService
 import todoistcaldavsync.planner.ai.SubscriptionCredentialStore
 import todoistcaldavsync.planner.ai.SubscriptionResponsesLlmGateway
+import todoistcaldavsync.planner.ai.SubscriptionProviderAdapter
+import todoistcaldavsync.planner.ai.XaiDeviceOAuthAdapter
 import todoistcaldavsync.planner.apply.PlanApplier
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
@@ -205,15 +207,19 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
 
     /** Startup probe: authenticate and perform bounded Todoist and CalDAV reads without writes. */
     void verifyConnectivity(Instant now = clock.get()) {
-        if(plannerConfig.ai.enabled && plannerConfig.ai.provider=='codex_subscription') {
+        if(plannerConfig.ai.enabled && plannerConfig.ai.provider in ['codex_subscription','grok_build_subscription']) {
             try {
+                boolean codex=plannerConfig.ai.provider=='codex_subscription'
+                String provider=codex?'codex':'grok'
+                SubscriptionProviderAdapter adapter=codex?new OpenAiSiwcAdapter():new XaiDeviceOAuthAdapter()
                 String token=new SubscriptionCredentialService(
-                    new SubscriptionCredentialStore(plannerConfig.ai.subscription.authRoot,'codex'),
-                    new OpenAiSiwcAdapter()).accessToken()
+                    new SubscriptionCredentialStore(plannerConfig.ai.subscription.authRoot,provider),adapter).accessToken()
                 token=null
             } catch(Exception failure) {
+                String loginFlow=plannerConfig.ai.provider=='codex_subscription'?'browser':'device'
+                String provider=plannerConfig.ai.provider=='codex_subscription'?'codex':'grok'
                 throw new IllegalStateException(
-                    'OpenAI subscription authentication is not ready; run ai-auth-login --ai-provider codex --auth-flow browser',
+                    "Subscription authentication is not ready; run ai-auth-login --ai-provider ${provider} --auth-flow ${loginFlow}",
                     failure)
             }
         }
@@ -295,12 +301,15 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         List<CalendarEvent> events = calendarRead.fetchEvents(start, end)
         def service = AiAssistanceService.create(plannerConfig, {
             if(aiGatewayFactory!=null)return aiGatewayFactory.call(plannerConfig.ai)
-            plannerConfig.ai.provider == 'codex_subscription'
-                ? new SubscriptionResponsesLlmGateway(plannerConfig.ai,
+            if(plannerConfig.ai.provider in ['codex_subscription','grok_build_subscription']) {
+                boolean codex=plannerConfig.ai.provider=='codex_subscription'
+                String provider=codex?'codex':'grok'
+                SubscriptionProviderAdapter adapter=codex?new OpenAiSiwcAdapter():new XaiDeviceOAuthAdapter()
+                return new SubscriptionResponsesLlmGateway(plannerConfig.ai,
                     new SubscriptionCredentialService(
-                        new SubscriptionCredentialStore(plannerConfig.ai.subscription.authRoot, 'codex'),
-                        new OpenAiSiwcAdapter()))
-                : new OpenAiCompatibleLlmGateway(plannerConfig.ai)
+                        new SubscriptionCredentialStore(plannerConfig.ai.subscription.authRoot,provider),adapter))
+            }
+            new OpenAiCompatibleLlmGateway(plannerConfig.ai)
             } as Supplier,
             clock).orElseThrow()
         service.suggest(type, correlationId, plan, events, feedbackText)

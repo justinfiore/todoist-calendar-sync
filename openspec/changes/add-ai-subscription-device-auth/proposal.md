@@ -6,8 +6,9 @@ SmartPlanner's AI integration currently requires separately billed API keys, so 
 eligible inference included with a consumer or workspace subscription. OpenAI now publishes Sign in with
 ChatGPT (SIWC) specifically for open-source/local apps, including dynamic public-client registration,
 protected credential transfer to self-hosted VMs, and a tool-free public Responses endpoint. Grok Build
-publishes a device flow, but xAI has not documented reuse of its CLI client registration by third-party
-apps and the official CLI source routes OAuth sessions to its CLI proxy rather than the public API.
+publishes a device flow and routes its own OAuth sessions through a CLI proxy. Hermes independently
+demonstrates an RFC 8628 xAI OAuth grant used directly at the public Responses endpoint. The owner has
+confirmed third-party subscription use is allowed, while live tier/entitlement compatibility remains unproven.
 
 ## What Changes
 
@@ -16,8 +17,8 @@ apps and the official CLI source routes OAuth sessions to its CLI proxy rather t
 - Add bounded `ai-auth-login`, `ai-auth-status`, and `ai-auth-logout` launcher operations. OpenAI login
   uses the official dynamic-client authorization-code/PKCE flow with a `127.0.0.1` callback; status and
   logout use the protected SmartPlanner record. A Codex CLI device-login import remains unavailable until
-  a live capability probe proves its grant works on the official endpoint. The xAI operation remains at
-  its explicit client-registration/terms gate.
+  a live capability probe proves its grant works on the official endpoint. xAI uses a separate direct
+  RFC 8628 flow modeled on Hermes and never imports Grok Build state.
 - Keep renewable credentials out of planner YAML, normal process output, logs, evidence, and the four
   existing planner state stores. Require owner-only directories/files, atomic replacement, strict
   symlink/ownership checks, and one refresh owner per profile.
@@ -29,7 +30,7 @@ apps and the official CLI source routes OAuth sessions to its CLI proxy rather t
   can be enabled. Unsupported or changed vendor protocol fails closed and does not fall back to an API
   key or another account.
 - Document official OpenAI SIWC browser login and protected self-hosted transfer, the fail-closed Codex
-  CLI-device and Grok gates, dedicated credential locations, status/logout commands, revocation,
+  CLI-device gate, direct xAI device login, dedicated credential locations, status/logout commands,
   rollback, and the distinction between subscription entitlement and API-key billing.
 
 ## Capabilities
@@ -53,7 +54,8 @@ apps and the official CLI source routes OAuth sessions to its CLI proxy rather t
 - Vendor CLIs are optional compatibility-probe inputs, never inference subprocesses. API-key
   installations and legacy sync remain unaffected.
 - Nimbus OAuth 2.0 SDK with OpenID Connect SDK validates signed OIDC identity for the documented OpenAI
-  public-client flow. SmartPlanner does not impersonate the Grok Build registration.
+  public-client flow. The xAI path omits Grok Build's referrer and client-identity headers and never uses
+  its CLI proxy.
 - Subscription protocols and entitlements are external compatibility risks. No profile may be described
   as supported until its hermetic contract tests and disposable live probe pass for the pinned adapter
   revision.

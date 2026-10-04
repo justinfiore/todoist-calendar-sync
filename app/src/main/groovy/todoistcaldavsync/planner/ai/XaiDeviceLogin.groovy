@@ -5,8 +5,8 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * RFC 8628 implementation matching current Grok Build source. Kept internal and
- * unreachable from the launcher until xAI authorizes the client registration for this app.
+ * Hermes-style RFC 8628 implementation using xAI's source-visible public client.
+ * SmartPlanner owns the resulting rotating credential and does not reuse Grok Build state.
  */
 final class XaiDeviceLogin {
     private static final URI DEVICE = URI.create('https://auth.x.ai/oauth2/device/code')
@@ -30,7 +30,7 @@ final class XaiDeviceLogin {
         Map discovery=parse(transport.get(DISCOVERY,[:],Duration.ofSeconds(20)))
         URI token=validated(discovery.token_endpoint)
         OAuthHttpResponse start=transport.postForm(DEVICE,[client_id:XaiDeviceOAuthAdapter.CLIENT_ID,
-            scope:XaiDeviceOAuthAdapter.SCOPES.join(' '),referrer:'grok-build'],Duration.ofSeconds(20))
+            scope:XaiDeviceOAuthAdapter.SCOPES.join(' ')],Duration.ofSeconds(20))
         Map device=parse(start)
         if(start.status<200 || start.status>=300 || !device.device_code || !device.user_code ||
             !(device.verification_uri ?: device.verification_uri_complete)) throw new SubscriptionAuthException('device_authorization_invalid')

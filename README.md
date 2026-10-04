@@ -109,9 +109,9 @@ Every command below also requires `-f CONFIG -l LOG_CONFIG`. Use the installed
 | `google-oauth-import-legacy-qa` | `--confirm-legacy-qa-import --input-reference FILE` | Validates the explicitly referenced bounded legacy credential for the configured dedicated account and exact QA scope, imports it only to the QA token store, and exits. It cannot populate the normal store. |
 | `google-qa-calendars-list` | `--confirm-dedicated-qa-account` | Uses only the QA credential, verifies the primary calendar matches the configured dedicated account, and prints the calendar inventory. |
 | `google-qa-calendars-provision` | `--confirm-dedicated-qa-account --qa-calendar 'alias\|role\|name[;...]'` | Explicitly creates or exactly reuses named disposable calendars and persists returned IDs only under ignored `.qa/state/calendar-ids.json`. |
-| `ai-auth-login` | `--ai-provider codex\|grok`; optional `--auth-flow device\|browser --json` | Codex browser mode uses official OpenAI SIWC PKCE. Codex device mode and all Grok modes fail closed at their documented live/authorization gates. |
-| `ai-auth-status` | `--ai-provider codex\|grok`; optional `--remote --json` | Codex local status is zero-network; remote status performs one bounded model-catalog check. Grok reports its fail-closed gate. |
-| `ai-auth-logout` | `--ai-provider codex\|grok`; optional `--json` | Codex discovers revocation, attempts it, and removes only the dedicated record. Grok reports its fail-closed gate. |
+| `ai-auth-login` | `--ai-provider codex\|grok`; optional `--auth-flow device\|browser --json` | Codex uses official OpenAI SIWC browser PKCE; its unproven CLI-device import fails closed. Grok uses direct Hermes-style xAI RFC 8628 device auth; browser mode fails closed. Neither needs a vendor CLI or copied auth file. |
+| `ai-auth-status` | `--ai-provider codex\|grok`; optional `--remote --json` | Local status is zero-network. Explicit remote status may refresh under lock and performs one bounded model-catalog entitlement check. |
+| `ai-auth-logout` | `--ai-provider codex\|grok`; optional `--json` | Removes only the dedicated provider record after best-effort revocation where supported; it never changes personal vendor caches. |
 | `planner-daemon` | `planner.daemon.enabled: true`, configured planning runs, Slack Socket Mode credentials/channel | Primary long-running SmartPlanner lifecycle. Performs startup provider probes, schedules each configured horizon independently, publishes channel proposals, consumes thread feedback/commands, persists conversation state, and remains alive across contained cycle/provider/feedback failures. |
 | `capacity` | `--range-start INSTANT --range-end INSTANT`; optional `--format markdown\|json` | Reads Todoist and the selected calendar provider and reports capacity for the half-open UTC interval. It makes no remote writes. |
 | `preview` | `--range-start INSTANT --range-end INSTANT`; optional `--previous-plan-id ID` | Builds, renders, and locally persists a deterministic plan. It makes no Todoist or calendar-provider writes. |
@@ -160,6 +160,13 @@ todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
 todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation ai-suggest \
   --plan-id PLAN_ID --ai-type task_suggestions --correlation-id CORRELATION_ID
 ```
+
+Subscription AI remains opt-in and live-unvalidated. Merging/upgrading changes nothing until an operator
+selects a subscription provider, creates its protected auth root, authenticates it, and enables AI.
+OpenAI requires browser SIWC; xAI requires a device code opened in any browser. Neither implemented flow
+requires Codex/Grok/Hermes installation, an API key, or a copied personal auth file. Follow
+[`AI_SUBSCRIPTION_AUTH.md`](docs/AI_SUBSCRIPTION_AUTH.md) for exact configuration, owner authorization,
+preview-first rollout, rollback, cleanup, and the still-unproven Codex CLI import/Grok entitlement paths.
 
 ### SmartPlanner Google OAuth and isolated QA setup
 

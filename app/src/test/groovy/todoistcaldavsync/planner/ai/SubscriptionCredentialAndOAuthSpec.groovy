@@ -255,13 +255,16 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
 
     def "xAI RFC 8628 flow handles pending and slow-down then stores a normalized rotating credential"() {
         given:
-        def store=new SubscriptionCredentialStore(root.toPath(),'grok');def sleeps=[];def polls=new AtomicInteger()
+        def store=new SubscriptionCredentialStore(root.toPath(),'grok');def sleeps=[];def polls=new AtomicInteger();Map deviceForm
         SubscriptionOAuthTransport transport=[
             get:{uri,headers,timeout->new OAuthHttpResponse(200,'{"token_endpoint":"https://auth.x.ai/oauth2/token"}'.bytes)},
             postForm:{uri,form,timeout->
-                if(uri.path=='/oauth2/device/code') return new OAuthHttpResponse(200,JsonOutput.toJson([
-                    device_code:'device-secret',user_code:'ABCD-EFGH',verification_uri:'https://auth.x.ai/device',
-                    interval:1,expires_in:600]).bytes)
+                if(uri.path=='/oauth2/device/code') {
+                    deviceForm=new LinkedHashMap(form)
+                    return new OAuthHttpResponse(200,JsonOutput.toJson([
+                        device_code:'device-secret',user_code:'ABCD-EFGH',verification_uri:'https://auth.x.ai/device',
+                        interval:1,expires_in:600]).bytes)
+                }
                 int call=polls.incrementAndGet()
                 if(call==1)return new OAuthHttpResponse(400,'{"error":"authorization_pending"}'.bytes)
                 if(call==2)return new OAuthHttpResponse(400,'{"error":"slow_down"}'.bytes)
@@ -276,6 +279,9 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
         then:
         sleeps==[1000L,1000L,6000L]
         out.toString().contains('https://auth.x.ai/device') && out.toString().contains('ABCD-EFGH')
+        deviceForm.keySet()==['client_id','scope'] as Set
+        deviceForm.client_id==XaiDeviceOAuthAdapter.CLIENT_ID
+        deviceForm.scope==XaiDeviceOAuthAdapter.SCOPES.join(' ')
         store.load().get().accessToken=='x-access'
         store.load().get().adapterRevision==XaiDeviceOAuthAdapter.REVISION
     }

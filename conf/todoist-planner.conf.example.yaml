@@ -310,8 +310,9 @@ planner:
       require_confirmation_for_policy_changes: true
       send_minimum_necessary_data: true
 
-    # Subscription profiles remain disabled by default. OpenAI SIWC uses browser PKCE and the public
-    # Responses endpoint; Grok remains fail-closed at its client-registration/endpoint gate.
+    # Subscription profiles remain disabled by default and require owner-run live validation. OpenAI
+    # SIWC uses browser PKCE; xAI uses Hermes-style RFC 8628 and direct api.x.ai Responses. Neither
+    # reads vendor CLI caches, invokes coding agents, or falls back to an API key.
     # See docs/AI_SUBSCRIPTION_COMPATIBILITY.md before changing provider.
     subscription:
       auth_root: /var/lib/smartplanner/ai-auth
@@ -325,7 +326,7 @@ planner:
         allowed_hosts: [api.openai.com]
       grok:
         executable: /usr/local/bin/grok
-        min_version: 1.0.46        # observed compatibility-spike version; not a supported range
+        min_version: 1.0.46        # provenance only; direct device auth does not execute Grok Build
         max_version: 1.0.46
         model: grok-model
-        allowed_hosts: []          # remains empty until xAI authorizes direct third-party OAuth use
+        allowed_hosts: [api.x.ai]

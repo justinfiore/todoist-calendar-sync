@@ -33,9 +33,13 @@ The installed launcher SHALL expose `ai-auth-login`, `ai-auth-status`, and `ai-a
 - **WHEN** the operator selects OpenAI `--auth-flow browser`
 - **THEN** the launcher SHALL use dynamic-agent registration, fresh state/nonce/PKCE, an exact `127.0.0.1` loopback callback, ID-token/JWKS validation, and granted-scope validation and SHALL not silently fall back to device, API-key, or another account authentication
 
-#### Scenario: Grok client registration is not authorized
-- **WHEN** a Grok authentication operation is requested before xAI authorizes third-party reuse of the source-visible CLI registration and direct public Responses entitlement
-- **THEN** the launcher SHALL fail closed before device authorization and report that exact compatibility gate
+#### Scenario: xAI device login is requested
+- **WHEN** the operator selects Grok device login
+- **THEN** the launcher SHALL run bounded RFC 8628 against the pinned xAI issuer with the source-visible client and bounded Hermes-style scopes, own the resulting rotating credential, and SHALL NOT read Grok Build state or send its referrer
+
+#### Scenario: xAI browser login is requested
+- **WHEN** the operator selects Grok `--auth-flow browser`
+- **THEN** the launcher SHALL fail closed because this adapter implements only the bounded device flow and SHALL NOT substitute Grok Build, API-key, or another account authentication
 
 #### Scenario: Authentication operation receives planner-only arguments
 - **WHEN** login, status, or logout receives plan, approval, range, feedback, or QA-provisioning arguments
