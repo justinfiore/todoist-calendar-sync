@@ -42,7 +42,7 @@ class AiSubscriptionCliSpec extends Specification {
         result.operation == operation
         result.state == 'unsupported'
         result.localCredential == 'not_inspected'
-        result.reason.contains('tool-free subscription inference protocol')
+        result.reason.contains(provider == 'grok' ? 'third-party reuse' : 'auth_root is required')
         !new File(dir, '.codex').exists()
         !new File(dir, '.grok').exists()
 

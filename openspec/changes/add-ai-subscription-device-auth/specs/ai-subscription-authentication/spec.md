@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Defines secure, headless authentication lifecycle behavior for using Codex and Grok Build subscription
-sessions without placing renewable credentials in planner configuration or sharing normal vendor CLI state.
+Defines secure authentication lifecycle behavior for using eligible ChatGPT and Grok subscription
+sessions without placing renewable credentials in planner configuration or sharing personal CLI state.
 
 ## ADDED Requirements
 
@@ -26,12 +26,16 @@ The system SHALL keep each subscription provider disabled unless its profile is 
 The installed launcher SHALL expose `ai-auth-login`, `ai-auth-status`, and `ai-auth-logout` for an explicitly selected configured AI provider, and each operation SHALL exit without starting legacy sync, planning, Slack, or provider mutation.
 
 #### Scenario: Headless login is requested
-- **WHEN** the operator runs `--operation ai-auth-login --ai-provider codex --auth-flow device` or the Grok equivalent
-- **THEN** the launcher SHALL invoke the configured official vendor executable's device-login flow, display only its verification URL and one-time user code, normalize the successful credential into the dedicated store, and exit
+- **WHEN** the operator requests Codex device login before a CLI-issued grant has passed the official SIWC endpoint capability probe
+- **THEN** the launcher SHALL fail closed and direct the operator to complete official browser login locally and securely transfer the protected record to the self-hosted host
 
 #### Scenario: Browser login is requested explicitly
-- **WHEN** the operator selects `--auth-flow browser`
-- **THEN** the launcher SHALL use the official vendor browser-login flow with a loopback callback and SHALL not silently fall back to device, API-key, or another account authentication
+- **WHEN** the operator selects OpenAI `--auth-flow browser`
+- **THEN** the launcher SHALL use dynamic-agent registration, fresh state/nonce/PKCE, an exact `127.0.0.1` loopback callback, ID-token/JWKS validation, and granted-scope validation and SHALL not silently fall back to device, API-key, or another account authentication
+
+#### Scenario: Grok client registration is not authorized
+- **WHEN** a Grok authentication operation is requested before xAI authorizes third-party reuse of the source-visible CLI registration and direct public Responses entitlement
+- **THEN** the launcher SHALL fail closed before device authorization and report that exact compatibility gate
 
 #### Scenario: Authentication operation receives planner-only arguments
 - **WHEN** login, status, or logout receives plan, approval, range, feedback, or QA-provisioning arguments
@@ -41,8 +45,8 @@ The installed launcher SHALL expose `ai-auth-login`, `ai-auth-status`, and `ai-a
 - **WHEN** an authentication operation names an API-key profile or unknown provider
 - **THEN** the launcher SHALL fail with the allowed subscription provider names and SHALL execute no external process
 
-### Requirement: Vendor login delegation is exact and bounded
-Login SHALL execute a configured canonical vendor binary directly without a shell, fixed vendor-owned arguments, a minimal allowlisted environment, a dedicated temporary home, bounded time, inherited standard input, and bounded output filtering that exposes only required operator instructions.
+### Requirement: Login is exact and bounded
+Login SHALL use only a documented provider flow with pinned HTTPS hosts, bounded messages, fresh anti-forgery values, and a dedicated protected store. An optional vendor-CLI import SHALL execute only after a capability probe proves its grant on the official endpoint, and then SHALL use a canonical binary without a shell, a minimal environment, and a dedicated temporary home.
 
 #### Scenario: Configured executable is missing or incompatible
 - **WHEN** the executable cannot be resolved as a regular non-symlink file or its reported version is outside the tested range

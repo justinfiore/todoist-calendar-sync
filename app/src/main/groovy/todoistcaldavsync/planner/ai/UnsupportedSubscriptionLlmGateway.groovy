@@ -1,6 +1,6 @@
 package todoistcaldavsync.planner.ai
 
-/** Fail-closed adapter retained until a provider passes every compatibility/live gate. */
+/** Fail-closed adapter retained for the xAI client-registration/live compatibility gate. */
 final class UnsupportedSubscriptionLlmGateway implements LlmGateway {
     private final String provider
 
@@ -14,6 +14,6 @@ final class UnsupportedSubscriptionLlmGateway implements LlmGateway {
     @Override
     LlmGatewayResult complete(LlmRequest request) {
         LlmGatewayResult.failure(new LlmError(LlmErrorClass.COMPATIBILITY,
-            "${provider} is unsupported: ${AiSubscriptionAuthOperation.COMPATIBILITY_GATE}"))
+            "${provider} is unsupported: ${provider == 'grok_build_subscription' ? AiSubscriptionAuthOperation.GROK_COMPATIBILITY_GATE : 'subscription adapter is unavailable'}"))
     }
 }

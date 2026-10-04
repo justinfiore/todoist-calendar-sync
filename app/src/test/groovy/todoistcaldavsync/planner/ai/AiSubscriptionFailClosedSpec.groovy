@@ -28,22 +28,31 @@ class AiSubscriptionFailClosedSpec extends Specification {
         provider << ['codex_subscription', 'grok_build_subscription']
     }
 
-    def "enabled subscription provider fails closed at the unproven protocol gate"() {
+    def "OpenAI subscription enables only on the official public inference host"() {
         when:
-        PlannerConfig.fromMap(planner: [
+        def config=PlannerConfig.fromMap(planner: [
             availability: [working_windows: [weekday: ['09:00-12:00']]],
-            ai: [enabled: true, provider: provider, model: 'vendor-model', subscription: [
-                auth_root: '/var/lib/smartplanner/ai-auth', experimental_protocol_acknowledged: true
+            ai: [enabled: true, provider: 'codex_subscription', model: 'vendor-model', subscription: [
+                auth_root: '/var/lib/smartplanner/ai-auth', experimental_protocol_acknowledged: true,
+                codex:[allowed_hosts:['api.openai.com']]
             ]]
         ])
 
         then:
-        def error = thrown(IllegalArgumentException)
-        error.message.contains("planner.ai.provider ${provider} is unsupported")
-        error.message.contains('tool-free subscription inference protocol')
+        config.ai.enabled
+        config.ai.provider=='codex_subscription'
+    }
 
-        where:
-        provider << ['codex_subscription', 'grok_build_subscription']
+    def "xAI subscription remains at its exact registration and endpoint gate"() {
+        when:
+        PlannerConfig.fromMap(planner: [availability:[working_windows:[weekday:['09:00-12:00']]],
+            ai:[enabled:true,provider:'grok_build_subscription',model:'vendor-model',subscription:[
+                auth_root:'/var/lib/smartplanner/ai-auth',experimental_protocol_acknowledged:true,
+                grok:[allowed_hosts:['api.x.ai']]]]])
+
+        then:
+        def error=thrown(IllegalArgumentException)
+        error.message.contains('third-party reuse of the Grok Build OAuth client')
     }
 
     def "subscription config rejects relative paths unknown fields and API key crossover"() {
@@ -65,7 +74,7 @@ class AiSubscriptionFailClosedSpec extends Specification {
         error.message.contains('secret_env is not allowed')
     }
 
-    def "unsupported gateway never calls another provider and returns compatibility classification"() {
+    def "unsupported xAI gateway never calls another provider and returns its concrete compatibility gate"() {
         given:
         def request = new LlmRequest(correlationId: 'c1', suggestionType: 'task_suggestions',
             provider: provider, model: 'm', planId: 'p1', planVersion: 1,
@@ -78,9 +87,9 @@ class AiSubscriptionFailClosedSpec extends Specification {
         then:
         !result.success
         result.error.errorClass == LlmErrorClass.COMPATIBILITY
-        result.error.detail.contains('tool-free subscription inference protocol')
+        result.error.detail.contains('third-party reuse')
 
         where:
-        provider << ['codex_subscription', 'grok_build_subscription']
+        provider << ['grok_build_subscription']
     }
 }

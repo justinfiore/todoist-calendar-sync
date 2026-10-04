@@ -1,6 +1,7 @@
 package todoistcaldavsync.planner
 
 import todoistcaldavsync.planner.domain.*
+import todoistcaldavsync.planner.ai.LlmErrorClass
 import todoistcaldavsync.planner.feedback.RegexFeedbackEngine
 import todoistcaldavsync.planner.messaging.*
 import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
@@ -31,6 +32,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
     private final Map<String, Map> runtimeStatus = new ConcurrentHashMap<>()
     private final AtomicBoolean started = new AtomicBoolean(false)
     private final AtomicBoolean closed = new AtomicBoolean(false)
+    private final Set<Thread> activeAiRequests = ConcurrentHashMap.newKeySet()
     private volatile Throwable fatalFailure
     private final Object mutationLock = new Object()
     private final Set<String> allowedActors
@@ -120,6 +122,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
             String name = run.name.toString()
             copy[name] = new LinkedHashMap(runtimeStatus[name] ?: [state: 'WAITING'])
         }
+        if(runtimeStatus.ai!=null)copy.ai=new LinkedHashMap(runtimeStatus.ai)
         Collections.unmodifiableMap(copy)
     }
 
@@ -240,14 +243,22 @@ final class SmartPlannerDaemon implements AutoCloseable {
             }
 
             if (action == null && orchestrator.plannerConfig.ai.enabled) {
-                def interpreted = orchestrator.aiSuggestions(conversation.planId,
+                def interpreted = aiSuggestion(conversation.planId,
                     'conversational_feedback_interpretation', event.eventId ?: "feedback-${event.messageTs}", event.text)
+                if(!interpreted?.accepted && interpreted?.error?.errorClass==LlmErrorClass.AUTHENTICATION) {
+                    runtimeStatus.ai=[state:'REAUTHENTICATION_REQUIRED',at:clock.get().toString()]
+                    safeReply(event.channelId,event.threadTs,
+                        'AI subscription authentication must be renewed with the configured ai-auth-login operation; no action was taken.',
+                        "feedback-ai-auth:${event.eventId}")
+                    return
+                }
                 if (interpreted?.accepted && interpreted.bundle?.suggestions) {
+                    runtimeStatus.remove('ai')
                     def suggestion = interpreted.bundle.suggestions[0]
                     String proposedAction = normalizeAiAction(suggestion.action?.toString())
                     Map proposedOverrides = [:]
                     if (proposedAction == 'replan') {
-                        def suggested = orchestrator.aiSuggestions(conversation.planId,
+                        def suggested = aiSuggestion(conversation.planId,
                             'temporary_planning_overrides', "override-${event.messageTs?.replace('.', '-')}", event.text)
                         if (suggested?.accepted) mergeAiOverrides(proposedOverrides, suggested.bundle?.suggestions ?: [])
                     }
@@ -321,6 +332,23 @@ final class SmartPlannerDaemon implements AutoCloseable {
             if (!(t instanceof IllegalArgumentException)) throw t
         } finally {
             safeClearStatus(event.channelId, event.threadTs)
+        }
+    }
+
+    private def aiSuggestion(String planId,String type,String correlationId,String feedback) {
+        if(closed.get())throw new IllegalStateException('daemon is shutting down; AI request refused')
+        Thread current=Thread.currentThread()
+        activeAiRequests.add(current)
+        if(closed.get()) {
+            activeAiRequests.remove(current)
+            throw new IllegalStateException('daemon is shutting down; AI request refused')
+        }
+        try {
+            def result=orchestrator.aiSuggestions(planId,type,correlationId,feedback)
+            if(closed.get())throw new IllegalStateException('daemon shut down before AI result acceptance')
+            result
+        } finally {
+            activeAiRequests.remove(current)
         }
     }
 
@@ -573,6 +601,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
     synchronized void close() {
         if (!closed.compareAndSet(false, true)) return
         started.set(false)
+        activeAiRequests.each { it.interrupt() }
         scheduler.shutdown()
         try { scheduler.awaitTermination((config.daemon.shutdownTimeout as Duration).toMillis(), TimeUnit.MILLISECONDS) }
         catch (InterruptedException e) { Thread.currentThread().interrupt() }

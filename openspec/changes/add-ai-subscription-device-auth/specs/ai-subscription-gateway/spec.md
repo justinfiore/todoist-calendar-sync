@@ -15,7 +15,7 @@ The system SHALL select a provider-specific subscription gateway only for an exp
 - **THEN** the request SHALL use only that profile's model, account binding, credential, protocol, and bounded endpoint
 
 #### Scenario: Compatibility acknowledgment is absent
-- **WHEN** a profile depends on a vendor subscription protocol not documented as a public API contract
+- **WHEN** a profile depends on an experimental subscription protocol or preview public contract
 - **THEN** configuration validation SHALL keep it disabled until the operator explicitly acknowledges the experimental compatibility boundary
 
 #### Scenario: Provider protocol drifts
@@ -43,6 +43,10 @@ Each request SHALL enforce configured connect, execution, response-size, token/i
 #### Scenario: Provider exceeds a bound
 - **WHEN** startup, refresh, request, model execution, or output exceeds a configured time/size/token bound
 - **THEN** the operation SHALL terminate the bounded transport, classify the failure without raw output, and leave all mutation surfaces unchanged
+
+#### Scenario: Public SIWC response is streamed
+- **WHEN** an OpenAI subscription request is sent
+- **THEN** it SHALL target exactly `https://api.openai.com/v1/responses`, set `store: false` and `stream: true`, send complete request context in `input`, omit tools and preview-unsupported fields, and succeed only after `response.completed`
 
 #### Scenario: Daemon shuts down during a request
 - **WHEN** graceful shutdown begins while subscription inference is active

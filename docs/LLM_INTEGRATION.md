@@ -52,7 +52,8 @@ endpoint first and verify redaction, schema rejection, token/body bounds, and un
 write surfaces.
 
 Subscription profiles are documented separately in
-[`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md). Both currently fail closed because neither vendor
-publishes a stable direct tool-free subscription inference contract. SmartPlanner does not invoke
+[`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md). OpenAI SIWC provides an authorized direct,
+tool-free public `/v1/responses` route; xAI remains gated on client-registration permission and a live
+public-endpoint capability probe. SmartPlanner does not invoke
 `codex exec`, `grok -p`, ACP, or coding-agent subprocesses; does not rely on prompt-only tool
 restrictions; and never falls back to separately billed public APIs.

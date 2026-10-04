@@ -16,6 +16,7 @@ import todoistcaldavsync.planner.adapters.TodoistRestGateway
 import todoistcaldavsync.planner.adapters.TodoistSyncPage
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.Message
+import todoistcaldavsync.planner.ai.LlmErrorClass
 import todoistcaldavsync.planner.messaging.InMemoryMessagingSurface
 import todoistcaldavsync.planner.messaging.MessagingEvent
 import todoistcaldavsync.planner.messaging.MessagingSurface
@@ -428,6 +429,77 @@ class SmartPlannerDaemonSpec extends Specification {
 
         cleanup:
         daemon?.close()
+    }
+
+    def 'AI authentication failure becomes daemon state and clears after a fresh successful result'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-ai-reauth-').toFile()
+        def now = new AtomicReference<>(initial)
+        int calls=0
+        Closure provider = { plan, String type, String correlationId, String feedback ->
+            calls++
+            if(calls==1)return [accepted:false,error:[errorClass:LlmErrorClass.AUTHENTICATION]]
+            [accepted:true,bundle:[suggestions:[[action:'ACKNOWLEDGE',rationale:'safe']]]]
+        }
+        def parts=build(state,now,new InMemoryMessagingSurface(),provider)
+        SmartPlannerDaemon daemon=parts[0];InMemoryMessagingSurface surface=parts[4]
+        daemon.start();def proposal=daemon.runNow('daily')
+
+        when:
+        surface.emit(new MessagingEvent(eventId:'auth-failed',type:'thread_reply',actorId:'U1',
+            channelId:'C123',messageTs:'2600.1',threadTs:proposal.threadTs,text:'interpret this'))
+
+        then:
+        daemon.statusSnapshot().ai.state=='REAUTHENTICATION_REQUIRED'
+        surface.replies.last().text.contains('ai-auth-login')
+        parts[2].dueUpdates.empty && parts[3].upserts.empty
+
+        when:
+        surface.emit(new MessagingEvent(eventId:'auth-recovered',type:'thread_reply',actorId:'U1',
+            channelId:'C123',messageTs:'2600.2',threadTs:proposal.threadTs,text:'interpret again'))
+
+        then:
+        !daemon.statusSnapshot().containsKey('ai')
+        parts[2].dueUpdates.empty && parts[3].upserts.empty
+
+        cleanup:
+        daemon?.close()
+    }
+
+    def 'daemon shutdown interrupts active AI and rejects its late result'() {
+        given:
+        File state=Files.createTempDirectory('smartplanner-ai-shutdown-').toFile()
+        def now=new AtomicReference<>(initial)
+        def entered=new CountDownLatch(1)
+        Closure provider={plan,String type,String correlationId,String feedback->
+            entered.countDown()
+            try { new CountDownLatch(1).await(30,TimeUnit.SECONDS) }
+            catch(InterruptedException ignored) { }
+            [accepted:true,bundle:[suggestions:[[action:'ACKNOWLEDGE',rationale:'too late']]]]
+        }
+        def parts=build(state,now,new InMemoryMessagingSurface(),provider)
+        SmartPlannerDaemon daemon=parts[0];InMemoryMessagingSurface surface=parts[4]
+        daemon.start();def proposal=daemon.runNow('daily')
+        Thread request=Thread.start {
+            try {
+                surface.emit(new MessagingEvent(eventId:'slow-ai',type:'thread_reply',actorId:'U1',
+                    channelId:'C123',messageTs:'2700.1',threadTs:proposal.threadTs,text:'interpret slowly'))
+            } catch(Throwable ignored) { }
+        }
+        assert entered.await(5,TimeUnit.SECONDS)
+
+        when:
+        daemon.close();request.join(5000)
+        def conversation=new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
+            .find('C123',proposal.threadTs)
+
+        then:
+        !request.alive
+        conversation.pendingConfirmation.isEmpty()
+        parts[2].dueUpdates.empty && parts[3].upserts.empty
+
+        cleanup:
+        try { daemon?.close() } catch(Exception ignored) {}
     }
 
     def 'temporary overrides reject unknown task ids and conversation pending confirmations survive restart'() {

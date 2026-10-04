@@ -1,32 +1,39 @@
 # AI subscription authentication
 
-`codex_subscription` and `grok_build_subscription` are present as explicit **unsupported** profiles.
-They are disabled by default and cannot be enabled for inference. See the
-[compatibility manifest](AI_SUBSCRIPTION_COMPATIBILITY.md) for the exact release gate.
+`codex_subscription` uses OpenAI's official Sign in with ChatGPT flow and public Responses endpoint.
+`grok_build_subscription` remains fail-closed at the xAI client-registration/public-endpoint gate. Both
+are disabled by default. Existing `openai_compatible` API-key and legacy sync behavior is unchanged.
 
-The installed launcher exposes the future lifecycle contract without touching credentials or starting
-planner, Todoist, calendar, Slack, weather, legacy sync, or vendor processes:
+Configure a canonical private auth root and the exact OpenAI host, then authenticate on a machine where
+the browser can return to `127.0.0.1`:
 
 ```bash
 todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation ai-auth-login --ai-provider codex --auth-flow browser
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
   --operation ai-auth-status --ai-provider codex --json
 todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
-  --operation ai-auth-status --ai-provider grok --remote --json
+  --operation ai-auth-status --ai-provider codex --remote --json
+todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
+  --operation ai-auth-logout --ai-provider codex --json
 ```
 
-Both currently exit 3 with `state: unsupported`. Login/logout commands have the same safe result; they
-do not invoke a vendor binary until that provider has a frozen adapter revision.
+Browser login dynamically registers the app, validates state, nonce, PKCE, the callback-issued client
+ID, signed ID token, issuer, audience, expiry, and granted plan scopes before replacing the credential.
+Local status performs no network request or refresh. Remote status may refresh once under the profile
+lock and makes one read-only model-catalog request. Logout obtains the revocation endpoint from pinned
+OpenAI discovery, attempts revocation, and always removes the local record.
 
-When support is eventually proven, device will be the headless default and browser flow will require
-`--auth-flow browser`. Official CLIs must run with a newly created dedicated `CODEX_HOME` or `GROK_HOME`
-beneath the configured auth root. SmartPlanner must never inspect or copy personal `~/.codex/auth.json`
-or `~/.grok/auth.json`.
+Codex device login currently exits 3 with the exact CLI-token capability gate; it never reads personal
+`~/.codex/auth.json`. For a self-hosted VM, follow OpenAI's official procedure: establish the VM's own
+stable host ID, complete OAuth locally with this app, securely transfer the protected credential record,
+preserve the VM host ID, and let the VM become sole refresh owner. Do not keep two active copies racing
+the rotating refresh token.
 
-The auth root is password-equivalent data: keep it outside planner state and backups by default, on an
-encrypted local disk, owned by the service account, with 0700 directories and 0600 files. A future
-supported adapter must use staging, atomic replacement, one refresh owner and one provider lock. Safe
-migration is re-login into the dedicated home—not copying a renewable cache. Recovery is disable AI,
-revoke/logout through the supported operation, remove only the dedicated profile, and re-login.
+Grok login/status/logout exit 3 without contacting xAI. See the compatibility manifest for the exact
+registration and endpoint evidence required to unlock the hermetically tested RFC 8628 implementation.
 
-There is no automatic paid-API fallback. Existing `openai_compatible` configuration and behavior are
-unchanged.
+The auth root is password-equivalent data. Keep it outside planner state and backups by default, on an
+encrypted local disk, owned by the service account, with 0700 directories and 0600 files. Never commit,
+log, screenshot, or include its access, refresh, or ID tokens in support/evidence. Recovery is disable AI,
+logout/revoke the dedicated profile, and reauthorize. There is no automatic paid-API fallback.

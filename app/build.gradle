@@ -37,6 +37,8 @@ dependencies {
     implementation 'com.google.oauth-client:google-oauth-client-jetty:1.39.0'
     implementation 'com.google.apis:google-api-services-calendar:v3-rev20260708-2.0.0'
     implementation 'com.google.http-client:google-http-client-jackson2:1.47.1'
+    // Apache-2.0. Used only for standards-compliant OAuth/OIDC token and JWT validation.
+    implementation 'com.nimbusds:oauth2-oidc-sdk:11.38.2'
 
     testImplementation 'org.spockframework:spock-core:2.4-groovy-5.0'
     testImplementation 'org.wiremock:wiremock:3.0.1'
