@@ -1,0 +1,30 @@
+{
+  "hard_urgent_before_ordinary": true,
+  "infeasible_hard_reported": true,
+  "managed_events_cleared_before_retest": true,
+  "scheduled": [
+    {
+      "case": "soft-overdue",
+      "end": "2026-10-03T00:30:00Z",
+      "start": "2026-10-03T00:00:00Z"
+    },
+    {
+      "case": "hard-urgent",
+      "end": "2026-10-03T01:10:00Z",
+      "start": "2026-10-03T00:40:00Z"
+    },
+    {
+      "case": "ordinary-high",
+      "end": "2026-10-03T01:50:00Z",
+      "start": "2026-10-03T01:20:00Z"
+    }
+  ],
+  "soft_overdue_scheduled": true,
+  "unscheduled": [
+    {
+      "case": "hard-infeasible",
+      "code": "deadline_infeasible",
+      "reason_present": true
+    }
+  ]
+}

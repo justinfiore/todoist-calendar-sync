@@ -1,0 +1,295 @@
+{
+  "all_project_preserved": true,
+  "cases": [
+    {
+      "assignee_is_null": true,
+      "case": "existing-deadline",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-05",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-05T17:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every day @ 17:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "69cf002f5361f6aa",
+      "labels": [
+        "hard",
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-05",
+      "marker_present": true,
+      "priority": 4,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "explicit-time",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-05",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-05T15:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every day @ 15:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "84047ca6cd5567b1",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-05",
+      "marker_present": true,
+      "priority": 3,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "monthly",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-11-05",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-11-05T11:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every month @ 11:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "c5974d98541ba908",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-11-05",
+      "marker_present": true,
+      "priority": 3,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "rich-weekday",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-05",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-05T14:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every weekday @ 14:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "5ad58ae78114c38e",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-05",
+      "marker_present": true,
+      "priority": 2,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "strict-relative",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-04",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-04T13:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every! 2 days @ 13:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "69e4375dd6012313",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-04",
+      "marker_present": true,
+      "priority": 1,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "timezone-attempt",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-04",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-04T16:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every day @ 16:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "8840129bfc4367ab",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-04",
+      "marker_present": true,
+      "priority": 4,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "weekday-specific",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-05",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-05T10:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every Monday @ 10:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "057d784c9fb6fd17",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-05",
+      "marker_present": true,
+      "priority": 2,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "weekly-date-only",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2026-10-12",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2026-10-12T06:30:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every week",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "e6e741502d50b75e",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2026-10-12",
+      "marker_present": true,
+      "priority": 1,
+      "project_matches": true
+    },
+    {
+      "assignee_is_null": true,
+      "case": "yearly",
+      "completed_count": 2,
+      "deadline": {
+        "date": "2027-10-05",
+        "lang": "en"
+      },
+      "due": {
+        "date": "2027-10-05T12:00:00",
+        "is_recurring": true,
+        "lang": "en",
+        "string": "every year @ 12:00",
+        "timezone": null
+      },
+      "duration": {
+        "amount": 30,
+        "unit": "minute"
+      },
+      "human_description_preserved": true,
+      "id_hash": "b4c8d632d1ff52bc",
+      "labels": [
+        "schedule",
+        "smartplanner-seen",
+        "t30"
+      ],
+      "marker_completed_count": 2,
+      "marker_deadline_date": "2027-10-05",
+      "marker_present": true,
+      "priority": 4,
+      "project_matches": true
+    }
+  ],
+  "count": 9
+}

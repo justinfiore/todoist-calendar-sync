@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "campaign": "20261002T161152Z-recurrence-deadline-935f7c84ac96",
+  "date_utc": "2026-10-02",
+  "repository": "justinfiore/todoist-calendar-sync",
+  "branch": "implement-deadline-recurrence-support",
+  "base_branch": "plan-deadline-recurrence-support",
+  "initial_implementation_commit": "935f7c84ac96969e4491dd38d852f3617e6b3550",
+  "live_fix_commit": "7bd3662",
+  "regression_contract_commit": "7a9ed37",
+  "review_remediation_fix_commit": "f00e8164a6bdb8452163a93bd89adab243300c4b",
+  "verdict": "PASS_WITH_DOCUMENTED_PROVIDER_UI_CURSOR_AND_ACCOUNT_LIMITATIONS",
+  "cleanup_all_zero": true,
+  "live_review_remediation": {
+    "fixed_iana_timezone_reread": true,
+    "fixed_iana_production_scheduling_passed_after_fix": true,
+    "fixed_iana_calendar_events_across_dst": 2,
+    "explicit_dst_completion_passed": true,
+    "simplified_close_failures_retained": 2,
+    "production_defects_found_and_fixed": 1,
+    "non_empty_properties_passed": ["description", "label", "project", "comment", "subtask", "reminder"],
+    "assignment": "unsupported_single_user_project",
+    "cleanup_all_zero": true
+  },
+  "focused_tests": {"tests": 82, "failures": 0, "errors": 0, "skipped": 0},
+  "full_tests": {"tests": 963, "failures": 0, "errors": 0, "skipped": 0},
+  "openspec_strict": "valid",
+  "independent_2026_10_01_tree_digest": "a112aaaa9659c1eb983e6a0d02f7ead3d8c9786de991001441bf2fa0ca01f955",
+  "contains_credentials": false,
+  "contains_raw_provider_payloads": false,
+  "private_evidence_committed": false
+}

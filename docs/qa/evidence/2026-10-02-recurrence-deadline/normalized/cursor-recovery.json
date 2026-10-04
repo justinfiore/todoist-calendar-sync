@@ -1,0 +1,9 @@
+{
+  "cursor_state_deleted_before_poll": true,
+  "bootstrap_item_count": 12,
+  "bootstrap_status": "bootstrap_caught_up",
+  "pending_after_catchup": 0,
+  "manufactured_invalid_cursor_response": "provider_accepted_and_returned_items",
+  "live_http_400_reset_observed": false,
+  "hermetic_http_400_reset_regression": true
+}

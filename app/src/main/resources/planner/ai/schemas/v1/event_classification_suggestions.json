@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "event_classification_suggestions_v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "suggestionType", "correlationId", "suggestions"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "suggestionType": {"const": "event_classification_suggestions"},
+    "correlationId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "suggestions": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["suggestionId", "eventId", "suggestedRole", "confidence", "rationale", "candidateRulePatch"],
+      "properties": {
+        "suggestionId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+        "eventId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+        "suggestedRole": {"enum": ["hard_blocker", "soft_blocker", "informational", "managed_output"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 500},
+        "candidateRulePatch": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": false, "minProperties": 1,
+              "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "role": {"enum": ["hard_blocker", "soft_blocker", "informational", "managed_output"]},
+                "calendarRegex": {"type": "string", "minLength": 1, "maxLength": 200},
+                "titleRegex": {"type": "string", "minLength": 1, "maxLength": 200},
+                "textRegex": {"type": "string", "minLength": 1, "maxLength": 200},
+                "bufferBeforeMinutes": {"type": "integer", "minimum": 0, "maximum": 240},
+                "bufferAfterMinutes": {"type": "integer", "minimum": 0, "maximum": 240}
+              }
+            }
+          ]
+        }
+      }
+    }}
+  }
+}

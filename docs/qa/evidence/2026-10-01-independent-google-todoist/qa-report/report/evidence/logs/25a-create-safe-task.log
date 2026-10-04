@@ -1,0 +1,4 @@
+COMMAND: provider_qa.py todoist-create-task --role safe-ordinary [run-scoped]
+STARTED_UTC: 2026-10-01T12:25:06Z
+todoist_task_created=safe-ordinary
+EXIT_STATUS: 0

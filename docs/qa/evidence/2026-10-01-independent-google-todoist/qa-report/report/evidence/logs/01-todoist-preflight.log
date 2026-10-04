@@ -1,0 +1,7 @@
+COMMAND: .qa/tools/provider_qa.py todoist-snapshot --out <private>/todoist-preflight.json
+STARTED_UTC: 2026-10-01T12:08:17Z
+todoist_projects=1
+todoist_labels=0
+todoist_tasks=0
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:08:18Z

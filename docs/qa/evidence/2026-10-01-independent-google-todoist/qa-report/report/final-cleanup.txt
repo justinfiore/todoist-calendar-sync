@@ -1,0 +1,10 @@
+Final cleanup verification
+todoist_final_matches_initial=true
+google_output_baseline_restored=true
+google_blockers_baseline_restored=true
+google_calendar_inventory_restored=true
+state_plans_restored=true
+state_applications_restored=true
+state_decisions_restored=true
+state_deliveries_restored=true
+fresh_evidence_secret_scan=pass

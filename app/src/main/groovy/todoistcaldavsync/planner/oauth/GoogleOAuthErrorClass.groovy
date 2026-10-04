@@ -1,0 +1,12 @@
+package todoistcaldavsync.planner.oauth
+
+enum GoogleOAuthErrorClass {
+    CLIENT_CONFIGURATION,
+    CREDENTIAL_MISSING,
+    CREDENTIAL_REVOKED,
+    TOKEN_RESPONSE_INVALID,
+    TOKEN_TRANSPORT,
+    SCOPE_MISMATCH,
+    ACCOUNT_MISMATCH,
+    CALLBACK_FAILURE
+}

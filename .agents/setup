@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly JAVA_HOME_DIR=/opt/temurin-25
+readonly OPENSPEC_VERSION=1.14.0
+readonly PROFILE_MARKER='# todoist-calendar-sync Java toolchain'
+
+java_25_is_installed() {
+  [[ -x "$JAVA_HOME_DIR/bin/java" ]] &&
+    "$JAVA_HOME_DIR/bin/java" -version 2>&1 | head -n 1 | grep -Eq 'version "25([."]|$)'
+}
+
+install_java_25() (
+  local architecture archive extract_dir install_dir
+
+  case "$(uname -m)" in
+    x86_64) architecture=x64 ;;
+    aarch64|arm64) architecture=aarch64 ;;
+    *)
+      echo "Unsupported architecture for Temurin Java 25: $(uname -m)" >&2
+      return 1
+      ;;
+  esac
+
+  archive="$(mktemp --suffix=.tar.gz)"
+  extract_dir="$(mktemp -d)"
+  install_dir="${JAVA_HOME_DIR}.new.$$"
+  trap 'rm -f -- "$archive"; rm -rf -- "$extract_dir" "$install_dir"' EXIT
+
+  echo "Downloading Temurin Java 25 for ${architecture}..."
+  curl --fail --location --silent --show-error --retry 3 \
+    "https://api.adoptium.net/v3/binary/latest/25/ga/linux/${architecture}/jdk/hotspot/normal/eclipse" \
+    --output "$archive"
+
+  tar -xzf "$archive" -C "$extract_dir" --strip-components=1
+  "$extract_dir/bin/java" -version
+
+  sudo rm -rf -- "$install_dir"
+  sudo mkdir -p -- "$install_dir"
+  sudo cp -a "$extract_dir/." "$install_dir/"
+  sudo rm -rf -- "$JAVA_HOME_DIR"
+  sudo mv -- "$install_dir" "$JAVA_HOME_DIR"
+)
+
+echo 'Configuring Java 25...'
+if java_25_is_installed; then
+  echo "Temurin Java 25 is already installed at $JAVA_HOME_DIR."
+else
+  install_java_25
+fi
+
+for tool in java javac jar javadoc; do
+  sudo ln -sfn -- "$JAVA_HOME_DIR/bin/$tool" "/usr/local/bin/$tool"
+done
+
+if ! grep -Fqx "$PROFILE_MARKER" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<EOF
+
+$PROFILE_MARKER
+export JAVA_HOME="$JAVA_HOME_DIR"
+export PATH="\$JAVA_HOME/bin:\$PATH"
+EOF
+fi
+
+export JAVA_HOME="$JAVA_HOME_DIR"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+echo 'Configuring OpenSpec...'
+if [[ "$(openspec --version 2>/dev/null || true)" != "$OPENSPEC_VERSION" ]]; then
+  sudo npm install --global --silent "@fission-ai/openspec@$OPENSPEC_VERSION"
+fi
+
+echo 'Verifying the project toolchain...'
+java -version
+./gradlew --version
+openspec --version

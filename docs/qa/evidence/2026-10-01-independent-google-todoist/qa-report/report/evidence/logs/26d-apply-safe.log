@@ -1,0 +1,4 @@
+COMMAND: installed launcher --operation apply-safe --plan-id <mixed plan>
+STARTED_UTC: 2026-10-01T12:25:52Z
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:26:06Z

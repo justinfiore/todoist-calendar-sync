@@ -1,0 +1,70 @@
+01-todoist-preflight.log	command=.qa/tools/provider_qa.py todoist-snapshot --out <private>/todoist-preflight.json	status=0
+02-google-preflight.log	command=.qa/tools/provider_qa.py google-calendars --out <private>/google-preflight.json	status=0
+03-google-product-preflight.log	command=installed launcher --operation google-qa-calendars-list --confirm-dedicated-qa-account	status=0
+04-google-provision.log	command=installed launcher --operation google-qa-calendars-provision --confirm-dedicated-qa-account --qa-calendar '<approved-two-calendar-spec>'	status=0
+05-google-output-baseline.log	command=captured helper step named by file	status=0
+06-google-blockers-baseline.log	command=captured helper step named by file	status=0
+07-todoist-provision.log	command=provider_qa.py todoist-create-fixtures --manifest <private> --run-tag <run-tag> --deadline 2026-10-08	status=0
+08-todoist-after-provision.log	command=captured helper step named by file	status=0
+09-exact-commit-hermetic.log	command=./gradlew :app:test [Google/Todoist/planning/apply scoped filters] :app:installDist --rerun-tasks --no-daemon	status=1
+10-exact-commit-scoped-tests.log	command=./gradlew :app:test [Google/Todoist/planning/apply scoped filters] --rerun-tasks --no-daemon	status=0
+11-exact-commit-install.log	command=./gradlew :app:installDist --no-daemon	status=0
+12-capacity.log	command=installed launcher --operation capacity --range-start 2026-10-05T04:00:00Z --range-end 2026-10-06T04:00:00Z --format json	status=0
+13-preview-1.log	command=installed launcher --operation preview --range-start 2026-10-05T04:00:00Z --range-end 2026-10-06T04:00:00Z	status=0
+13-preview-2.log	command=installed launcher --operation preview --range-start 2026-10-05T04:00:00Z --range-end 2026-10-06T04:00:00Z	status=0
+14-todoist-after-preview.log	command=captured helper step named by file	status=0
+15-google-output-after-preview.log	command=captured helper step named by file	status=0
+16-google-blockers-after-preview.log	command=captured helper step named by file	status=0
+17-preview-approval-required.log	command=installed launcher --operation preview [approval_required] --range-start 2026-10-05T04:00:00Z --range-end 2026-10-06T04:00:00Z	status=0
+18a-before-missing-todoist.log	command=captured helper step named by file	status=0
+18b-before-missing-google.log	command=captured helper step named by file	status=0
+18c-apply-missing.log	command=installed launcher --operation apply --plan-id <recorded> [no approval]	status=0
+18d-after-missing-todoist.log	command=captured helper step named by file	status=0
+18e-after-missing-google.log	command=captured helper step named by file	status=0
+19a-before-wrong-todoist.log	command=captured helper step named by file	status=0
+19b-before-wrong-google.log	command=captured helper step named by file	status=0
+19c-apply-wrong.log	command=installed launcher --operation apply --plan-id <recorded> --approval <wrong-hash>	status=0
+19d-after-wrong-todoist.log	command=captured helper step named by file	status=0
+19e-after-wrong-google.log	command=captured helper step named by file	status=0
+20-preview-fully-automated.log	command=installed launcher --operation preview [fully_automated]	status=0
+21a-before-full-auto-apply-todoist.log	command=captured helper step named by file	status=0
+21b-before-full-auto-apply-google.log	command=captured helper step named by file	status=0
+21c-full-auto-apply.log	command=installed launcher --operation apply --plan-id <fully-automated-plan>	status=0
+21d-after-full-auto-apply-todoist.log	command=captured helper step named by file	status=0
+21e-after-full-auto-apply-google.log	command=captured helper step named by file	status=0
+22a-full-auto-apply-safe.log	command=installed launcher --operation apply-safe --plan-id <fully-automated-plan>	status=0
+22b-after-full-auto-safe-todoist.log	command=captured helper step named by file	status=0
+22c-after-full-auto-safe-google.log	command=captured helper step named by file	status=0
+23a-before-approved-todoist.log	command=captured helper step named by file	status=0
+23b-before-approved-google-output.log	command=captured helper step named by file	status=0
+23c-before-approved-google-blockers.log	command=captured helper step named by file	status=0
+23d-apply-approved.log	command=installed launcher --operation apply --plan-id <recorded> --approval <exact>	status=0
+23e-after-approved-todoist.log	command=captured helper step named by file	status=0
+23f-after-approved-google-output.log	command=captured helper step named by file	status=0
+23g-after-approved-google-blockers.log	command=captured helper step named by file	status=0
+23h-approved-reconciliation.log	command=captured helper step named by file	status=0 (command completed before evidence assertion)
+24a-before-replay-todoist.log	command=captured helper step named by file	status=0
+24b-before-replay-google.log	command=captured helper step named by file	status=0
+24c-apply-replay.log	command=installed launcher --operation apply --plan-id <same> --approval <same exact approval>	status=0
+24d-after-replay-todoist.log	command=captured helper step named by file	status=0
+24e-after-replay-google.log	command=captured helper step named by file	status=0
+25a-create-safe-task.log	command=provider_qa.py todoist-create-task --role safe-ordinary [run-scoped]	status=0
+25b-create-blocker.log	command=provider_qa.py google-create-blocker [run-owned blocker 13:00-14:00Z]	status=0
+25c-preview-apply-safe.log	command=installed launcher --operation preview --previous-plan-id <approved baseline> [apply_safe_changes]	status=0
+26a-before-safe-todoist.log	command=captured helper step named by file	status=0
+26b-before-safe-google-output.log	command=captured helper step named by file	status=0
+26c-before-safe-google-blockers.log	command=captured helper step named by file	status=0
+26d-apply-safe.log	command=installed launcher --operation apply-safe --plan-id <mixed plan>	status=0
+26e-after-safe-todoist.log	command=captured helper step named by file	status=0
+26f-after-safe-google-output.log	command=captured helper step named by file	status=0
+26g-after-safe-google-blockers.log	command=captured helper step named by file	status=0
+27a-restore-todoist-due.log	command=provider_qa.py todoist-clear-due for each of 2 manifest-owned tasks	status=0
+27b-after-due-restore.log	command=captured helper step named by file	status=0
+28-stop-condition-reconciliation.log	command=captured helper step named by file	status=0 (command completed before evidence assertion)
+28a-delete-owned-google-events.log	command=provider_qa.py google-delete-event for 2 ownership-validated output events and 1 run-owned blocker	status=0
+28b-after-cleanup-output.log	command=captured helper step named by file	status=0
+28c-after-cleanup-blockers.log	command=captured helper step named by file	status=0
+29-state-restore.log	command=restore plans/applications/decisions/deliveries together from campaign baseline	status=0
+30-delete-todoist-fixtures.log	command=provider_qa.py todoist-delete-fixtures for manifest-owned 2 tasks, 4 labels, 1 project	status=0
+31-todoist-final.log	command=captured helper step named by file	status=0
+32-google-calendars-final.log	command=captured helper step named by file	status=0

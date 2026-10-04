@@ -1,0 +1,7 @@
+COMMAND: provider_qa.py google-delete-event for 2 ownership-validated output events and 1 run-owned blocker
+STARTED_UTC: 2026-10-01T12:28:12Z
+google_event_deleted=1
+google_event_deleted=1
+google_event_deleted=1
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:28:15Z

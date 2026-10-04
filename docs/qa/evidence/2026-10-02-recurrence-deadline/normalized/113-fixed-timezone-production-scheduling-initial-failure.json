@@ -1,0 +1,20 @@
+{
+  "all_id_only_links_present": false,
+  "all_owned_metadata_present": true,
+  "case": "fixed-IANA-production-scheduling",
+  "checkpoint": "113",
+  "distinct_event_ids": true,
+  "event_count_matches": false,
+  "event_starts": [],
+  "events_align_to_fixed_zone_occurrences": false,
+  "expected_event_count": 1,
+  "provider_due": {
+    "date": "2027-03-13T03:30:00",
+    "is_recurring": true,
+    "lang": "en",
+    "string": "every day at 3:30am starting March 13 2027",
+    "timezone": null
+  },
+  "provider_event_count": 0,
+  "verdict": "FAIL"
+}

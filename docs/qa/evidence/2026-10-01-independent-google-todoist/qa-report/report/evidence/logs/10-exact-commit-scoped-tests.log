@@ -1,0 +1,675 @@
+COMMAND: ./gradlew :app:test [Google/Todoist/planning/apply scoped filters] --rerun-tasks --no-daemon
+STARTED_UTC: 2026-10-01T12:15:11Z
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.6.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build
+> Task :app:compileJava NO-SOURCE
+> Task :app:compileGroovy
+> Task :app:processResources
+> Task :app:classes
+> Task :app:compileTestJava NO-SOURCE
+> Task :app:compileTestGroovy
+> Task :app:processTestResources
+> Task :app:testClasses
+
+> Task :app:test
+
+TodoistCalDavSyncOAuthBootstrapSpec > launcher dispatches normal and QA bootstrap without constructing planner or requiring calendars > launcher dispatches normal and QA bootstrap without constructing planner or requiring calendars [operation: google-oauth-bootstrap, portLine: , expectedMode: NORMAL, expectedPort: 8787, #0] PASSED
+
+TodoistCalDavSyncOAuthBootstrapSpec > launcher dispatches normal and QA bootstrap without constructing planner or requiring calendars > launcher dispatches normal and QA bootstrap without constructing planner or requiring calendars [operation: google-oauth-bootstrap-qa, portLine: oauth_callback_port: 9191, expectedMode: QA, expectedPort: 9191, #1] PASSED
+
+TodoistCalDavSyncOAuthBootstrapSpec > non-Google bootstrap refusal occurs before service factory secret resolution or listener PASSED
+
+TodoistCalDavSyncOAuthBootstrapSpec > launcher dispatches confirmed legacy import to QA and exits without planner provisioning PASSED
+
+TodoistCalDavSyncOAuthBootstrapSpec > legacy import rejects missing operator gate before source operation construction > legacy import rejects missing operator gate before source operation construction [extraArgs: [--input-reference, operator-vault:item-42], expectedError: --confirm-legacy-qa-import, #0] PASSED
+
+TodoistCalDavSyncOAuthBootstrapSpec > legacy import rejects missing operator gate before source operation construction > legacy import rejects missing operator gate before source operation construction [extraArgs: [--confirm-legacy-qa-import], expectedError: --input-reference, #1] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > launcher exposes explicit confirmed QA list and provision operations > launcher exposes explicit confirmed QA list and provision operations [operation: google-qa-calendars-list, extra: [], expectedCall: list, #0] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > launcher exposes explicit confirmed QA list and provision operations > launcher exposes explicit confirmed QA list and provision operations [operation: google-qa-calendars-provision, extra: [--qa-calendar, output|managed_output|SmartPlanner QA Output], expectedCall: provision, #1] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > QA operations refuse absent dedicated-account confirmation before service construction > QA operations refuse absent dedicated-account confirmation before service construction [operation: google-qa-calendars-list, #0] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > QA operations refuse absent dedicated-account confirmation before service construction > QA operations refuse absent dedicated-account confirmation before service construction [operation: google-qa-calendars-provision, #1] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: capacity, #0] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: preview, #1] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: apply, #2] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: apply-safe, #3] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: deliver, #4] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: feedback, #5] PASSED
+
+TodoistCalDavSyncQaProvisioningSpec > normal planner operations cannot reach QA provisioning factory > normal planner operations cannot reach QA provisioning factory [operation: planner-daemon, #6] PASSED
+
+ProductionIntegrationConfigSpec > valid production configuration resolves independent relative state paths PASSED
+
+ProductionIntegrationConfigSpec > calendar provider is explicit and restricted to supported values > calendar provider is explicit and restricted to supported values [provider: null, #0] PASSED
+
+ProductionIntegrationConfigSpec > calendar provider is explicit and restricted to supported values > calendar provider is explicit and restricted to supported values [provider: , #1] PASSED
+
+ProductionIntegrationConfigSpec > calendar provider is explicit and restricted to supported values > calendar provider is explicit and restricted to supported values [provider: google, #2] PASSED
+
+ProductionIntegrationConfigSpec > calendar provider is explicit and restricted to supported values > calendar provider is explicit and restricted to supported values [provider: CALDAV_API, #3] PASSED
+
+ProductionIntegrationConfigSpec > calendar provider is explicit and restricted to supported values > calendar provider is explicit and restricted to supported values [provider: CALDAV, #4] PASSED
+
+ProductionIntegrationConfigSpec > selected provider rejects mixed provider sections and fields > selected provider rejects mixed provider sections and fields [base: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure1@2c1f8dbd delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure2@55c57422 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #0] PASSED
+
+ProductionIntegrationConfigSpec > selected provider rejects mixed provider sections and fields > selected provider rejects mixed provider sections and fields [base: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure3@22825e1e delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure4@335f5c69 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #1] PASSED
+
+ProductionIntegrationConfigSpec > selected provider rejects mixed provider sections and fields > selected provider rejects mixed provider sections and fields [base: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure5@63fd4dda delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure6@1d6751e3 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #2] PASSED
+
+ProductionIntegrationConfigSpec > selected provider rejects mixed provider sections and fields > selected provider rejects mixed provider sections and fields [base: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure7@2d258eff delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure8@64502326 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #3] PASSED
+
+ProductionIntegrationConfigSpec > selected provider rejects mixed provider sections and fields > selected provider rejects mixed provider sections and fields [base: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure9@2e7af36e delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_2prov0_closure10@1283ca23 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #4] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure11@4e375bba delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: oauth_client_secret_file, #0] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure12@ab2e6d2 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: token_store_dir, #1] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure13@71664560 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: account_email, #2] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure14@4d4436d0 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: account_email, #3] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure15@674da77b delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: oauth_callback_port, #4] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure16@bd3eff4 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: oauth_client_secret_file, #5] PASSED
+
+ProductionIntegrationConfigSpec > Google provider validates required secret references account and callback port > Google provider validates required secret references account and callback port [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_3prov0_closure17@2180e789 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: token_store_dir, #6] PASSED
+
+ProductionIntegrationConfigSpec > Google calendar mappings require unique names IDs and exactly one matching managed output > Google calendar mappings require unique names IDs and exactly one matching managed output [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_4prov0_closure18@49cd946c delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: unique, #0] PASSED
+
+ProductionIntegrationConfigSpec > Google calendar mappings require unique names IDs and exactly one matching managed output > Google calendar mappings require unique names IDs and exactly one matching managed output [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_4prov0_closure19@5f726750 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: unique, #1] PASSED
+
+ProductionIntegrationConfigSpec > Google calendar mappings require unique names IDs and exactly one matching managed output > Google calendar mappings require unique names IDs and exactly one matching managed output [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_4prov0_closure20@4e80a001 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: name, id, and role, #2] PASSED
+
+ProductionIntegrationConfigSpec > Google calendar mappings require unique names IDs and exactly one matching managed output > Google calendar mappings require unique names IDs and exactly one matching managed output [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_4prov0_closure21@624b523 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: managed_output, #3] PASSED
+
+ProductionIntegrationConfigSpec > Google calendar mappings require unique names IDs and exactly one matching managed output > Google calendar mappings require unique names IDs and exactly one matching managed output [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_4prov0_closure22@52bd9a27 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: managed_output, #4] PASSED
+
+ProductionIntegrationConfigSpec > Google calendar mappings require unique names IDs and exactly one matching managed output > Google calendar mappings require unique names IDs and exactly one matching managed output [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_4prov0_closure23@681c0ae6 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: output_calendar, #5] PASSED
+
+ProductionIntegrationConfigSpec > Google provider model is normalized and immutable PASSED
+
+ProductionIntegrationConfigSpec > bootstrap-only Google validation requires only the OAuth bootstrap subset PASSED
+
+ProductionIntegrationConfigSpec > Google file references reject an existing symlink escape but allow a future contained suffix PASSED
+
+ProductionIntegrationConfigSpec > Google normal and QA token stores reject an in-tree physical alias during configuration PASSED
+
+ProductionIntegrationConfigSpec > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_9prov0_closure24@531ec978 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: provider, #0] PASSED
+
+ProductionIntegrationConfigSpec > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_9prov0_closure25@93501be delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: oauth_client_secret_file, #1] PASSED
+
+ProductionIntegrationConfigSpec > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_9prov0_closure26@11d4d979 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: token_store_dir, #2] PASSED
+
+ProductionIntegrationConfigSpec > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_9prov0_closure27@195580ba delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: account_email, #3] PASSED
+
+ProductionIntegrationConfigSpec > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields > bootstrap-only Google validation still rejects invalid OAuth bootstrap fields [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_9prov0_closure28@3c25cfe1 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: oauth_callback_port, #4] PASSED
+
+ProductionIntegrationConfigSpec > inline Google secrets are rejected without reflecting values > inline Google secrets are rejected without reflecting values [secretField: client_secret, #0] PASSED
+
+ProductionIntegrationConfigSpec > inline Google secrets are rejected without reflecting values > inline Google secrets are rejected without reflecting values [secretField: access_token, #1] PASSED
+
+ProductionIntegrationConfigSpec > inline Google secrets are rejected without reflecting values > inline Google secrets are rejected without reflecting values [secretField: refresh_token, #2] PASSED
+
+ProductionIntegrationConfigSpec > inline Google secrets are rejected without reflecting values > inline Google secrets are rejected without reflecting values [secretField: password, #3] PASSED
+
+ProductionIntegrationConfigSpec > inline Google secrets are rejected without reflecting values > inline Google secrets are rejected without reflecting values [secretField: token, #4] PASSED
+
+ProductionIntegrationConfigSpec > invalid provider configuration constructs zero calendar providers PASSED
+
+ProductionIntegrationConfigSpec > multiple invalid configuration classes construct zero calendar providers > multiple invalid configuration classes construct zero calendar providers [invalidClass: mixed providers, providerYaml:     calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/client.json
+        token_store_dir: secrets/tokens
+        account_email: owner@example.test
+        calendars:
+          - name: Planned
+            id: planned@example.test
+            role: managed_output
+    caldav:
+      calendars: [], #0] PASSED
+
+ProductionIntegrationConfigSpec > multiple invalid configuration classes construct zero calendar providers > multiple invalid configuration classes construct zero calendar providers [invalidClass: missing Google reference, providerYaml:     calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        token_store_dir: secrets/tokens
+        account_email: owner@example.test
+        calendars:
+          - name: Planned
+            id: planned@example.test
+            role: managed_output, #1] PASSED
+
+ProductionIntegrationConfigSpec > multiple invalid configuration classes construct zero calendar providers > multiple invalid configuration classes construct zero calendar providers [invalidClass: duplicate ID and name, providerYaml:     calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/client.json
+        token_store_dir: secrets/tokens
+        account_email: owner@example.test
+        calendars:
+          - name: Planned
+            id: same@example.test
+            role: managed_output
+          - name: Planned
+            id: same@example.test
+            role: hard_blocker, #2] PASSED
+
+ProductionIntegrationConfigSpec > multiple invalid configuration classes construct zero calendar providers > multiple invalid configuration classes construct zero calendar providers [invalidClass: managed-output mismatch, providerYaml:     calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/client.json
+        token_store_dir: secrets/tokens
+        account_email: owner@example.test
+        calendars:
+          - name: Different
+            id: planned@example.test
+            role: managed_output, #3] PASSED
+
+ProductionIntegrationConfigSpec > CalendarProviderConfig defensively deep-freezes CalDAV configuration PASSED
+
+ProductionIntegrationConfigSpec > CalDAV compatibility preserves URL auth timeout response limit and gateway options PASSED
+
+ProductionIntegrationConfigSpec > production composition constructs only the explicitly selected calendar provider > production composition constructs only the explicitly selected calendar provider [providerYaml:     calendar:
+      provider: caldav
+    caldav:
+      calendars:
+        - name: Planned
+          url: https://calendar.example.test/planned
+          auth:
+            type: none, expectedCalDav: 1, expectedGoogle: 0, #0] PASSED
+
+ProductionIntegrationConfigSpec > production composition constructs only the explicitly selected calendar provider > production composition constructs only the explicitly selected calendar provider [providerYaml:     calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/google-oauth-client.json
+        token_store_dir: secrets/google-oauth-tokens
+        account_email: smartplanner-qa@example.test
+        calendars:
+          - name: Planned
+            id: planned@example.test
+            role: managed_output, expectedCalDav: 0, expectedGoogle: 1, #1] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure41@2ce524d2 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: https, #0] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure42@3869a6e5 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: max_pages, #1] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure43@e3899fd delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: max_response_bytes, #2] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure44@7d484fcd delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: unique, #3] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure45@788e3702 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: output_calendar, #4] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure46@d25e878 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: https, #5] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure47@47187f50 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: password_env, #6] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure48@78116659 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: positive, #7] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure49@712e787e delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: max_response_bytes, #8] PASSED
+
+ProductionIntegrationConfigSpec > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed > invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed [mutate: <todoistcaldavsync.planner.ProductionIntegrationConfigSpec$__spock_feature_0_16prov0_closure50@53ea380b delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, fragment: state paths, #9] PASSED
+
+ProductionIntegrationConfigSpec > inline production secrets are rejected without reflecting their values PASSED
+
+ProductionIntegrationConfigSpec > feedback allowlist must contain unique nonblank actor ids > feedback allowlist must contain unique nonblank actor ids [actors: [], #0] PASSED
+
+ProductionIntegrationConfigSpec > feedback allowlist must contain unique nonblank actor ids > feedback allowlist must contain unique nonblank actor ids [actors: [same, same], #1] PASSED
+
+ProductionIntegrationConfigSpec > feedback allowlist must contain unique nonblank actor ids > feedback allowlist must contain unique nonblank actor ids [actors: actor, #2] PASSED
+
+ProductionPlannerOrchestratorIntegrationSpec > live capacity and persisted deterministic preview preserve previous-plan stability with zero writes PASSED
+
+ProductionPlannerOrchestratorIntegrationSpec > approval_required binds exact plan hash and only explicit accepted decision applies PASSED
+
+ProductionPlannerOrchestratorIntegrationSpec > apply_safe_changes applies ordinary blocks while withholding approval-required blocks PASSED
+
+ProductionPlannerOrchestratorIntegrationSpec > fully_automated remains refused with no Todoist or calendar writes PASSED
+
+ProductionPlannerOrchestratorIntegrationSpec > weather provider failure reaches configured fallback policy through production composition > weather provider failure reaches configured fallback policy through production composition [fallback: fail_open, expectedScheduled: 1, #0] PASSED
+
+ProductionPlannerOrchestratorIntegrationSpec > weather provider failure reaches configured fallback policy through production composition > weather provider failure reaches configured fallback policy through production composition [fallback: fail_closed, expectedScheduled: 0, #1] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > bounded event list traverses pages for every configured calendar and preserves names PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > event reads reject invalid ranges and enforce per-calendar page and result bounds PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > malformed and oversized event-list responses fail closed PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > global iCalUID lookup returns absent or one live event and detects cross-calendar collisions PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > a failed calendar in global UID lookup is never treated as absence > a failed calendar in global UID lookup is never treated as absence [status: 401, expected: AUTHENTICATION, #0] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > a failed calendar in global UID lookup is never treated as absence > a failed calendar in global UID lookup is never treated as absence [status: 403, expected: AUTHORIZATION, #1] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > a failed calendar in global UID lookup is never treated as absence > a failed calendar in global UID lookup is never treated as absence [status: 404, expected: NOT_FOUND, #2] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > a failed calendar in global UID lookup is never treated as absence > a failed calendar in global UID lookup is never treated as absence [status: 409, expected: CONFLICT, #3] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > a failed calendar in global UID lookup is never treated as absence > a failed calendar in global UID lookup is never treated as absence [status: 429, expected: RATE_LIMIT, #4] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > a failed calendar in global UID lookup is never treated as absence > a failed calendar in global UID lookup is never treated as absence [status: 503, expected: SERVER_ERROR, #5] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > owned upsert creates on the managed calendar with Google event fields PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > owned upsert globally resolves and updates by the live Google provider event ID PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > upsert refuses cross-calendar, missing ownership, and mismatched live block before mutation PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > delete rereads globally then uses only the live managed Google event ID PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > determinate mutation HTTP failures are classified and never retried > determinate mutation HTTP failures are classified and never retried [status: 401, expected: AUTHENTICATION, #0] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > determinate mutation HTTP failures are classified and never retried > determinate mutation HTTP failures are classified and never retried [status: 403, expected: AUTHORIZATION, #1] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > determinate mutation HTTP failures are classified and never retried > determinate mutation HTTP failures are classified and never retried [status: 404, expected: NOT_FOUND, #2] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > determinate mutation HTTP failures are classified and never retried > determinate mutation HTTP failures are classified and never retried [status: 409, expected: CONFLICT, #3] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > determinate mutation HTTP failures are classified and never retried > determinate mutation HTTP failures are classified and never retried [status: 429, expected: RATE_LIMIT, #4] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > determinate mutation HTTP failures are classified and never retried > determinate mutation HTTP failures are classified and never retried [status: 503, expected: SERVER_ERROR, #5] PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > timeout and malformed post-dispatch mutation outcomes are ambiguous and not retried PASSED
+
+GoogleCalendarApiGatewayWireMockSpec > an interrupted dispatched mutation is ambiguous and is not replayed PASSED
+
+ProductionHttpGatewaysWireMockSpec > Todoist reads paginated tasks/projects with bearer auth and writes due only PASSED
+
+ProductionHttpGatewaysWireMockSpec > Todoist transient reads retry boundedly while writes and deadline refusal are not retried PASSED
+
+ProductionHttpGatewaysWireMockSpec > Todoist streams bounded responses and classifies lost write responses as ambiguous PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV REPORT preserves calendar name and parses embedded event PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV UID lookup REPORTs all calendars then GETs live resource and rejects collision PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV refuses unowned or external PUT before transport PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV PUT shape and ownership-checked GET DELETE are real HTTP boundaries PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV streams bounded responses and classifies a lost PUT response as ambiguous PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV implicit all-day end follows next local midnight across DST > CalDAV implicit all-day end follows next local midnight across DST [uid: spring, date: 20260308, expectedStart: 2026-03-08T05:00:00Z, expectedEnd: 2026-03-09T04:00:00Z, #0] PASSED
+
+ProductionHttpGatewaysWireMockSpec > CalDAV implicit all-day end follows next local midnight across DST > CalDAV implicit all-day end follows next local midnight across DST [uid: fall, date: 20261101, expectedStart: 2026-11-01T04:00:00Z, expectedEnd: 2026-11-02T05:00:00Z, #1] PASSED
+
+PlanApplierGoogleCalendarApiGatewaySpec > approved apply writes only the managed Google calendar and never mutates Todoist deadlines PASSED
+
+PlanApplierGoogleCalendarApiGatewaySpec > Google apply seam refuses a cross-calendar write before mutation PASSED
+
+PlanApplierSpec > approved single task writes managed event and sets Todoist due to exact DTSTART PASSED
+
+PlanApplierSpec > approved multiple tasks and focus block: aggregate calendar + per-task Todoist dues PASSED
+
+PlanApplierSpec > preview mode never writes calendar or Todoist PASSED
+
+PlanApplierSpec > missing approval causes zero writes PASSED
+
+PlanApplierSpec > wrong plan id approval is rejected PASSED
+
+PlanApplierSpec > stale approval version is rejected PASSED
+
+PlanApplierSpec > tampered plan hash approval is rejected PASSED
+
+PlanApplierSpec > fully_automated mode refuses writes in Phase 3 PASSED
+
+PlanApplierSpec > frozen block without explicit approval is not applied PASSED
+
+PlanApplierSpec > approvalRequired change without approval is skipped in apply_safe_changes PASSED
+
+PlanApplierSpec > apply_safe_changes applies non-protected block without approval PASSED
+
+PlanApplierSpec > applySafeChanges on approval_required plan applies safe only; receipt effective mode; plan not mutated PASSED
+
+PlanApplierSpec > applySafeChanges protected-only yields zero writes SKIPPED_PROTECTED overall PASSED
+
+PlanApplierSpec > applySafeChanges empty plan is SKIPPED_NO_CHANGES PASSED
+
+PlanApplierSpec > applySafeChanges refuses plan fully_automated even when config nonauto; zero writes PASSED
+
+PlanApplierSpec > applySafeChanges refuses config fully_automated even when plan approval_required; zero writes PASSED
+
+PlanApplierSpec > applySafeChanges still applies safe from approval_required when neither mode fully_automated PASSED
+
+PlanApplierSpec > apply_safe_changes wrong plan id approval never escalates protected; surfaces audit; safe still applies PASSED
+
+PlanApplierSpec > apply_safe_changes stale approval version never escalates protected PASSED
+
+PlanApplierSpec > apply_safe_changes tampered plan hash never escalates protected or approvalRequired PASSED
+
+PlanApplierSpec > apply_safe_changes valid approval applies protected frozen and approvalRequired items PASSED
+
+PlanApplierSpec > apply_safe_changes invalid approval with only protected items writes nothing and audits PASSED
+
+PlanApplierSpec > deterministic UID stable across reruns and second apply is idempotent PASSED
+
+PlanApplierSpec > Todoist update request shape never includes deadline field PASSED
+
+PlanApplierSpec > calendar success and Todoist failure records PARTIAL and reconcile completes without duplicate calendar write PASSED
+
+PlanApplierSpec > calendar failure before Todoist means no Todoist update PASSED
+
+PlanApplierSpec > ambiguous Todoist write is durably reconciled from live state without resend PASSED
+
+PlanApplierSpec > ambiguous calendar PUT is reconciled from live owned event without resend PASSED
+
+PlanApplierSpec > oversized Todoist mutation response persists UNKNOWN and blocks blind resend PASSED
+
+PlanApplierSpec > oversized CalDAV PUT response persists UNKNOWN and blocks blind resend PASSED
+
+PlanApplierSpec > failed apply is not skipped as already-applied on retry PASSED
+
+PlanApplierSpec > manual calendar move is detected and preserved by default PASSED
+
+PlanApplierSpec > manual Todoist due change is detected and preserved PASSED
+
+PlanApplierSpec > unowned and wrong-calendar writes are rejected without mutation PASSED
+
+PlanApplierSpec > existing external event with non-planner uid is not deleted or adopted PASSED
+
+PlanApplierSpec > deterministic planner UID without ownership marker refuses adoption and preserves external event PASSED
+
+PlanApplierSpec > deterministic planner UID on wrong calendar refuses overwrite and preserves event PASSED
+
+PlanApplierSpec > deterministic UID missing marker on managed calendar: gateway also refuses overwrite PASSED
+
+PlanApplierSpec > delete of unowned event is rejected PASSED
+
+PlanApplierSpec > no writes outside managed calendar via ManagedCalendarWriteGateway PASSED
+
+PlanApplierSpec > stable block id moved T1 to T2 forces calendar upsert and Todoist due=T2 PASSED
+
+PlanApplierSpec > prior PARTIAL cal-ok Todoist-fail at T1 then approved T2 plan moves calendar and completes Todoist PASSED
+
+PlanApplierSpec > mapping claims calendar applied but deleted live event is recreated before Todoist PASSED
+
+PlanApplierSpec > owned live end drift vs last-applied and proposal is manual override not forced upsert PASSED
+
+PlanApplierSpec > marker stripped same-UID event refuses as external collision never recreate PASSED
+
+PlanApplierSpec > PlanApplier constructor requires non-null calendar and todoist read gateways PASSED
+
+PlanApplierSpec > ownership write requires both UID and marker; UID-only and marker-only rejected PASSED
+
+PlanApplierSpec > deleteOwnedEvent rejects mismatched block metadata and wrong calendar PASSED
+
+PlanApplierSpec > focus block move cleans old UID once after new aggregate exists PASSED
+
+PlanApplierSpec > externalized old event is preserved with error on focus move cleanup PASSED
+
+PlanApplierSpec > delete failure on old UID is recoverable without duplicating new event PASSED
+
+PlanApplierSpec > frozen clock yields distinct receipt ids and append-only paths PASSED
+
+PlanApplierSpec > offset-less Todoist due uses planner ZoneId America/New_York including DST PASSED
+
+PlanApplierSpec > offset-less live due drift detection uses config timezone not Z PASSED
+
+PlanApplierSpec > corrupt mappings file throws structured error PASSED
+
+PlanApplierSpec > interrupted mappings write preserves prior snapshot PASSED
+
+PlanApplierSpec > receipt human summary uses 12-hour AM/PM; machine JSON uses ISO PASSED
+
+PlanApplierSpec > DST offset exact DTSTART synchronization PASSED
+
+PlanApplierSpec > PlanHash is stable for same plan and changes when blocks move PASSED
+
+PlanApplierSpec > concurrent PlanApplier instances applying different tasks preserve both mappings PASSED
+
+PlanApplierSpec > prior success then cleared Todoist due restores exact start without calendar duplicate PASSED
+
+PlanApplierSpec > prior success then changed Todoist due is preserved as drift not false-applied PASSED
+
+PlanApplierSpec > exact live Todoist due matching slotStart skips Todoist update PASSED
+
+PlanApplierSpec > offset-less civil live due normalized with planner zone equals slot for idempotent skip PASSED
+
+PlanApplierSpec > missing Todoist task is structured error not false success PASSED
+
+PlanApplierSpec > malformed live Todoist due is structured error not false skip PASSED
+
+PlanApplierSpec > empty plan with no scheduled blocks is safe no-op not APPLIED PASSED
+
+PlanApplierSpec > PlanApplier requires non-blank managed output calendar PASSED
+
+PlanApplierSpec > PlanHash ignores createdAt but binds semantic content mutations PASSED
+
+PlanApplierSpec > same approved plan reapplied after user moves owned event is SKIPPED_MANUAL_OVERRIDE with zero writes PASSED
+
+PlanApplierSpec > manual move to time equal another plan proposal still preserves override on same-plan reapply PASSED
+
+PlanApplierSpec > keepManualMoves false allows calendar overwrite of user-moved owned event PASSED
+
+PlanApplierSpec > genuinely missing owned event is recreated on same-plan reapply PASSED
+
+PlanApplierSpec > PlanHash reason-only change on ScheduledBlock alters hash PASSED
+
+PlanApplierSpec > findEventByUid finds wrong-calendar collision globally PASSED
+
+GoogleIdTokenIdentityVerifierSpec > production verifier accepts a locally signed valid Google identity token PASSED
+
+GoogleIdTokenIdentityVerifierSpec > production verifier rejects invalid identity token evidence > production verifier rejects invalid identity token evidence [overrides: [aud:different-client.apps.example.test], corruptSignature: false, #0] PASSED
+
+GoogleIdTokenIdentityVerifierSpec > production verifier rejects invalid identity token evidence > production verifier rejects invalid identity token evidence [overrides: [iss:https://attacker.example.test], corruptSignature: false, #1] PASSED
+
+GoogleIdTokenIdentityVerifierSpec > production verifier rejects invalid identity token evidence > production verifier rejects invalid identity token evidence [overrides: [:], corruptSignature: true, #2] PASSED
+
+GoogleIdTokenIdentityVerifierSpec > production verifier rejects invalid identity token evidence > production verifier rejects invalid identity token evidence [overrides: [exp:1790853388], corruptSignature: false, #3] PASSED
+
+GoogleIdTokenIdentityVerifierSpec > production verifier rejects invalid identity token evidence > production verifier rejects invalid identity token evidence [overrides: [email_verified:false], corruptSignature: false, #4] PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > authorization code exchange uses redirect state PKCE exact lifecycle scope and verified identity PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > QA authorization requests the exact QA lifecycle scopes plus identity evidence scopes PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > Google identity scope aliases and known profile extras produce lifecycle-only state > live identity scope variant succeeds: userinfo email alias PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > Google identity scope aliases and known profile extras produce lifecycle-only state > live identity scope variant succeeds: userinfo profile extra PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > missing required or unexpected returned scopes are rejected > scope mismatch is closed and unwritten: missing email PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > missing required or unexpected returned scopes are rejected > scope mismatch is closed and unwritten: unexpected Drive PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > missing required token response fields fail closed > missing refresh_token is classified and redacted PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > missing required token response fields fail closed > missing id_token is classified and redacted PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > malformed error oversized and unverified exchange responses never produce persistable state > exchange failure is closed, redacted, and unwritten: malformed PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > malformed error oversized and unverified exchange responses never produce persistable state > exchange failure is closed, redacted, and unwritten: provider err PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > malformed error oversized and unverified exchange responses never produce persistable state > exchange failure is closed, redacted, and unwritten: oversized PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > malformed error oversized and unverified exchange responses never produce persistable state > exchange failure is closed, redacted, and unwritten: no id token PASSED
+
+GoogleInstalledAppOAuthAuthorizerTransportSpec > malformed error oversized and unverified exchange responses never produce persistable state > exchange failure is closed, redacted, and unwritten: wrong account PASSED
+
+GoogleOAuthBootstrapSpec > normal bootstrap uses event-only scope normal store configured loopback port and terminal consent output PASSED
+
+GoogleOAuthBootstrapSpec > QA bootstrap uses elevated exact scope and cannot overwrite normal store PASSED
+
+GoogleOAuthBootstrapSpec > bootstrap validates refresh account and exact scope before persistence > bootstrap validates refresh account and exact scope before persistence [invalid: <todoistcaldavsync.planner.oauth.GoogleOAuthTokenState@2c1bfd5 accessToken=inaccessible refreshToken=inaccessible expiresAt=inaccessible scopes=inaccessible accountEmail=inaccessible accountSubject=inaccessible>, expected: TOKEN_RESPONSE_INVALID, #0] PASSED
+
+GoogleOAuthBootstrapSpec > bootstrap validates refresh account and exact scope before persistence > bootstrap validates refresh account and exact scope before persistence [invalid: <todoistcaldavsync.planner.oauth.GoogleOAuthTokenState@a66bf2a0 accessToken=inaccessible refreshToken=inaccessible expiresAt=inaccessible scopes=inaccessible accountEmail=inaccessible accountSubject=inaccessible>, expected: SCOPE_MISMATCH, #1] PASSED
+
+GoogleOAuthBootstrapSpec > bootstrap validates refresh account and exact scope before persistence > bootstrap validates refresh account and exact scope before persistence [invalid: <todoistcaldavsync.planner.oauth.GoogleOAuthTokenState@91c96549 accessToken=inaccessible refreshToken=inaccessible expiresAt=inaccessible scopes=inaccessible accountEmail=inaccessible accountSubject=inaccessible>, expected: ACCOUNT_MISMATCH, #2] PASSED
+
+GoogleOAuthBootstrapSpec > bootstrap rejects physical store aliases before authorization or store construction PASSED
+
+GoogleOAuthBootstrapSpec > loopback callback identifies a state mismatch without exposing callback values PASSED
+
+GoogleOAuthBootstrapSpec > loopback callback receives an SSH-forwarded-style local callback and never binds wildcard PASSED
+
+GoogleOAuthCredentialLifecycleSpec > fresh credential is returned without a provider request PASSED
+
+GoogleOAuthCredentialLifecycleSpec > credential inside refresh window refreshes before use and persists replacement PASSED
+
+GoogleOAuthCredentialLifecycleSpec > credential refresh treats an omitted scope field as unchanged and persists required scopes PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh canonicalizes identity aliases without widening stored planner scopes > refresh accepts Google identity aliases and persists only required scopes [userinfo email alias] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh canonicalizes identity aliases without widening stored planner scopes > refresh accepts Google identity aliases and persists only required scopes [userinfo profile extra] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh rejects missing planner scopes or unrelated extras without persisting > refresh rejects scope allowlist boundary [unrelated Drive extra] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh rejects missing planner scopes or unrelated extras without persisting > refresh rejects scope allowlist boundary [missing calendar scope] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh treats only an omitted scope field as unchanged > refresh rejects explicit malformed scope value [null] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh treats only an omitted scope field as unchanged > refresh rejects explicit malformed scope value [empty string] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh treats only an omitted scope field as unchanged > refresh rejects explicit malformed scope value [blank string] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh treats only an omitted scope field as unchanged > refresh rejects explicit malformed scope value [boolean false] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh treats only an omitted scope field as unchanged > refresh rejects explicit malformed scope value [number zero] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > refresh treats only an omitted scope field as unchanged > refresh rejects explicit malformed scope value [empty array] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > revoked malformed and oversized refresh responses fail closed and redact secrets > refresh failure is closed and redacted [CREDENTIAL_REVOKED] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > revoked malformed and oversized refresh responses fail closed and redact secrets > refresh failure is closed and redacted [TOKEN_RESPONSE_INVALID] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > revoked malformed and oversized refresh responses fail closed and redact secrets > refresh failure is closed and redacted [SCOPE_MISMATCH] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > revoked malformed and oversized refresh responses fail closed and redact secrets > refresh failure is closed and redacted [TOKEN_RESPONSE_INVALID] PASSED
+
+GoogleOAuthCredentialLifecycleSpec > normal credential lifecycle rejects broad legacy scope before any request PASSED
+
+GoogleOAuthCredentialLifecycleSpec > redactor removes OAuth values and authorization headers PASSED
+
+GoogleOAuthMaterialAndStoreSpec > client material is loaded only from a configured desktop-client file PASSED
+
+GoogleOAuthMaterialAndStoreSpec > invalid client material fails with no secret reflection > invalid client material fails with no secret reflection [malformed] PASSED
+
+GoogleOAuthMaterialAndStoreSpec > invalid client material fails with no secret reflection > invalid client material fails with no secret reflection [web-type] PASSED
+
+GoogleOAuthMaterialAndStoreSpec > invalid client material fails with no secret reflection > invalid client material fails with no secret reflection [insecure] PASSED
+
+GoogleOAuthMaterialAndStoreSpec > private file token store round trips atomically with owner-only permissions PASSED
+
+GoogleOAuthMaterialAndStoreSpec > in-memory token store is isolated and defensive PASSED
+
+GoogleOAuthMaterialAndStoreSpec > normal and QA paths cannot alias through an existing intermediate symlink PASSED
+
+GoogleOAuthMaterialAndStoreSpec > token store rejects any existing symlink ancestor before read or write > token store rejects any existing symlink ancestor before read or write [action: <todoistcaldavsync.planner.oauth.GoogleOAuthMaterialAndStoreSpec$__spock_feature_0_5prov0_closure2@71cdb24 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #0] PASSED
+
+GoogleOAuthMaterialAndStoreSpec > token store rejects any existing symlink ancestor before read or write > token store rejects any existing symlink ancestor before read or write [action: <todoistcaldavsync.planner.oauth.GoogleOAuthMaterialAndStoreSpec$__spock_feature_0_5prov0_closure3@33a1bb90 delegate=inaccessible owner=inaccessible thisObject=inaccessible resolveStrategy=inaccessible directive=inaccessible parameterTypes=inaccessible maximumNumberOfParameters=inaccessible bcw=inaccessible thisType=inaccessible>, #1] PASSED
+
+GoogleOAuthScopesSpec > canonicalize normalizes only Google identity aliases PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > confirmed legacy broad credential imports only to QA store after offline validation PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > legacy validation failure writes neither store and requires no Google Calendar seam > legacy validation failure writes neither store and requires no Google Calendar seam [confirmed: false, account: qa-owner@example.test, scopes: [https://www.googleapis.com/auth/calendar.events, https://www.googleapis.com/auth/calendar], verification: null, expected: CLIENT_CONFIGURATION, #0] PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > legacy validation failure writes neither store and requires no Google Calendar seam > legacy validation failure writes neither store and requires no Google Calendar seam [confirmed: true, account: wrong@example.test, scopes: [https://www.googleapis.com/auth/calendar.events, https://www.googleapis.com/auth/calendar], verification: <todoistcaldavsync.planner.oauth.LegacyGoogleOAuthVerification@9c80a972 accountSubject=inaccessible accountEmail=inaccessible scopes=inaccessible>, expected: ACCOUNT_MISMATCH, #1] PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > legacy validation failure writes neither store and requires no Google Calendar seam > legacy validation failure writes neither store and requires no Google Calendar seam [confirmed: true, account: qa-owner@example.test, scopes: [https://www.googleapis.com/auth/calendar.events], verification: <todoistcaldavsync.planner.oauth.LegacyGoogleOAuthVerification@df79795e accountSubject=inaccessible accountEmail=inaccessible scopes=inaccessible>, expected: SCOPE_MISMATCH, #2] PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > legacy validation failure writes neither store and requires no Google Calendar seam > legacy validation failure writes neither store and requires no Google Calendar seam [confirmed: true, account: qa-owner@example.test, scopes: [https://www.googleapis.com/auth/calendar.events, https://www.googleapis.com/auth/calendar], verification: null, expected: TOKEN_RESPONSE_INVALID, #3] PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > legacy calendar-management credential can never import into normal store PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > legacy importer rejects the same store instance before verifier or write PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > production legacy QA import composition is hermetic and writes only verified QA store PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > operator operation loads explicit reference then authenticates account and scopes before QA write PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > operator operation rejects missing gate or reference before reading source or validating > operator operation rejects missing gate or reference before reading source or validating [reference: operator-vault:item-42, confirmed: false, #0] PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > operator operation rejects missing gate or reference before reading source or validating > operator operation rejects missing gate or reference before reading source or validating [reference: , confirmed: true, #1] PASSED
+
+LegacyGoogleOAuthCredentialImporterSpec > operator operation rejects missing gate or reference before reading source or validating > operator operation rejects missing gate or reference before reading source or validating [reference: null, confirmed: true, #2] PASSED
+
+LegacyGoogleOAuthProductionSeamsSpec > bounded explicit JSON source maps only the referenced local test credential PASSED
+
+LegacyGoogleOAuthProductionSeamsSpec > Google token-info validator authenticates verified account and exact QA scopes hermetically PASSED
+
+LegacyGoogleOAuthProductionSeamsSpec > Google token-info validator rejects unauthenticated identity and scope evidence > Google token-info validator rejects unauthenticated identity and scope evidence [responseBody: [sub:s, email:owner@example.test, email_verified:false, expires_in:3600, scope:https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar], expected: ACCOUNT_MISMATCH, #0] PASSED
+
+LegacyGoogleOAuthProductionSeamsSpec > Google token-info validator rejects unauthenticated identity and scope evidence > Google token-info validator rejects unauthenticated identity and scope evidence [responseBody: [sub:s, email:wrong@example.test, email_verified:true, expires_in:3600, scope:https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar], expected: ACCOUNT_MISMATCH, #1] PASSED
+
+LegacyGoogleOAuthProductionSeamsSpec > Google token-info validator rejects unauthenticated identity and scope evidence > Google token-info validator rejects unauthenticated identity and scope evidence [responseBody: [sub:s, email:owner@example.test, email_verified:true, expires_in:3600, scope:https://www.googleapis.com/auth/calendar.events], expected: SCOPE_MISMATCH, #2] PASSED
+
+LegacyGoogleOAuthProductionSeamsSpec > Google token-info validator rejects unauthenticated identity and scope evidence > Google token-info validator rejects unauthenticated identity and scope evidence [responseBody: [sub:s, email:owner@example.test, email_verified:true, expires_in:0, scope:https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar], expected: TOKEN_RESPONSE_INVALID, #3] PASSED
+
+QaCalendarProvisioningServiceWireMockSpec > explicit QA provision reuses exact names, creates missing calendars, and persists only returned IDs PASSED
+
+QaCalendarProvisioningServiceWireMockSpec > list performs dedicated-account preflight but never creates or persists PASSED
+
+QaCalendarProvisioningServiceWireMockSpec > preflight refuses a nonmatching primary account before create or state write PASSED
+
+QaCalendarProvisioningServiceWireMockSpec > service requires a distinct QA token store and state beneath ignored QA root PASSED
+
+DeterministicSchedulerSpec > P1 schedules before lower priority when capacity is scarce PASSED
+
+DeterministicSchedulerSpec > impossible deadline-infeasible task is unscheduled with reason PASSED
+
+DeterministicSchedulerSpec > context preference places phone task in preferred afternoon window when available PASSED
+
+DeterministicSchedulerSpec > interior preferred window inside larger free slot is chosen over slot start PASSED
+
+DeterministicSchedulerSpec > competing contexts: preferred wins over avoid when both candidates fit PASSED
+
+DeterministicSchedulerSpec > preferred start that cannot fit duration falls back to feasible alternative PASSED
+
+DeterministicSchedulerSpec > same-project tasks form explicit aggregate focus block when feasible PASSED
+
+DeterministicSchedulerSpec > bilateral buffer rejects morning candidate ending inside leading buffer of afternoon block PASSED
+
+DeterministicSchedulerSpec > bilateral buffer accepts exact buffer boundary and both insertion orders PASSED
+
+DeterministicSchedulerSpec > later-clock interior block placed first does not cause buffer assertion throw for earlier block PASSED
+
+DeterministicSchedulerSpec > frozen multi-task focus block preserves per-member intervals without duplication PASSED
+
+DeterministicSchedulerSpec > legacy frozen focus block without memberIntervals derives sequential member ranges PASSED
+
+DeterministicSchedulerSpec > move within requireApprovalForMoveWithin tags PlanChange with approvalRequired PASSED
+
+DeterministicSchedulerSpec > does not delay urgent deadline task merely for batching PASSED
+
+DeterministicSchedulerSpec > buffers ensure no hard conflicts between scheduled blocks PASSED
+
+DeterministicSchedulerSpec > same fixture always returns identical schedule PASSED
+
+DeterministicSchedulerSpec > frozen window preserves previous near-term placement PASSED
+
+DeterministicSchedulerSpec > prior single-task frozen=true outside freezeWithin is kept exactly PASSED
+
+DeterministicSchedulerSpec > prior single-task frozen=false outside freezeWithin may move by score PASSED
+
+DeterministicSchedulerSpec > manual move is preserved by default with keep change PASSED
+
+DeterministicSchedulerSpec > multi-member focus block rejects when non-primary member is deadline-infeasible PASSED
+
+DeterministicSchedulerSpec > sequential focus members with different deadlines form feasible block not clipped to earliest PASSED
+
+DeterministicSchedulerSpec > focus block rejected when sequential member end misses its own deadline then split PASSED
+
+DeterministicSchedulerSpec > foldMemberScores returns INFEASIBLE atomically when any member is infeasible PASSED
+
+DeterministicSchedulerSpec > proposal diff lists scheduled moved kept and unscheduled with reasons PASSED
+
+DeterministicSchedulerSpec > snapshot state persistence round-trip without external writes PASSED
+
+DeterministicSchedulerSpec > excludes manual tasks from scheduling PASSED
+
+DeterministicSchedulerSpec > soft-blocked slots remain usable but do not create hard conflicts PASSED
+
+BUILD SUCCESSFUL in 1m 22s
+5 actionable tasks: 5 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.6.1/userguide/configuration_cache_enabling.html
+
+EXIT_STATUS: 0
+FINISHED_UTC: 2026-10-01T12:16:33Z
