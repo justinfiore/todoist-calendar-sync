@@ -4,6 +4,7 @@ logs
 conf/user
 conf/StoredCredential
 conf/client_secret.json
+SERVICE_SETUP.md
 
 # Ignore Gradle project-specific cache directory
 .gradle
