@@ -50,7 +50,7 @@ flowchart LR
     Orch --> CRead[Calendar read gateway]
     Orch --> Core[Pure policy and deterministic scheduler]
     Orch -. optional read .-> Weather[Open-Meteo]
-    Orch -. optional suggestion .-> AI[OpenAI-compatible LLM]
+    Orch -. optional suggestion .-> AI[API-key or subscription LLM]
     Orch --> Stores[(Plans / applications / decisions / deliveries)]
     Orch --> Apply[PlanApplier]
 
@@ -522,7 +522,7 @@ flowchart TD
     Enabled -->|no| Reject[Reject without provider call]
     Enabled -->|yes| Context[Build minimum bounded redacted context]
     Context --> Bind[Bind plan hash + planning-input hash + allowed IDs]
-    Bind --> Gateway[OpenAI-compatible HTTPS gateway]
+    Bind --> Gateway[Bounded API-key or subscription HTTPS gateway]
     Gateway --> Validate[Strict versioned JSON schema and identity validation]
     Validate -->|invalid / oversized / tool call / redirect / bad host| Reject
     Validate -->|valid| Suggestion[Suggestion bundle + redacted audit receipt]
@@ -537,6 +537,12 @@ flowchart TD
 
 `LlmSchemaValidator` revalidates identity, allowed task/event IDs, actions, ranges, and schema structure. Audit receipts contain hashes, sizes, counts, provider/model identifiers, timing, outcome, and error class—not raw prompts, raw responses, or secrets.
 
+Subscription composition uses the same context and validation boundary. OpenAI SIWC browser PKCE and
+xAI RFC 8628 device auth write separate SmartPlanner-owned rotating records; inference uses direct
+tool-free Responses/SSE with exact public hosts. No coding-agent subprocess, personal CLI cache,
+CLI proxy, API-key fallback, or cross-provider fallback participates. Subscription profiles are disabled
+by default and remain pending owner-run disposable live validation.
+
 ### 12.3 Daemon confirmation flow
 
 For unmatched proposal-thread text, AI may suggest an action. SmartPlanner posts a human-readable summary and persists it against the current plan ID/hash with a 15-minute expiry. It performs no action until the same allowlisted actor uses a configured deterministic phrase for that action. Stale, expired, mismatched, unknown-task, or out-of-range suggestions are cleared or rejected.
@@ -544,8 +550,10 @@ For unmatched proposal-thread text, AI may suggest an action. SmartPlanner posts
 ### 12.4 AI implementation files
 
 - Operator guide: `docs/LLM_INTEGRATION.md` and `docs/AI_ASSISTANCE.md`
+- Subscription operations/compatibility: `docs/AI_SUBSCRIPTION_AUTH.md` and `docs/AI_SUBSCRIPTION_COMPATIBILITY.md`
 - Service boundary: `planner/ai/AiAssistanceService.groovy`
-- HTTP adapter: `planner/ai/OpenAiCompatibleLlmGateway.groovy`
+- HTTP adapters: `planner/ai/OpenAiCompatibleLlmGateway.groovy` and `SubscriptionResponsesLlmGateway.groovy`
+- Subscription login/storage: `planner/ai/OpenAiSiwcLogin.groovy`, `XaiDeviceLogin.groovy`, `SubscriptionCredentials.groovy`, and `SubscriptionOAuth.groovy`
 - Context/redaction: `planner/ai/LlmContextBuilder.groovy`
 - Contracts/validation: `planner/ai/LlmContracts.groovy`, `LlmSchemaValidator.groovy`, and resource schemas
 - Daemon interpretation/confirmation: `planner/SmartPlannerDaemon.groovy`
@@ -607,7 +615,11 @@ A prior frozen/manual outdoor placement that becomes weather-invalid is not sile
 
 SmartPlanner configuration is parsed into `PlannerConfig` (planning policy) and `ProductionIntegrationConfig` (endpoints, selected providers, daemon/Slack settings, and state paths). Validation fails closed for invalid modes, intervals, regexes, endpoint shapes, duplicate resources, mixed calendar providers, overlapping state directories, inline secrets, and incomplete enabled integrations.
 
-Relative state and referenced credential paths resolve from the configuration directory. Provider secrets are named by environment-variable references. Slack tokens, Todoist tokens, CalDAV passwords/tokens, OAuth client material, Google token stores, and AI keys must not be committed or copied into logs/evidence.
+Relative state and referenced credential paths resolve from the configuration directory. Provider secrets
+are named by environment-variable references. Subscription OAuth records instead live beneath an
+absolute, owner-only `auth_root`, outside planner state, with per-provider locks and atomic replacement.
+Slack tokens, Todoist tokens, CalDAV passwords/tokens, OAuth client material, Google/subscription token
+stores, and AI keys must not be committed or copied into logs/evidence.
 
 The safe example configuration keeps:
 

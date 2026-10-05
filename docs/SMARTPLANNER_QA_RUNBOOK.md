@@ -171,6 +171,29 @@ Also inspect the full diff, scan only tracked files for secret patterns, and mec
 documented launcher operation/flag against installed `--help`. These commands must not read `.qa`,
 load credentials, contact providers, mutate staging, or create a commit.
 
+## Authorization-gated AI subscription matrices
+
+Do not run these matrices without owner authorization and disposable subscription accounts. Run Codex
+and Grok independently; one provider's evidence cannot support the other. Before execution, preserve the
+fail-closed state and record only versions, timestamps, safe classes, hashes, outcomes, and cleanup
+inventories—never raw streams, consent URLs, codes, tokens, credentials, emails, or account/workspace IDs.
+
+For OpenAI, exercise explicit browser SIWC; verify the default Codex device-import path remains
+unsupported. For xAI, exercise the Hermes-style RFC 8628 device flow; verify explicit browser mode
+remains unsupported. For each provider, cover local status, opt-in remote entitlement status, forced
+refresh/rotation, every allowed suggestion schema, preview and daemon use, restart, cancellation,
+denied/expired/revoked auth, logout, unsupported protocol/tier, and complete temporary/provider cleanup.
+Verify each stage's writes are limited to the dedicated auth root; personal vendor homes and all
+planner/provider mutation stores remain byte-identical until a normal separately confirmed planner
+operation writes them.
+
+Staged rollout is: upgrade disabled → authenticate while AI remains disabled → remote status →
+one-provider preview and schema checks → daemon restart/refresh → disable → logout/rollback. There must
+be no coding-agent subprocess, API-key/CLI-proxy fallback, cross-provider fallback, or change before
+explicit configuration. Both adapters are hermetically implemented but not live-proven. The owner must
+record the actual model/tier/entitlement result independently for each disposable account; a failed xAI
+direct route is a compatibility result, not permission to impersonate Grok Build or spend an API key.
+
 ## H. Native recurrence and Deadline campaign (new evidence only)
 
 This campaign is separate from `docs/qa/evidence/2026-10-01-independent-google-todoist`. Never edit,

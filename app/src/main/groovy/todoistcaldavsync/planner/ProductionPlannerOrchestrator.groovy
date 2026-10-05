@@ -5,7 +5,14 @@ import groovy.json.JsonSlurper
 import groovy.yaml.YamlSlurper
 import todoistcaldavsync.planner.adapters.*
 import todoistcaldavsync.planner.ai.AiAssistanceService
+import todoistcaldavsync.planner.ai.LlmGateway
 import todoistcaldavsync.planner.ai.OpenAiCompatibleLlmGateway
+import todoistcaldavsync.planner.ai.OpenAiSiwcAdapter
+import todoistcaldavsync.planner.ai.SubscriptionCredentialService
+import todoistcaldavsync.planner.ai.SubscriptionCredentialStore
+import todoistcaldavsync.planner.ai.SubscriptionResponsesLlmGateway
+import todoistcaldavsync.planner.ai.SubscriptionProviderAdapter
+import todoistcaldavsync.planner.ai.XaiDeviceOAuthAdapter
 import todoistcaldavsync.planner.apply.PlanApplier
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
@@ -46,6 +53,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private final Supplier<Instant> clock
     private final Closure<WeatherReadGateway> weatherGatewayFactory
     private final Closure aiSuggestionProvider
+    private final Closure<LlmGateway> aiGatewayFactory
     private final TodoistItemsPoller itemsPoller
 
     ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock = { Instant.now() }) {
@@ -64,6 +72,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
         this.weatherGatewayFactory = null
         this.aiSuggestionProvider = null
+        this.aiGatewayFactory = null
         this.planStore = new PlanStore(integrationConfig.plansDir)
         this.applicationState = new ApplicationStateStore(integrationConfig.applicationsDir)
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
@@ -107,7 +116,8 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
                                   CalendarWriteGateway calendarWrite,
                                   Supplier<Instant> clock = { Instant.now() },
                                   Closure<WeatherReadGateway> weatherGatewayFactory = null,
-                                  Closure aiSuggestionProvider = null) {
+                                  Closure aiSuggestionProvider = null,
+                                  Closure<LlmGateway> aiGatewayFactory = null) {
         if ([plannerConfig, integrationConfig, todoistRead, todoistWrite, calendarRead, calendarWrite].any { it == null }) {
             throw new IllegalArgumentException('planner/integration config and all read/write gateways are required')
         }
@@ -116,6 +126,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
         this.weatherGatewayFactory = weatherGatewayFactory
         this.aiSuggestionProvider = aiSuggestionProvider
+        this.aiGatewayFactory = aiGatewayFactory
         this.planStore = new PlanStore(integrationConfig.plansDir)
         this.applicationState = new ApplicationStateStore(integrationConfig.applicationsDir)
         this.decisionStore = new DecisionStore(integrationConfig.decisionsDir)
@@ -196,6 +207,22 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
 
     /** Startup probe: authenticate and perform bounded Todoist and CalDAV reads without writes. */
     void verifyConnectivity(Instant now = clock.get()) {
+        if(plannerConfig.ai.enabled && plannerConfig.ai.provider in ['codex_subscription','grok_build_subscription']) {
+            try {
+                boolean codex=plannerConfig.ai.provider=='codex_subscription'
+                String provider=codex?'codex':'grok'
+                SubscriptionProviderAdapter adapter=codex?new OpenAiSiwcAdapter():new XaiDeviceOAuthAdapter()
+                String token=new SubscriptionCredentialService(
+                    new SubscriptionCredentialStore(plannerConfig.ai.subscription.authRoot,provider),adapter).accessToken()
+                token=null
+            } catch(Exception failure) {
+                String loginFlow=plannerConfig.ai.provider=='codex_subscription'?'browser':'device'
+                String provider=plannerConfig.ai.provider=='codex_subscription'?'codex':'grok'
+                throw new IllegalStateException(
+                    "Subscription authentication is not ready; run ai-auth-login --ai-provider ${provider} --auth-flow ${loginFlow}",
+                    failure)
+            }
+        }
         normalizedEligibleTasks()
         calendarRead.fetchEvents(now, now.plusSeconds(300))
     }
@@ -272,8 +299,18 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         Instant start = plan.slots ? plan.slots*.start.min() : plan.createdAt
         Instant end = plan.slots ? plan.slots*.end.max() : plan.createdAt.plusSeconds(86400)
         List<CalendarEvent> events = calendarRead.fetchEvents(start, end)
-        def service = AiAssistanceService.create(plannerConfig,
-            { new OpenAiCompatibleLlmGateway(plannerConfig.ai) } as Supplier,
+        def service = AiAssistanceService.create(plannerConfig, {
+            if(aiGatewayFactory!=null)return aiGatewayFactory.call(plannerConfig.ai)
+            if(plannerConfig.ai.provider in ['codex_subscription','grok_build_subscription']) {
+                boolean codex=plannerConfig.ai.provider=='codex_subscription'
+                String provider=codex?'codex':'grok'
+                SubscriptionProviderAdapter adapter=codex?new OpenAiSiwcAdapter():new XaiDeviceOAuthAdapter()
+                return new SubscriptionResponsesLlmGateway(plannerConfig.ai,
+                    new SubscriptionCredentialService(
+                        new SubscriptionCredentialStore(plannerConfig.ai.subscription.authRoot,provider),adapter))
+            }
+            new OpenAiCompatibleLlmGateway(plannerConfig.ai)
+            } as Supplier,
             clock).orElseThrow()
         service.suggest(type, correlationId, plan, events, feedbackText)
     }

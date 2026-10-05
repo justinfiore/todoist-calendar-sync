@@ -46,6 +46,8 @@ import groovy.cli.picocli.CliBuilder
 import com.google.api.client.auth.oauth2.Credential;
 import todoistcaldavsync.planner.ProductionPlannerOrchestrator
 import todoistcaldavsync.planner.SmartPlannerDaemon
+import todoistcaldavsync.planner.ai.AiSubscriptionAuthOperation
+import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
 import todoistcaldavsync.planner.state.DeliveryLedger
 import todoistcaldavsync.planner.domain.Approval
@@ -85,10 +87,11 @@ class TodoistCalDavSync {
                    },
                    Closure qaCalendarProvisioningFactory = { googleConfig, qaRoot, stateFile ->
                        new QaCalendarProvisioningService(config: googleConfig, qaRoot: qaRoot, stateFile: stateFile)
-                   }) {
+                   },
+                   Closure aiAuthFactory = { aiConfig -> new AiSubscriptionAuthOperation(aiConfig) }) {
         def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
             writer: new PrintWriter(new AppendableWriter(out), true))
-        cli.setFooter('Operations: legacy-sync (default), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
+        cli.setFooter('Operations: legacy-sync (default), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, ai-auth-login, ai-auth-status, ai-auth-logout, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
         cli.h(longOpt: 'help', args: 0, 'Show the help')
@@ -106,6 +109,10 @@ class TodoistCalDavSync {
         cli._(longOpt: 'message-id', args: 1, argName: 'id', 'Provider message id for idempotency')
         cli._(longOpt: 'decision-id', args: 1, argName: 'id', 'Stored decision id')
         cli._(longOpt: 'ai-type', args: 1, argName: 'type', 'Allowed bounded AI suggestion type')
+        cli._(longOpt: 'ai-provider', args: 1, argName: 'codex|grok', 'Subscription authentication provider')
+        cli._(longOpt: 'auth-flow', args: 1, argName: 'device|browser', 'Vendor login flow (default: device)')
+        cli._(longOpt: 'remote', args: 0, 'Perform one remote entitlement check for ai-auth-status')
+        cli._(longOpt: 'json', args: 0, 'Emit machine-readable AI authentication status')
         cli._(longOpt: 'confirm-legacy-qa-import', args: 0, 'Explicitly confirm operator-only legacy import to QA')
         cli._(longOpt: 'input-reference', args: 1, argName: 'reference', 'Explicit legacy OAuth credential input reference')
         cli._(longOpt: 'confirm-dedicated-qa-account', args: 0, 'Confirm the configured account is dedicated to isolated QA')
@@ -125,13 +132,17 @@ class TodoistCalDavSync {
             return 2
         }
         try {
-            def logConfig = new ConfigSlurper().parse(new File(options.l.toString()).toURI().toURL())
-            PropertyConfigurator.configure(logConfig.toProperties())
-            log.info('----------------------------------------------------------------')
             File configFile = new File(options.f.toString())
             String operation = optionString(options, 'operation') ?: 'legacy-sync'
+            Set<String> authOperations = ['ai-auth-login', 'ai-auth-status', 'ai-auth-logout'] as Set
+            if (!(operation in authOperations)) {
+                def logConfig = new ConfigSlurper().parse(new File(options.l.toString()).toURI().toURL())
+                PropertyConfigurator.configure(logConfig.toProperties())
+                log.info('----------------------------------------------------------------')
+            }
             Set<String> supportedOperations = ['legacy-sync', 'planner-daemon', 'capacity', 'preview', 'apply', 'apply-safe',
                 'deliver', 'feedback', 'apply-decision', 'ai-suggest',
+                'ai-auth-login', 'ai-auth-status', 'ai-auth-logout',
                 'google-oauth-bootstrap', 'google-oauth-bootstrap-qa', 'google-oauth-import-legacy-qa',
                 'google-qa-calendars-list', 'google-qa-calendars-provision'] as Set
             if (!supportedOperations.contains(operation)) {
@@ -140,6 +151,24 @@ class TodoistCalDavSync {
             if (!(operation in ['google-qa-calendars-list', 'google-qa-calendars-provision']) &&
                 (options.hasOption('confirm-dedicated-qa-account') || optionString(options, 'qa-calendar'))) {
                 throw new IllegalArgumentException('QA calendar provisioning options are refused by normal planner operations')
+            }
+            if (operation in authOperations) {
+                List<String> refused = ['range-start', 'range-end', 'format', 'plan-id', 'previous-plan-id',
+                    'approval', 'kind', 'feedback', 'actor', 'correlation-id', 'message-id', 'decision-id',
+                    'ai-type', 'qa-calendar', 'input-reference']
+                if (refused.any { options.hasOption(it) }) {
+                    throw new IllegalArgumentException('Planner and provisioning arguments are refused by AI authentication operations')
+                }
+                String provider = requiredOption(options, 'ai-provider')
+                String flow = optionString(options, 'auth-flow') ?: 'device'
+                if (operation != 'ai-auth-login' && options.hasOption('auth-flow')) {
+                    throw new IllegalArgumentException('--auth-flow is allowed only with ai-auth-login')
+                }
+                Map root = new YamlSlurper().parse(configFile) as Map
+                def service = aiAuthFactory.call(PlannerConfig.fromMap(root).ai)
+                if (service == null) throw new IllegalArgumentException('AI authentication service is unavailable')
+                return service.execute(operation, provider, flow, options.hasOption('remote'),
+                    options.hasOption('json'), out, err)
             }
             if (operation == 'legacy-sync') {
                 File stateFile = new File(configFile.parentFile, configFile.name.replace('.conf', '.state'))

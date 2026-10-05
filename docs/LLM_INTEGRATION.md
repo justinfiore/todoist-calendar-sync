@@ -50,3 +50,11 @@ out-of-range task overrides are rejected. No AI output directly changes a plan, 
 configuration, or decision. Test against a mock/approved test
 endpoint first and verify redaction, schema rejection, token/body bounds, and unchanged remote/local
 write surfaces.
+
+Subscription profiles are documented separately in
+[`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md). OpenAI SIWC provides an authorized direct,
+tool-free public `/v1/responses` route. The xAI profile uses the distinct Hermes-style RFC 8628 route and
+sends its own rotating bearer to `api.x.ai/v1/responses`; it does not import Grok Build state or use the
+CLI proxy. Both remain pending owner-run disposable live entitlement/inference validation. SmartPlanner does not invoke
+`codex exec`, `grok -p`, ACP, or coding-agent subprocesses; does not rely on prompt-only tool
+restrictions; and never falls back to separately billed public APIs.

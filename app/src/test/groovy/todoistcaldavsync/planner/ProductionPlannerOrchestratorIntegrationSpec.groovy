@@ -1,5 +1,6 @@
 package todoistcaldavsync.planner
 
+import groovy.json.JsonOutput
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
@@ -12,6 +13,10 @@ import todoistcaldavsync.planner.adapters.TodoistSyncPage
 import todoistcaldavsync.planner.adapters.WeatherReadGateway
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
+import todoistcaldavsync.planner.ai.LlmGateway
+import todoistcaldavsync.planner.ai.LlmGatewayResult
+import todoistcaldavsync.planner.ai.LlmRequest
+import todoistcaldavsync.planner.ai.LlmResponse
 import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
 import todoistcaldavsync.planner.state.PlanStore
 
@@ -282,5 +287,60 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         fallback      | expectedScheduled
         'fail_open'   | 1
         'fail_closed' | 0
+    }
+
+    def "#provider gateway composition reuses bounded context and has zero mutation authority"() {
+        given:
+        File stateRoot = Files.createTempDirectory('subscription-orchestration-').toFile()
+        Map cfg = root('preview', stateRoot)
+        cfg.planner.ai = [enabled:true, provider:provider, model:model,
+            subscription:[auth_root:new File(stateRoot,'auth').absolutePath,
+                experimental_protocol_acknowledged:true,(profile):[allowed_hosts:[host]]]]
+        def planner=PlannerConfig.fromMap(cfg)
+        def integration=ProductionIntegrationConfig.fromMap(cfg,Path.of('.').toAbsolutePath())
+        def td=todoist();def cal=new InMemoryCalendarGateway('Planned',true,[])
+        LlmRequest captured;String selectedProvider
+        Closure<LlmGateway> factory={ai->
+            selectedProvider=ai.provider
+            LlmGateway gateway={LlmRequest request->
+                captured=request
+                String json=JsonOutput.toJson([schemaVersion:1,suggestionType:'task_suggestions',
+                    correlationId:request.correlationId,suggestions:[[suggestionId:'s1',taskId:'t1',kind:'duration',
+                    proposedValue:40,confidence:0.8,rationale:'Bounded estimate',evidenceIds:['t1']]]])
+                LlmGatewayResult.success(new LlmResponse(request.correlationId,request.suggestionType,1,json,json.bytes.length))
+            } as LlmGateway
+            gateway
+        }
+        def app=new ProductionPlannerOrchestrator(planner,integration,td,td,cal,cal,
+            {start},null,null,factory)
+        Plan plan=app.preview(start,end)
+
+        when:
+        def result=app.aiSuggestions(plan.id,'task_suggestions','subscription-corr')
+
+        then:
+        selectedProvider==provider
+        result.accepted
+        captured.provider==provider && captured.model==model
+        captured.allowedTaskIds==['t1'] as Set
+        !JsonOutput.toJson(captured.context).contains(stateRoot.absolutePath)
+        td.dueUpdates.empty && td.deadlineUpdates.empty
+        cal.upserts.empty && cal.deletes.empty && cal.rejectedWrites.empty
+
+        when: 'daemon startup readiness checks an enabled subscription before planner provider reads'
+        app.verifyConnectivity(start)
+
+        then:
+        def authError=thrown(IllegalStateException)
+        authError.message.contains("ai-auth-login --ai-provider ${authProvider} --auth-flow ${flow}")
+        td.dueUpdates.empty && cal.upserts.empty
+
+        cleanup:
+        stateRoot?.deleteDir()
+
+        where:
+        provider                  | model      | profile | host             | authProvider | flow
+        'codex_subscription'      | 'gpt-test' | 'codex' | 'api.openai.com' | 'codex'      | 'browser'
+        'grok_build_subscription' | 'grok-test'| 'grok'  | 'api.x.ai'       | 'grok'       | 'device'
     }
 }

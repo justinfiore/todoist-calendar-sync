@@ -309,3 +309,24 @@ planner:
       require_structured_output: true
       require_confirmation_for_policy_changes: true
       send_minimum_necessary_data: true
+
+    # Subscription profiles remain disabled by default and require owner-run live validation. OpenAI
+    # SIWC uses browser PKCE; xAI uses Hermes-style RFC 8628 and direct api.x.ai Responses. Neither
+    # reads vendor CLI caches, invokes coding agents, or falls back to an API key.
+    # See docs/AI_SUBSCRIPTION_COMPATIBILITY.md before changing provider.
+    subscription:
+      auth_root: /var/lib/smartplanner/ai-auth
+      experimental_protocol_acknowledged: false
+      login_timeout: PT5M
+      codex:
+        executable: /usr/local/bin/codex
+        min_version: 0.160.0       # used only by an authorization-gated future CLI import probe
+        max_version: 0.160.0
+        model: codex-model
+        allowed_hosts: [api.openai.com]
+      grok:
+        executable: /usr/local/bin/grok
+        min_version: 1.0.46        # provenance only; direct device auth does not execute Grok Build
+        max_version: 1.0.46
+        model: grok-model
+        allowed_hosts: [api.x.ai]
