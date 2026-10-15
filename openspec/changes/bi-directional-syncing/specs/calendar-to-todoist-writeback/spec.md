@@ -74,7 +74,7 @@ The system SHALL apply the same newer-wins decision in `legacy-sync` and in Smar
 - **THEN** it SHALL NOT update Todoist or the calendar from a detected move
 
 ### Requirement: Recurring writeback uses the guarded recurrence update
-A newer calendar move for a recurring task SHALL update only that task's next due through the same guarded recurrence operation SmartPlanner apply uses. The operation SHALL keep the live recurrence expression, language, timezone, and recurring flag, and SHALL NOT complete the task. A datetime-only due POST SHALL NOT be used for a recurring task.
+A newer calendar move for a recurring task SHALL update only that task's next due through the same guarded recurrence operation SmartPlanner apply uses. The operation SHALL keep the live recurrence expression, language, timezone, and recurring flag, except that post-write verification SHALL accept a present non-null timezone when the saved timezone was explicitly null. The operation SHALL NOT complete the task. A datetime-only due POST SHALL NOT be used for a recurring task.
 
 #### Scenario: Recurring synced task is moved on the calendar
 - **WHEN** a writeback candidate belongs to a recurring Todoist task, the calendar start differs from the due, and the calendar modification is strictly newer
@@ -83,6 +83,12 @@ A newer calendar move for a recurring task SHALL update only that task's next du
 #### Scenario: Live recurrence tuple is incomplete before writing
 - **WHEN** the live recurring due tuple is incomplete before the update
 - **THEN** the system SHALL record the skip, SHALL send no due update, and SHALL NOT complete the task
+
+#### Scenario: Provider populates an explicitly null timezone
+- **WHEN** the saved timezone is explicitly null, the post-write reread contains a non-null timezone, and all other guarded postconditions hold
+- **THEN** verification SHALL succeed without a repair solely for that timezone difference
+- **AND** this exception SHALL apply to verification after either the initial write or the one permitted repair
+- **AND** missing timezone fields and differences from an expected non-null timezone SHALL NOT be ignored
 
 ### Requirement: Recurring due verification permits one intended-update retry
 The shared guarded recurrence operation used by apply and writeback SHALL save the pre-update task title and full due information before writing. It SHALL construct the intended due from that saved information with only the next date replaced. If a reread after the initial write does not confirm the intended due date and preserved recurrence expression, recurring flag, language, and timezone, including when that reread is unavailable, the operation SHALL retry the intended update exactly once and SHALL reread again to verify it. The retry SHALL use the saved pre-update recurrence information, not the potentially damaged reread information, and SHALL NOT restore the original due date or use a datetime-only due POST.

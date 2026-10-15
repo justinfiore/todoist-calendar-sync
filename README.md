@@ -489,6 +489,10 @@ the only advancement mechanism; detection normally occurs within zero to five mi
 dedicated incremental `items` cursor. Prior occurrence events are retained and each managed event
 contains stable `https://app.todoist.com/app/task/<task-id>` links.
 
+Shared recurring-write verification permits Todoist to populate a non-null timezone when the saved
+timezone was explicitly null. Missing timezone fields and changes to an existing non-null timezone
+still fail verification, as do changes to other guarded fields.
+
 Due time is a scheduling preference. Deadline is date-only and soft unless the configured `hard`
 label is present. An approaching hard P4 can outrank an ordinary P1 inside the configured soon
 window; outside that window hard has no permanent score boost, though finish-by feasibility remains
