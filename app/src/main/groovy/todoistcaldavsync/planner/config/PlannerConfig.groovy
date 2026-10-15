@@ -41,6 +41,7 @@ final class PlannerConfig {
     final MessagingConfig messaging
     final AiConfig ai
     final RecurrenceConfig recurrence
+    final boolean calendarWritebackEnabled
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
 
@@ -64,6 +65,7 @@ final class PlannerConfig {
         this.messaging = b.messaging ?: MessagingConfig.disabled()
         this.ai = b.ai ?: AiConfig.disabled()
         this.recurrence = b.recurrence ?: RecurrenceConfig.disabled()
+        this.calendarWritebackEnabled = b.calendarWritebackEnabled
     }
 
     static Builder builder() {
@@ -179,6 +181,7 @@ final class PlannerConfig {
             p.messaging instanceof Map ? p.messaging as Map : null, timezone, errors)
         AiConfig ai = parseAi(p.ai instanceof Map ? p.ai as Map : null, errors)
         RecurrenceConfig recurrence = parseRecurrence(tasks, errors)
+        boolean calendarWritebackEnabled = parseCalendarWriteback(p, errors)
 
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
@@ -203,7 +206,23 @@ final class PlannerConfig {
             .messaging(messaging)
             .ai(ai)
             .recurrence(recurrence)
+            .calendarWritebackEnabled(calendarWritebackEnabled)
             .build()
+    }
+
+    private static boolean parseCalendarWriteback(Map planner, List errors) {
+        if (!planner.containsKey('calendarWriteback')) return false
+        def section = planner.calendarWriteback
+        if (!(section instanceof Map)) {
+            errors << 'planner.calendarWriteback.enabled must be a boolean'
+            return false
+        }
+        if (!section.containsKey('enabled')) return false
+        if (!(section.enabled instanceof Boolean)) {
+            errors << 'planner.calendarWriteback.enabled must be a boolean'
+            return false
+        }
+        section.enabled == true
     }
 
     private static RecurrenceConfig parseRecurrence(Map tasks, List errors) {
@@ -2164,6 +2183,7 @@ final class PlannerConfig {
         private MessagingConfig messaging = MessagingConfig.disabled()
         private AiConfig ai = AiConfig.disabled()
         private RecurrenceConfig recurrence = RecurrenceConfig.disabled()
+        private boolean calendarWritebackEnabled = false
 
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
@@ -2183,6 +2203,7 @@ final class PlannerConfig {
         Builder messaging(MessagingConfig v) { this.messaging = v ?: MessagingConfig.disabled(); this }
         Builder ai(AiConfig v) { this.ai = v ?: AiConfig.disabled(); this }
         Builder recurrence(RecurrenceConfig v) { this.recurrence = v ?: RecurrenceConfig.disabled(); this }
+        Builder calendarWritebackEnabled(boolean v) { this.calendarWritebackEnabled = v; this }
 
         // package-private accessors for invariant validation
         String getMode() { mode }
@@ -2200,6 +2221,7 @@ final class PlannerConfig {
         MessagingConfig getMessaging() { messaging }
         AiConfig getAi() { ai }
         RecurrenceConfig getRecurrence() { recurrence }
+        boolean getCalendarWritebackEnabled() { calendarWritebackEnabled }
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)

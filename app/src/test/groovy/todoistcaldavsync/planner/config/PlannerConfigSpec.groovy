@@ -45,6 +45,28 @@ class PlannerConfigSpec extends Specification {
         config.taskContexts.any { it.name == 'phone' }
         !config.weather.enabled
         !config.messaging.enabled
+        !config.calendarWritebackEnabled
+    }
+
+    def "planner calendar writeback defaults off and accepts strict booleans"() {
+        given:
+        Map base = [mode: 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]]]
+
+        expect:
+        PlannerConfig.fromMap(planner: new LinkedHashMap(base)).calendarWritebackEnabled == false
+        PlannerConfig.fromMap(planner: new LinkedHashMap(base) +
+            [calendarWriteback: [enabled: false]]).calendarWritebackEnabled == false
+        PlannerConfig.fromMap(planner: new LinkedHashMap(base) +
+            [calendarWriteback: [enabled: true]]).calendarWritebackEnabled == true
+
+        when:
+        PlannerConfig.fromMap(planner: new LinkedHashMap(base) +
+            [calendarWriteback: [enabled: 'true']])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('planner.calendarWriteback.enabled must be a boolean')
     }
 
     def "production example parses with explicit routing and keeps Google guidance reference-only"() {
@@ -66,6 +88,21 @@ class PlannerConfigSpec extends Specification {
         googleExample.contains('qa_token_store_dir: planner-private/qa-calendar-management')
         !(googleExample =~ /(?im)^\s*#?\s*(client_secret|access_token|refresh_token|authorization_code)\s*:/)
         !(googleExample =~ /(?i)(normal[ -]?password|app[ -]?password|password_env|token_env)/)
+    }
+
+    def "planner example and guide document default-off writeback and guarded recurrence"() {
+        given:
+        File example = repoFile('conf/todoist-planner.conf.example.yaml')
+        Map root = new YamlSlurper().parse(example) as Map
+        String guide = repoFile('docs/SMART_PLANNER_CONFIGURATION.md').getText('UTF-8')
+
+        expect:
+        root.planner.calendarWriteback.enabled == false
+        guide.contains('planner:')
+        guide.contains('calendarWriteback:')
+        guide.contains('keep_manual_moves')
+        guide.contains('exactly one retry')
+        guide.contains('calendar writeback does not rewrite that marker')
     }
 
     def "parses enabled messaging section with schedules and env secret refs"() {

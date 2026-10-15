@@ -5,7 +5,6 @@ import todoistcaldavsync.planner.adapters.CalendarWriteGateway
 import todoistcaldavsync.planner.adapters.TodoistReadGateway
 import todoistcaldavsync.planner.adapters.TodoistWriteGateway
 import todoistcaldavsync.planner.adapters.TodoistLifecycleGateway
-import todoistcaldavsync.planner.adapters.TodoistCommandState
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.ApplicationReceipt
 import todoistcaldavsync.planner.domain.AppliedMapping
@@ -23,8 +22,11 @@ import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.recurrence.LifecycleMarker
 import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
 import todoistcaldavsync.planner.recurrence.LifecycleMarkerWriter
+import todoistcaldavsync.planner.recurrence.GuardedRecurringDueUpdate
 import todoistcaldavsync.planner.recurrence.TodoistDue
 import todoistcaldavsync.planner.state.ApplicationStateStore
+import todoistcaldavsync.planner.writeback.CalendarWritebackDecision
+import todoistcaldavsync.planner.writeback.PlannerCalendarWritebackService
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -64,6 +66,7 @@ class PlanApplier {
     private final ApplicationStateStore stateStore
     private final Supplier<Instant> clock
     private final ZoneId zoneId
+    private final PlannerCalendarWritebackService calendarWriteback
 
     PlanApplier(PlannerConfig config,
                 CalendarWriteGateway calendarWrite,
@@ -71,7 +74,8 @@ class PlanApplier {
                 TodoistWriteGateway todoistWrite,
                 TodoistReadGateway todoistRead,
                 ApplicationStateStore stateStore,
-                Supplier<Instant> clock = { Instant.now() }) {
+                Supplier<Instant> clock = { Instant.now() },
+                PlannerCalendarWritebackService calendarWriteback = null) {
         if (config == null) {
             throw new IllegalArgumentException('config is required')
         }
@@ -102,6 +106,7 @@ class PlanApplier {
         this.stateStore = stateStore
         this.clock = clock ?: ({ Instant.now() } as Supplier<Instant>)
         this.zoneId = config.timezone ?: ZoneId.of('UTC')
+        this.calendarWriteback = calendarWriteback
     }
 
     /**
@@ -386,8 +391,56 @@ class PlanApplier {
             return
         }
 
+        // A live, owned, single-task calendar move is classified before either the
+        // keep_manual_moves drift stop or the overwrite path. Multi-task blocks retain
+        // the existing behavior because one event cannot safely select multiple Dues.
+        boolean todoistWinsWriteback = false
+        if (calendarWriteback != null && config.calendarWritebackEnabled && block.taskIds.size() == 1) {
+            CalendarEvent live = findEventByUid(eventUid)
+            if (live != null) {
+                Map writeback = calendarWriteback.applyOwnedMove(live, existingMappings.values())
+                String action = writeback.action?.toString()
+                if (writeback.adopted == true) {
+                    String taskId = block.taskIds[0]
+                    Task domainTask = blockTasks.find { it.id == taskId }
+                    Map metadata = [focusBlock: block.focusBlock,
+                        blockStart: live.start.toString(), blockEnd: live.end.toString(),
+                        calendarWritebackAdopted: true,
+                        seriesTaskId: domainTask?.id ?: taskId,
+                        occurrenceKey: domainTask?.occurrenceIdentity()?.occurrenceKey() ?: "${taskId}:0"]
+                    AppliedMapping adopted = AppliedMapping.builder()
+                        .taskId(taskId).seriesTaskId(domainTask?.id ?: taskId)
+                        .occurrenceKey(domainTask?.occurrenceIdentity()?.occurrenceKey() ?: "${taskId}:0")
+                        .blockId(block.id).eventUid(eventUid)
+                        .slotStart(live.start).slotEnd(live.end)
+                        .planId(plan.id).planVersion(plan.version).planHash(planHash)
+                        .approvalId(approval?.id).approvalTime(approval?.approvedAt).appliedAt(now)
+                        .calendarStatus(ApplyItemStatus.SKIPPED_IDEMPOTENT)
+                        .todoistStatus(ApplyItemStatus.APPLIED).metadata(metadata).build()
+                    items << adopted
+                    existingMappings[taskId] = adopted
+                    stateStore.putMapping(adopted)
+                    return
+                }
+                if (action == CalendarWritebackDecision.UPDATE_CALENDAR) {
+                    todoistWinsWriteback = true
+                } else if (action == CalendarWritebackDecision.SKIP && writeback.task instanceof Task &&
+                    (writeback.task as Task).dueTime != live.start) {
+                    recordWritebackSkip(plan, planHash, approval, block, eventUid, live,
+                        writeback, items, drifts, now)
+                    return
+                } else if (action == CalendarWritebackDecision.NOOP && writeback.task instanceof Task &&
+                    (writeback.task as Task).dueTime != live.start) {
+                    recordWritebackSkip(plan, planHash, approval, block, eventUid, live,
+                        writeback, items, drifts, now)
+                    return
+                }
+            }
+        }
+
         // Drift / manual override detection against last applied mapping + live state
-        DriftCheck drift = detectBlockDrift(block, eventUid, existingMappings, blockTasks)
+        DriftCheck drift = todoistWinsWriteback ? new DriftCheck(false, []) :
+            detectBlockDrift(block, eventUid, existingMappings, blockTasks)
         if (drift.blocked) {
             drifts.addAll(drift.entries)
             block.taskIds.each { String taskId ->
@@ -480,24 +533,13 @@ class PlanApplier {
             }
             String commandId = UUID.nameUUIDFromBytes(
                 "${planHash}|${plannedTask.occurrenceIdentity()}|${replacement}".getBytes(StandardCharsets.UTF_8)).toString()
-            boolean wroteDue = false
-            if (live.todoistDue.date != replacement) {
-                def result = lifecycle.updateRecurringDue(plannedTask.id, live.todoistDue, replacement, commandId)
-                if (result.state == TodoistCommandState.REJECTED) {
-                    throw new IllegalStateException("Todoist recurring command rejected for task ${plannedTask.id}")
-                }
-                wroteDue = result.state == TodoistCommandState.COMMITTED
-            }
-            Map verifiedRaw = lifecycle.fetchTask(plannedTask.id)
-            Task verified = verifiedRaw == null ? null :
-                Task.fromTodoistMap(verifiedRaw, config.durationResolver, config.manualLabel, zoneId)
-            boolean postcondition = verified != null && verified.completedCount == live.completedCount &&
-                verified.todoistDue?.date == replacement &&
-                verified.todoistDue?.recurrenceFingerprintInput() == live.todoistDue.recurrenceFingerprintInput() &&
-                verified.deadlineDate == live.deadlineDate && verified.labels.toSet() == live.labels.toSet() &&
-                verified.description == target.description
-            if (!postcondition) {
-                throw new IllegalStateException("Todoist recurring command outcome is ambiguous for task ${plannedTask.id}")
+            boolean wroteDue = live.todoistDue.date != replacement
+            Task verified = GuardedRecurringDueUpdate.update(lifecycle, config, plannedTask.id, replacement, commandId)
+            if (verified.completedCount != live.completedCount ||
+                verified.todoistDue.recurrenceFingerprintInput() != live.todoistDue.recurrenceFingerprintInput() ||
+                verified.deadlineDate != live.deadlineDate || verified.labels.toSet() != live.labels.toSet() ||
+                verified.description != target.description) {
+                throw new IllegalStateException("Todoist recurring apply postconditions failed for task ${plannedTask.id}")
             }
             recurringTodoistStatus[plannedTask.id] = wroteMarker || wroteDue ?
                 ApplyItemStatus.APPLIED : ApplyItemStatus.SKIPPED_IDEMPOTENT
@@ -615,8 +657,9 @@ class PlanApplier {
             // Missing/deleted or owned-but-stale managed event may be (re)created when mapping claims
             // applied. Marker-stripped / unowned same-UID events never reach here (external collision).
             try {
-                CalendarEvent managed = buildManagedEvent(plan, block, eventUid)
+                CalendarEvent managed = buildManagedEvent(plan, block, eventUid, existingAtUid?.etag)
                 calendarWrite.upsertEvent(managed)
+                calendarWriteback?.recordCalendarWrite(buildManagedEvent(plan, block, eventUid), now)
                 calStatus = ApplyItemStatus.APPLIED
                 calendarOk = true
             } catch (Exception e) {
@@ -955,7 +998,8 @@ class PlanApplier {
         }
     }
 
-    private CalendarEvent buildManagedEvent(Plan plan, ScheduledBlock block, String eventUid) {
+    private CalendarEvent buildManagedEvent(Plan plan, ScheduledBlock block, String eventUid,
+                                            String etag = null) {
         String calName = config.outputCalendar
         if (!calName) {
             throw new IllegalStateException('planner.output_calendar is required for apply')
@@ -970,9 +1014,32 @@ class PlanApplier {
             .calendarName(calName)
             .start(block.start)
             .end(block.end)
+            .etag(etag)
             .allDay(false)
             .role(EventRole.MANAGED_OUTPUT)
             .classificationReason('planner_managed_output')
+            .build()
+    }
+
+    private static void recordWritebackSkip(Plan plan, String planHash, Approval approval,
+                                            ScheduledBlock block, String eventUid,
+                                            CalendarEvent live, Map writeback,
+                                            List<AppliedMapping> items,
+                                            List<Map<String, Object>> drifts, Instant now) {
+        String taskId = block.taskIds[0]
+        String action = writeback.action?.toString()
+        Map reason = [type: 'calendar_writeback_' + action, taskId: taskId,
+                      blockId: block.id, eventUid: eventUid,
+                      calendarStart: live.start.toString()]
+        drifts << reason
+        items << AppliedMapping.builder()
+            .taskId(taskId).blockId(block.id).eventUid(eventUid)
+            .slotStart(live.start).slotEnd(live.end)
+            .planId(plan.id).planVersion(plan.version).planHash(planHash)
+            .approvalId(approval?.id).approvalTime(approval?.approvedAt).appliedAt(now)
+            .calendarStatus(ApplyItemStatus.SKIPPED_MANUAL_OVERRIDE)
+            .todoistStatus(ApplyItemStatus.SKIPPED_MANUAL_OVERRIDE)
+            .metadata([calendarWritebackDecision: action, reasons: [reason]])
             .build()
     }
 

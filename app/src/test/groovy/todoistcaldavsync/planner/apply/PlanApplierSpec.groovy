@@ -10,6 +10,7 @@ import todoistcaldavsync.planner.adapters.TodoistWriteGateway
 import todoistcaldavsync.planner.adapters.CalDavHttpGateway
 import todoistcaldavsync.planner.adapters.TodoistRestGateway
 import todoistcaldavsync.planner.config.PlannerConfig
+import todoistcaldavsync.planner.domain.AppliedMapping
 import todoistcaldavsync.planner.domain.ApplyItemStatus
 import todoistcaldavsync.planner.domain.Approval
 import todoistcaldavsync.planner.domain.CalendarEvent
@@ -23,6 +24,8 @@ import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.state.ApplicationStateStore
 import todoistcaldavsync.planner.state.PlanStoreException
+import todoistcaldavsync.planner.writeback.CalendarWritebackStore
+import todoistcaldavsync.planner.writeback.PlannerCalendarWritebackService
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -88,6 +91,10 @@ class PlanApplierSpec extends Specification {
     }
 
     private PlanApplier applier(PlannerConfig cfg = config) {
+        def writeback = cfg.calendarWritebackEnabled
+            ? new PlannerCalendarWritebackService(cfg, calendar, todoist, todoist, stateStore,
+                new CalendarWritebackStore(dir), { clock.get() })
+            : null
         new PlanApplier(
             cfg,
             new ManagedCalendarWriteGateway(calendar, MANAGED_CAL),
@@ -95,8 +102,19 @@ class PlanApplierSpec extends Specification {
             todoist,
             todoist,
             stateStore,
-            { clock.get() }
+            { clock.get() },
+            writeback
         )
+    }
+
+    private PlannerConfig writebackConfig(boolean keepManualMoves, String mode = 'approval_required') {
+        PlannerConfig.fromMap(planner: [
+            mode: mode, timezone: 'America/New_York', output_calendar: MANAGED_CAL,
+            calendarWriteback: [enabled: true],
+            availability: [working_windows: [weekday: ['09:00-17:00']],
+                calendars: [[calendar: MANAGED_CAL, default_role: 'managed_output']]],
+            stability: [keep_manual_moves: keepManualMoves]
+        ])
     }
 
     private static Task task(String id, String content = id) {
@@ -945,6 +963,72 @@ class PlanApplierSpec extends Specification {
         todoist.dueUpdates.size() == beforeDue
         // event remains at user-moved time
         calendar.getByUid(uid).start == movedStart
+    }
+
+    def "newer owned single-task move is adopted before drift overwrite for either manual-move flag"() {
+        given:
+        PlannerConfig cfg = writebackConfig(keepManualMoves)
+        Instant proposed = Instant.parse('2026-08-10T14:00:00Z')
+        def first = planWith([singleBlock('b-writeback', 't1', proposed)],
+            'approval_required', [], 'plan-writeback-1', 1)
+        applier(cfg).apply(first, approvalFor(first))
+        String uid = ManagedEventIds.uidForBlock('b-writeback')
+        Instant moved = Instant.parse('2026-08-10T16:00:00Z')
+        todoist.getTask('t1').updated_at = '2026-08-07T15:30:00Z'
+        calendar.seed(CalendarEvent.builder()
+            .id(uid).uid(uid).title('Block b-writeback')
+            .description(ManagedEventIds.buildDescription('b-writeback', first.id))
+            .calendarName(MANAGED_CAL).start(moved).end(moved.plusSeconds(1800))
+            .lastModified(Instant.parse('2026-08-07T16:00:00Z'))
+            .role(EventRole.MANAGED_OUTPUT).build())
+        calendar.upserts.clear()
+        todoist.dueUpdates.clear()
+        def next = planWith([singleBlock('b-writeback', 't1', proposed.plusSeconds(3600))],
+            'approval_required', [], 'plan-writeback-2', 1)
+
+        when:
+        def receipt = applier(cfg).apply(next, approvalFor(next))
+
+        then:
+        todoist.dueUpdates*.dueDateTimeIso == [moved.toString()]
+        todoist.deadlineUpdates.isEmpty()
+        calendar.upserts.isEmpty()
+        calendar.getByUid(uid).start == moved
+        stateStore.loadMapping('t1').slotStart == moved
+        stateStore.loadMapping('t1').metadata.calendarWritebackAdopted == true
+        receipt.items*.todoistStatus == [ApplyItemStatus.APPLIED]
+
+        where:
+        keepManualMoves << [true, false]
+    }
+
+    def "preview with a newer detected move performs zero provider mutations"() {
+        given:
+        PlannerConfig cfg = writebackConfig(true, 'preview')
+        Instant proposed = Instant.parse('2026-08-10T14:00:00Z')
+        def plan = planWith([singleBlock('b-preview-writeback', 't1', proposed)], 'preview')
+        String uid = ManagedEventIds.uidForBlock('b-preview-writeback')
+        stateStore.putMapping(AppliedMapping.builder()
+            .taskId('t1').blockId('b-preview-writeback').eventUid(uid)
+            .slotStart(proposed).slotEnd(proposed.plusSeconds(1800))
+            .planId('prior').planVersion(1).planHash('prior-hash').appliedAt(clock.get())
+            .calendarStatus(ApplyItemStatus.APPLIED).todoistStatus(ApplyItemStatus.APPLIED).build())
+        todoist.getTask('t1').updated_at = '2026-08-07T15:30:00Z'
+        calendar.seed(CalendarEvent.builder()
+            .id(uid).uid(uid).title('Owned')
+            .description(ManagedEventIds.buildDescription('b-preview-writeback', 'prior'))
+            .calendarName(MANAGED_CAL).start(proposed.plusSeconds(7200)).end(proposed.plusSeconds(9000))
+            .lastModified(Instant.parse('2026-08-07T16:00:00Z')).build())
+
+        when:
+        def receipt = applier(cfg).apply(plan, approvalFor(plan))
+
+        then:
+        receipt.overallStatus == ApplyItemStatus.SKIPPED_PREVIEW
+        todoist.dueUpdates.isEmpty()
+        todoist.deadlineUpdates.isEmpty()
+        calendar.upserts.isEmpty()
+        calendar.deletes.isEmpty()
     }
 
     def "manual Todoist due change is detected and preserved"() {

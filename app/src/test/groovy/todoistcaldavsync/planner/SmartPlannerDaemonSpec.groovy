@@ -5,6 +5,7 @@ import groovy.json.JsonSlurper
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 import todoistcaldavsync.planner.adapters.InMemoryTodoistGateway
+import todoistcaldavsync.planner.adapters.CalendarChangeGateway
 import todoistcaldavsync.planner.adapters.LifecycleMutation
 import todoistcaldavsync.planner.adapters.SlackMessagingGateway
 import todoistcaldavsync.planner.adapters.TodoistCommandResult
@@ -16,6 +17,11 @@ import todoistcaldavsync.planner.adapters.TodoistRestGateway
 import todoistcaldavsync.planner.adapters.TodoistSyncPage
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.Message
+import todoistcaldavsync.planner.domain.AppliedMapping
+import todoistcaldavsync.planner.domain.ApplyItemStatus
+import todoistcaldavsync.planner.domain.CalendarEvent
+import todoistcaldavsync.planner.domain.EventRole
+import todoistcaldavsync.planner.domain.ManagedEventIds
 import todoistcaldavsync.planner.ai.LlmErrorClass
 import todoistcaldavsync.planner.messaging.InMemoryMessagingSurface
 import todoistcaldavsync.planner.messaging.MessagingEvent
@@ -24,6 +30,7 @@ import todoistcaldavsync.planner.messaging.PublishedMessage
 import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
 import todoistcaldavsync.planner.recurrence.TodoistDue
 import todoistcaldavsync.planner.state.ConversationStore
+import todoistcaldavsync.planner.state.ApplicationStateStore
 
 import java.nio.file.Files
 import java.nio.file.Path
@@ -79,6 +86,23 @@ class SmartPlannerDaemonSpec extends Specification {
             syncToken == '*'
                 ? new TodoistSyncPage('bootstrap-token', true, '2026-08-16T13:00:00Z', [])
                 : new TodoistSyncPage('caught-up-token', false, null, [])
+        }
+    }
+
+    private static final class ChangeCalendar extends InMemoryCalendarGateway implements CalendarChangeGateway {
+        final CalendarEvent changed
+        int changeReads
+
+        ChangeCalendar(CalendarEvent changed) {
+            super('Planned', true, [changed])
+            this.changed = changed
+        }
+
+        @Override Map readChanges(String calendarName, Map state, Set<String> candidateUids,
+                                  Instant rangeStart, Instant rangeEnd) {
+            changeReads++
+            [events: candidateUids.contains(changed.uid) ? [changed] : [], deleted: [],
+             state: [cursor: "cursor-${changeReads}"]]
         }
     }
 
@@ -146,7 +170,7 @@ class SmartPlannerDaemonSpec extends Specification {
                        MessagingSurface surface = new InMemoryMessagingSurface(), Closure aiProvider = null,
                        TodoistReadGateway todoistRead = null, TodoistWriteGateway todoistWrite = null,
                        ScheduledThreadPoolExecutor scheduler = null, ConversationStore conversationStore = null,
-                       Map configExtra = [:]) {
+                       Map configExtra = [:], InMemoryCalendarGateway calendarGateway = null) {
         Map root = config(stateRoot, configExtra)
         if (aiProvider != null) {
             root.planner.ai = [enabled: true, provider: 'fixture', model: 'fixture-model',
@@ -158,12 +182,54 @@ class SmartPlannerDaemonSpec extends Specification {
             duration: [amount: 30, unit: 'minute']]])
         TodoistReadGateway readGateway = todoistRead ?: todoist
         TodoistWriteGateway writeGateway = todoistWrite ?: todoist
-        def calendar = new InMemoryCalendarGateway('Planned', true, [])
+        def calendar = calendarGateway ?: new InMemoryCalendarGateway('Planned', true, [])
         def orchestrator = new ProductionPlannerOrchestrator(planner, integration, readGateway, writeGateway, calendar, calendar,
             { now.get() }, null, aiProvider)
         def daemon = new SmartPlannerDaemon(orchestrator, surface, { now.get() },
             scheduler ?: Executors.newSingleThreadScheduledExecutor(), conversationStore)
         [daemon, orchestrator, writeGateway, calendar, surface, integration]
+    }
+
+    def 'daemon adopts a newer owned move before planning and never previews the old slot back'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-writeback-').toFile()
+        def now = new AtomicReference<>(initial)
+        Instant oldDue = Instant.parse('2026-08-17T11:00:00Z')
+        Instant moved = Instant.parse('2026-08-17T10:00:00Z')
+        String uid = ManagedEventIds.uidForBlock('old-block')
+        CalendarEvent event = CalendarEvent.builder()
+            .id(uid).uid(uid).title('Owned task')
+            .description(ManagedEventIds.buildDescription('old-block', 'old-plan'))
+            .calendarName('Planned').start(moved).end(moved.plusSeconds(1800))
+            .lastModified(Instant.parse('2026-08-16T12:00:00Z'))
+            .role(EventRole.MANAGED_OUTPUT).build()
+        def calendar = new ChangeCalendar(event)
+        def todoist = new InMemoryTodoistGateway([[id: 't1', content: 'Write report', labels: ['schedule'], priority: 2,
+            duration: [amount: 30, unit: 'minute'], due: [date: oldDue.toString()],
+            updated_at: '2026-08-16T11:00:00Z']])
+        def parts = build(state, now, new InMemoryMessagingSurface(), null, todoist, todoist,
+            null, null, [calendarWriteback: [enabled: true]], calendar)
+        new ApplicationStateStore(parts[5].applicationsDir).putMapping(AppliedMapping.builder()
+            .taskId('t1').blockId('old-block').eventUid(uid).slotStart(oldDue).slotEnd(oldDue.plusSeconds(1800))
+            .planId('old-plan').planVersion(1).planHash('old-hash').appliedAt(initial.minusSeconds(3600))
+            .calendarStatus(ApplyItemStatus.APPLIED).todoistStatus(ApplyItemStatus.APPLIED).build())
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+
+        when:
+        def conversation = daemon.runNow('daily')
+        def planned = parts[1].planStore.load(conversation.planId)
+
+        then:
+        calendar.changeReads == 1
+        todoist.dueUpdates*.dueDateTimeIso == [moved.toString()]
+        planned.tasks.find { it.id == 't1' }.dueTime == moved
+        !planned.scheduledBlocks.any { it.start == oldDue }
+        calendar.upserts.isEmpty()
+        todoist.deadlineUpdates.isEmpty()
+
+        cleanup:
+        daemon?.close()
     }
 
     def 'publishes configured horizons, replans in the same thread, and applies exact approval after restart'() {

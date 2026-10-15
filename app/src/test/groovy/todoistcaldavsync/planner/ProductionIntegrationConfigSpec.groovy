@@ -1,6 +1,7 @@
 package todoistcaldavsync.planner
 
 import spock.lang.Specification
+import todoistcaldavsync.planner.adapters.CalendarChangeGateway
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 
 import java.nio.file.Files
@@ -504,6 +505,53 @@ ${providerYaml}
         expectedGoogle << [0, 1]
     }
 
+    def "change detection construction remains fail-closed for the selected #provider provider"() {
+        given:
+        Path state = Files.createTempDirectory('selected-change-provider-')
+        File configFile = state.resolve('planner.yaml').toFile()
+        Files.writeString(configFile.toPath(), """
+planner:
+  mode: preview
+  timezone: UTC
+  output_calendar: Planned
+  availability:
+    working_windows:
+      weekday: ['09:00-17:00']
+  integration:
+    todoist:
+      base_url: https://api.todoist.com/api/v1
+      token_env: TODOIST_TOKEN
+${providerYaml}
+    state:
+      plans_dir: plans
+      applications_dir: applications
+      decisions_dir: decisions
+      deliveries_dir: deliveries
+""")
+        int selectedConstructions = 0
+        def selectedGateway = new ChangeDetectingCalendarGateway()
+        Closure selectedFactory = { Map options -> selectedConstructions++; selectedGateway }
+        Closure forbiddenFactory = { Map options ->
+            throw new AssertionError("Unselected provider was constructed for ${provider}")
+        }
+
+        when:
+        if (provider == 'caldav') {
+            new ProductionPlannerOrchestrator(configFile, { Instant.now() }, selectedFactory, forbiddenFactory)
+        } else {
+            new ProductionPlannerOrchestrator(configFile, { Instant.now() }, forbiddenFactory, selectedFactory)
+        }
+
+        then:
+        selectedConstructions == 1
+        selectedGateway instanceof CalendarChangeGateway
+
+        where:
+        provider              | providerYaml
+        'caldav'              | '''    calendar:\n      provider: caldav\n    caldav:\n      calendars:\n        - name: Planned\n          url: https://calendar.example.test/planned\n          auth:\n            type: none'''
+        'google_calendar_api' | '''    calendar:\n      provider: google_calendar_api\n      google_calendar_api:\n        oauth_client_secret_file: secrets/google-oauth-client.json\n        token_store_dir: secrets/google-oauth-tokens\n        account_email: smartplanner-qa@example.test\n        calendars:\n          - name: Planned\n            id: planned@example.test\n            role: managed_output'''
+    }
+
     def "invalid endpoints duplicate calendars unmanaged output and nonpositive controls fail closed"() {
         given:
         Map root = validRoot()
@@ -560,5 +608,18 @@ ${providerYaml}
 
         where:
         actors << [[''], ['same', 'same'], 'actor']
+    }
+
+    private static final class ChangeDetectingCalendarGateway extends InMemoryCalendarGateway
+        implements CalendarChangeGateway {
+        ChangeDetectingCalendarGateway() {
+            super('Planned', true, [])
+        }
+
+        @Override
+        Map readChanges(String calendarName, Map state, Set<String> candidateUids,
+                        Instant rangeStart, Instant rangeEnd) {
+            [events: [], deleted: [], state: state ?: [:]]
+        }
     }
 }

@@ -89,7 +89,7 @@ Call writeback before scheduling and before apply overwrite:
 - Apply: if the live owned event is newer than the task, adopt it (due update plus mapping slot update) and do not upsert the event back to the proposed time. This holds whether `keep_manual_moves` is true or false. The flag still controls planner-proposed moves that are not a newer external calendar edit.
 - If the task `updated_at` is newer, keep the current Todoist-wins calendar update.
 - If the block has multiple tasks, skip writeback and keep today's drift behavior.
-- Recurring (`TodoistDue.recurring`): call the shared guarded recurrence update with the calendar start as the replacement next date. Do not call `updateTaskDue`. Do not complete the task. If the live tuple is incomplete or the reread does not preserve the recurrence expression, record the skip and leave the due unchanged.
+- Recurring (`TodoistDue.recurring`): call the shared guarded recurrence update with the calendar start as the replacement next date. Do not call `updateTaskDue`. Do not complete the task. An incomplete live tuple skips before writing. Failed post-write due verification triggers the single intended-update retry described below; an unresolved outcome stops dependent writes for that task rather than claiming the due is unchanged.
 - Preview and capacity: may read the change feed for display, must not update Todoist or the calendar.
 - Deadline fields stay untouched. `updateTaskDeadline` remains unsupported.
 
@@ -97,7 +97,11 @@ A non-recurring writeback uses the same due-only REST body apply already uses (`
 
 ### 6a. One guarded recurrence update
 
-Extract the recurring due write that `PlanApplier` already performs into one operation used by apply, legacy writeback, and SmartPlanner writeback. The operation rereads the live task, requires a complete recurrence tuple, sends Sync `item_update` with that tuple and only the next date replaced, then rereads and checks that the recurrence expression, language, timezone, deadline, and labels still match. Apply's lifecycle marker update stays in apply; writeback does not rewrite the marker. An incomplete tuple or a failed postcondition is a recorded skip, not a fallback to `updateTaskDue`.
+Extract the recurring due write that `PlanApplier` already performs into one operation used by apply, legacy writeback, and SmartPlanner writeback. The operation rereads the live task, requires a complete recurrence tuple, and saves the pre-update task title and full due information, including field presence and explicit null values. An incomplete tuple is a recorded skip before any due write. It sends Sync `item_update` with that saved tuple and only the next date replaced, then rereads and checks the intended date, recurrence expression, recurring flag, language, timezone, deadline, and labels. Apply's lifecycle marker update stays in apply; writeback does not rewrite the marker.
+
+If the post-write reread cannot verify the intended due date and recurrence information, including an unavailable reread, retry the intended due update exactly once using the original saved recurrence tuple and the intended new date. Use a new command ID so the provider does not deduplicate the repair as the original command. Do not rebuild the tuple from the potentially damaged reread, restore the original date, or fall back to `updateTaskDue`. Reread after the retry and run the verification again; a verified repair succeeds only if the other guarded postconditions also hold. The repair changes only due information, never deadline, labels, description, or completion.
+
+If the retry is rejected, fails, or cannot be verified, log an error containing the task ID and saved title, the full pre-update due information, intended due information, and latest available reread due information. Explicitly list field-by-field differences for date, recurrence expression, recurring flag, language, and timezone, preserving missing-versus-null distinctions and labeling the intended date change separately from unexpected differences. If the final reread is unavailable, say so and label any earlier reread as the last available observation. Record an unsuccessful or ambiguous outcome and stop dependent writes for that task. Do not claim the due stayed unchanged, issue another repair, or roll back.
 
 ### 7. What "delete" on the calendar means
 
@@ -110,7 +114,8 @@ An incremental feed can return a deleted or cancelled event. Do not complete or 
 - [Last-modified clocks disagree across vendors] → Strictly-newer plus record-on-tie avoids a silent preference. Echo suppression uses etag when the server returns one, so a self-write is not judged only by clock skew.
 - [Legacy delete-then-PUT races a user move] → Decision runs before the PUT. Todoist-wins is the only path that rewrites the event. Calendar-wins updates Todoist and leaves the event.
 - [Multi-task planner blocks] → Writeback refuses rather than copying one event start onto every member due. Those blocks keep today's drift/overwrite behavior.
-- [Recurring due tuple] → Writeback uses the same guarded Sync tuple replacement apply already uses. A failed reread postcondition skips the write instead of falling back to the datetime-only POST.
+- [Recurring due tuple] → Apply and writeback share a guarded Sync tuple replacement with one intended-update retry on failed due verification. Failed repair logs original, intended, and observed due information and stops dependent writes; there is no datetime-only fallback or rollback.
+- [Repair races concurrent edits] → The single retry deliberately reuses the saved recurrence information and may overwrite a concurrent recurrence edit. Accept that risk for this bounded repair; retain detailed failure diagnostics and never extend it into an unbounded retry loop.
 - [410 / invalid token during a user move] → Recovery full-sync must still compare timestamps; it must not treat every event in the full result as a fresh user edit. Echo records and stored stamps survive cursor invalidation. Only the cursor is discarded.
 
 ## Migration Plan

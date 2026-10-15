@@ -23,6 +23,43 @@ Deadline writes. Native recurring tasks instead use Todoist Sync `item_update`, 
 recurrence tuple. The explicitly enabled recurrence lifecycle is the only path permitted to initialize
 or advance Deadline, and it verifies the live postcondition before Calendar mutation.
 
+### Calendar move writeback
+
+Calendar-to-Todoist Due writeback is default-off. Enable it explicitly with:
+
+```yaml
+planner:
+  calendarWriteback:
+    enabled: true
+```
+
+`enabled` must be a YAML boolean; strings such as `"true"` fail configuration validation before a
+planner run. When enabled, each daemon planning tick polls only the configured output calendar's
+incremental change feed before scheduling. A moved event is eligible only when it is planner-owned and
+its durable mapping names exactly one open task. A calendar modification timestamp strictly newer than
+Todoist `updated_at` updates only that task's Due and makes the adopted event span the durable applied
+slot, so the following plan uses it as its baseline. Missing or equal timestamps leave both sides
+unchanged. Unowned events and multi-task focus blocks never write back.
+
+This newer-wins check runs during apply before manual-move drift handling. Therefore a newer eligible
+calendar move is adopted whether `stability.keep_manual_moves` is `true` or `false`, and apply does not
+upsert the event back to the proposed time. The setting still controls planner drift that is not a
+newer eligible calendar edit. Preview and capacity remain read-only; enabling writeback does not add
+mutations to either standalone operation. Approval and protected-block gates still apply before apply
+can adopt a move, and SmartPlanner never writes Deadline from a calendar edit.
+
+Non-recurring writeback uses the Due-only update. Recurring writeback and normal recurring apply share
+the guarded recurrence operation: it rereads the live task, preserves recurrence expression, recurring
+flag, language, timezone, Deadline, labels, and description, and never completes the task. An incomplete
+tuple is not written. Failed verification permits exactly one retry of the intended date using the
+saved original recurrence tuple; an unresolved result stops dependent calendar writes without rollback.
+Apply retains its lifecycle-marker behavior, while calendar writeback does not rewrite that marker.
+
+Incremental cursor and echo state is stored separately at
+`applications_dir/calendar-writeback.json`. Cursor invalidation retries a full provider read without
+discarding echo records. Outbound managed-event updates use the live etag for concurrency when one is
+available and record an echo so their inbound copy cannot be mistaken for a user move.
+
 ## Production integration
 
 `planner.integration.todoist` requires:

@@ -80,6 +80,24 @@ A newer calendar move for a recurring task SHALL update only that task's next du
 - **WHEN** a writeback candidate belongs to a recurring Todoist task, the calendar start differs from the due, and the calendar modification is strictly newer
 - **THEN** the system SHALL replace only the next due date through the shared guarded operation and SHALL NOT complete the task
 
-#### Scenario: Live recurrence tuple cannot be preserved
-- **WHEN** the live recurring due tuple is incomplete, or a reread after the update does not preserve the recurrence expression
-- **THEN** the system SHALL record the skip, SHALL leave the task due unchanged, and SHALL NOT complete the task
+#### Scenario: Live recurrence tuple is incomplete before writing
+- **WHEN** the live recurring due tuple is incomplete before the update
+- **THEN** the system SHALL record the skip, SHALL send no due update, and SHALL NOT complete the task
+
+### Requirement: Recurring due verification permits one intended-update retry
+The shared guarded recurrence operation used by apply and writeback SHALL save the pre-update task title and full due information before writing. It SHALL construct the intended due from that saved information with only the next date replaced. If a reread after the initial write does not confirm the intended due date and preserved recurrence expression, recurring flag, language, and timezone, including when that reread is unavailable, the operation SHALL retry the intended update exactly once and SHALL reread again to verify it. The retry SHALL use the saved pre-update recurrence information, not the potentially damaged reread information, and SHALL NOT restore the original due date or use a datetime-only due POST.
+
+#### Scenario: Intended-update retry repairs the due
+- **WHEN** the initial post-write reread fails due verification and the reread after the single retry confirms the intended due and preserved recurrence information
+- **THEN** the operation SHALL report the verified update as successful and SHALL send no further retry
+
+#### Scenario: Retry fails or cannot be verified
+- **WHEN** the single intended-update retry is rejected, fails, or cannot be verified by the subsequent reread
+- **THEN** the operation SHALL log an error containing the task ID and saved task title, the full pre-update due information, the intended due information, and the latest available reread due information
+- **AND** the log SHALL explicitly call out field-by-field differences for date, recurrence expression, recurring flag, language, and timezone, distinguishing missing fields from explicit null values and distinguishing the intended date change from unexpected differences
+- **AND** an unavailable reread SHALL be explicitly identified, with any last available reread information labeled as such
+- **AND** the operation SHALL record an unsuccessful or ambiguous outcome, SHALL stop dependent writes for that task, SHALL NOT claim the original due is unchanged, SHALL NOT complete the task, and SHALL NOT issue another repair or rollback
+
+#### Scenario: Initial write verifies successfully
+- **WHEN** the initial post-write reread confirms the intended due date and preserved recurrence information
+- **THEN** the operation SHALL send no retry

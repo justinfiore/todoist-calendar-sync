@@ -29,6 +29,8 @@ import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
 import todoistcaldavsync.planner.scheduling.AvailabilityCalculator
 import todoistcaldavsync.planner.scheduling.DeterministicScheduler
 import todoistcaldavsync.planner.state.*
+import todoistcaldavsync.planner.writeback.CalendarWritebackStore
+import todoistcaldavsync.planner.writeback.PlannerCalendarWritebackService
 
 import java.time.Instant
 import java.util.function.Supplier
@@ -55,6 +57,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private final Closure aiSuggestionProvider
     private final Closure<LlmGateway> aiGatewayFactory
     private final TodoistItemsPoller itemsPoller
+    private final PlannerCalendarWritebackService calendarWriteback
 
     ProductionPlannerOrchestrator(File configFile, Supplier<Instant> clock = { Instant.now() }) {
         this(configFile, clock,
@@ -105,6 +108,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.calendarRead = calendarGateway
         this.calendarWrite = calendarGateway
         this.itemsPoller = createItemsPoller(todoistGateway)
+        this.calendarWriteback = createCalendarWriteback()
     }
 
     /** Dependency-injected composition seam used by hermetic end-to-end tests/embedders. */
@@ -136,6 +140,12 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         this.calendarRead = calendarRead
         this.calendarWrite = calendarWrite
         this.itemsPoller = createItemsPoller(todoistRead)
+        this.calendarWriteback = createCalendarWriteback()
+    }
+
+    private PlannerCalendarWritebackService createCalendarWriteback() {
+        new PlannerCalendarWritebackService(plannerConfig, calendarRead, todoistRead, todoistWrite,
+            applicationState, new CalendarWritebackStore(integrationConfig.applicationsDir), clock)
     }
 
     private TodoistItemsPoller createItemsPoller(Object gateway) {
@@ -161,6 +171,11 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     PollResult pollTodoistItems() {
         if (itemsPoller == null) throw new IllegalStateException('recurrence lifecycle is disabled')
         itemsPoller.poll()
+    }
+
+    /** Mutating daemon-only pre-plan writeback. Standalone preview/capacity never call this method. */
+    List<Map> pollCalendarWriteback(Instant rangeStart, Instant rangeEnd) {
+        calendarWriteback.pollAndApply(rangeStart, rangeEnd)
     }
 
     /** Read-only live capacity operation. */
@@ -357,7 +372,8 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
 
     private PlanApplier applier() {
         CalendarWriteGateway managed = new ManagedCalendarWriteGateway(calendarWrite, calendarRead, plannerConfig.outputCalendar)
-        new PlanApplier(plannerConfig, managed, calendarRead, todoistWrite, todoistRead, applicationState, clock)
+        new PlanApplier(plannerConfig, managed, calendarRead, todoistWrite, todoistRead,
+            applicationState, clock, calendarWriteback)
     }
 
     private MessagingService messagingService(boolean requireDeliveryGateway) {

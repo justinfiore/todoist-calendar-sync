@@ -377,6 +377,9 @@ final class SmartPlannerDaemon implements AutoCloseable {
         String name = run.name.toString()
         runtimeStatus[name] = [state: 'RUNNING', startedAt: startedAt.toString()]
         Duration horizon = overrideHorizon(run.horizon as Duration, overrides)
+        // Reverse synchronization is a daemon lifecycle operation, deliberately separate from
+        // standalone preview/capacity. Adopted Due is therefore visible to this planning read.
+        orchestrator.pollCalendarWriteback(startedAt, startedAt.plus(horizon))
         Plan plan = orchestrator.preview(startedAt, startedAt.plus(horizon), previous?.planId, overrides)
         Proposal proposal = Proposal.fromPlan(plan)
         Message rendered = renderer().renderProposal(plan, startedAt)

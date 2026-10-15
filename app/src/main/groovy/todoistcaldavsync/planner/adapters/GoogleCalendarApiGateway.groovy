@@ -34,7 +34,7 @@ import java.util.function.Supplier
  * Reads are bounded per configured calendar. Mutations are at-most-once and are
  * guarded again here even when composition also uses ManagedCalendarWriteGateway.
  */
-final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWriteGateway {
+final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWriteGateway, CalendarChangeGateway {
     static final String DEFAULT_BASE_URL = 'https://www.googleapis.com/calendar/v3'
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10)
     static final int DEFAULT_MAX_PAGES = 20
@@ -123,6 +123,87 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
     }
 
     @Override
+    Map readChanges(String calendarName, Map state, Set<String> candidateUids,
+                    Instant rangeStart, Instant rangeEnd) {
+        CalendarMapping calendar = calendars.find { it.name == calendarName }
+        if (calendar == null) {
+            throw new IllegalArgumentException("unknown configured Google calendar '${calendarName}'")
+        }
+        Set<String> candidates = candidateUids == null ? Collections.emptySet() :
+            new HashSet<>(candidateUids.findAll { it }*.toString())
+        String cursor = state?.cursor?.toString()
+        Map<String, String> resourceUids = new LinkedHashMap<>()
+        if (state?.resourceUids instanceof Map) {
+            (state.resourceUids as Map).each { id, uid ->
+                if (id != null && uid != null && candidates.contains(uid.toString())) {
+                    resourceUids[id.toString()] = uid.toString()
+                }
+            }
+        }
+
+        List<CalendarEvent> changed = []
+        List<Map> deleted = []
+        String pageToken = null
+        String nextSyncToken = null
+        Set<String> seenTokens = new HashSet<>()
+        int itemCount = 0
+        for (int page = 0; page < maxPagesPerCalendar; page++) {
+            Map query = [singleEvents: 'true', maxResults: maxResultsPerPage.toString()]
+            if (cursor) query.syncToken = cursor
+            if (pageToken) query.pageToken = pageToken
+            GatewayResponse response = sendReadWithRetry(eventsPath(calendar.id), query)
+            if (response.statusCode() == 410) {
+                throw new CalendarCursorExpiredException(
+                    "Google Calendar sync cursor expired for ${calendar.name}")
+            }
+            requireSuccess(response, "list changes for ${calendar.name}")
+            Map parsed = parseObject(response.body(), false)
+            if (!(parsed.items instanceof List) && parsed.containsKey('items')) {
+                throw malformed('Google Calendar change list items must be an array')
+            }
+            List items = parsed.items instanceof List ? parsed.items as List : []
+            itemCount += items.size()
+            if (itemCount > maxEventsPerCalendar) {
+                throw new GoogleCalendarGatewayException('RESULT_LIMIT',
+                    "Google Calendar ${calendar.name} exceeded the configured event result bound")
+            }
+            items.each { item ->
+                if (!(item instanceof Map)) throw malformed('Google Calendar change item must be an object')
+                Map resource = item as Map
+                String id = resource.id?.toString()
+                String uid = managedUid(resource) ?: (id ? resourceUids[id] : null)
+                if (!id || !uid || !candidates.contains(uid)) return
+                resourceUids[id] = uid
+                if (resource.status?.toString() == 'cancelled') {
+                    deleted << [id: id, uid: uid]
+                } else {
+                    changed << fromGoogleEvent(resource, calendar.name, timezone)
+                }
+            }
+            String next = parsed.nextPageToken?.toString()
+            if (!next) {
+                nextSyncToken = parsed.nextSyncToken?.toString()
+                if (!nextSyncToken) {
+                    throw malformed('Google Calendar final change page omitted nextSyncToken')
+                }
+                Map nextState = new LinkedHashMap(state ?: [:])
+                nextState.cursor = nextSyncToken
+                nextState.resourceUids = Collections.unmodifiableMap(resourceUids)
+                return [events: Collections.unmodifiableList(changed),
+                        deleted: Collections.unmodifiableList(deleted),
+                        state: Collections.unmodifiableMap(nextState)]
+            }
+            if (!seenTokens.add(next)) {
+                throw new GoogleCalendarGatewayException('PAGINATION_LIMIT',
+                    "Google Calendar ${calendar.name} repeated a page token")
+            }
+            pageToken = next
+        }
+        throw new GoogleCalendarGatewayException('PAGINATION_LIMIT',
+            "Google Calendar ${calendar.name} exceeded the configured page bound")
+    }
+
+    @Override
     CalendarEvent findEventByUid(String uid) {
         if (!uid) throw new IllegalArgumentException('event iCalUID is required')
         // A provider event can legitimately match both the iCalUID collision
@@ -135,7 +216,7 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
             // private extended property carried on planner-owned events.
             readAllPages(calendar, [iCalUID: uid]).each { Map resource ->
                 CalendarEvent event = fromGoogleEvent(resource, calendar.name, timezone)
-                if (event.uid != uid) {
+                if (resource.iCalUID?.toString() != uid) {
                     throw new GoogleCalendarGatewayException('MALFORMED_RESPONSE',
                         'Google Calendar iCalUID lookup returned a mismatched event')
                 }
@@ -152,7 +233,8 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
                 }
                 matchesByProviderId["${calendar.id}\u0000${event.id}"] = CalendarEvent.builder().id(event.id).uid(uid).title(event.title)
                     .description(event.description).calendarName(event.calendarName).start(event.start)
-                    .end(event.end).allDay(event.allDay).build()
+                    .end(event.end).lastModified(event.lastModified).etag(event.etag)
+                    .allDay(event.allDay).build()
             }
         }
         List<CalendarEvent> matches = new ArrayList<>(matchesByProviderId.values())
@@ -173,8 +255,10 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
         Map body = toGoogleEvent(event, timezone)
         String path = existing == null ? eventsPath(managedCalendar.id) :
             eventsPath(managedCalendar.id) + '/' + segment(existing.id)
+        String expectedEtag = event.etag ?: existing?.etag
+        Map headers = expectedEtag ? ['If-Match': expectedEtag] : [:]
         GatewayResponse response = send(existing == null ? 'POST' : 'PUT', path, [:],
-            JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true)
+            JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true, headers)
         requireSuccess(response, existing == null ? 'create event' : 'update event')
         try {
             Map returned = parseObject(response.body(), true)
@@ -247,7 +331,8 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
         response
     }
 
-    private GatewayResponse send(String method, String path, Map query, byte[] body, boolean mutation) {
+    private GatewayResponse send(String method, String path, Map query, byte[] body, boolean mutation,
+                                 Map<String, String> headers = [:]) {
         String token
         try {
             try { token = accessTokenSupplier.get() }
@@ -261,6 +346,7 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
             def builder = HttpRequest.newBuilder(uri).timeout(timeout)
                 .header('Authorization', "Bearer ${token.trim()}")
                 .header('Accept', 'application/json')
+            headers.each { String name, String value -> builder.header(name, value) }
             if (body != null) {
                 builder.header('Content-Type', 'application/json; charset=UTF-8')
                     .method(method, HttpRequest.BodyPublishers.ofByteArray(body))
@@ -372,7 +458,7 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
     static CalendarEvent fromGoogleEvent(Map resource, String calendarName, ZoneId defaultZone) {
         try {
             String id = resource.id?.toString()
-            String uid = resource.iCalUID?.toString()
+            String uid = managedUid(resource)
             if (!id || !uid || !(resource.start instanceof Map) || !(resource.end instanceof Map)) {
                 throw new IllegalArgumentException('required fields')
             }
@@ -384,14 +470,22 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
                 eventInstant(startValue, defaultZone)
             Instant end = allDay ? LocalDate.parse(endValue.date.toString()).atStartOfDay(defaultZone).toInstant() :
                 eventInstant(endValue, defaultZone)
+            Instant updated = resource.updated == null ? null : Instant.parse(resource.updated.toString())
             CalendarEvent.builder().id(id).uid(uid).title(resource.summary?.toString() ?: '')
                 .description(resource.description?.toString()).calendarName(calendarName)
-                .start(start).end(end).allDay(allDay).build()
+                .start(start).end(end).lastModified(updated).etag(resource.etag?.toString())
+                .allDay(allDay).build()
         } catch (GoogleCalendarGatewayException e) {
             throw e
         } catch (Exception e) {
             throw malformed('Google Calendar returned an invalid event resource', e)
         }
+    }
+
+    private static String managedUid(Map resource) {
+        Map extended = resource.extendedProperties instanceof Map ? resource.extendedProperties as Map : null
+        Map privateFields = extended?.private instanceof Map ? extended.private as Map : null
+        privateFields?.plannerUid?.toString() ?: resource.iCalUID?.toString()
     }
 
     static Map toGoogleEvent(CalendarEvent event, ZoneId zone) {

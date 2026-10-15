@@ -60,6 +60,119 @@ class GoogleCalendarApiGatewayWireMockSpec extends Specification {
         noMutations()
     }
 
+    def "range reads map updated and etag while preserving events with no updated timestamp"() {
+        given:
+        Map withUpdated = timed('provider-a', 'uid-a', 'Updated',
+            '2026-08-14T13:00:00Z', '2026-08-14T13:30:00Z') +
+            [updated: '2026-08-14T12:34:56.789Z', etag: '"etag-a"']
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .willReturn(okJson(eventsResponse([withUpdated,
+                timed('provider-b', 'uid-b', 'No timestamp',
+                    '2026-08-14T14:00:00Z', '2026-08-14T14:30:00Z')]))))
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/blocker%2Fid/events'))
+            .willReturn(okJson(eventsResponse([]))))
+
+        when:
+        def events = gateway().fetchEvents(
+            Instant.parse('2026-08-14T00:00:00Z'), Instant.parse('2026-08-15T00:00:00Z'))
+
+        then:
+        events*.lastModified == [Instant.parse('2026-08-14T12:34:56.789Z'), null]
+        events*.etag == ['"etag-a"', null]
+    }
+
+    def "initial change read is unfiltered, paginates to final cursor, and filters candidates locally"() {
+        given:
+        String candidate = 'planner-candidate'
+        Map candidateEvent = timed('candidate-id', 'google-generated-uid', 'Moved',
+            '2026-08-14T13:00:00Z', '2026-08-14T13:30:00Z') +
+            [updated: '2026-08-14T12:34:56Z', etag: '"candidate-etag"',
+             extendedProperties: [private: [plannerUid: candidate]]]
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('singleEvents', equalTo('true'))
+            .withQueryParam('maxResults', equalTo('2'))
+            .withQueryParam('pageToken', absent())
+            .willReturn(okJson(JsonOutput.toJson([items: [candidateEvent,
+                timed('ignored-id', 'ignored-uid', 'Ignore',
+                    '2026-08-14T15:00:00Z', '2026-08-14T15:30:00Z')], nextPageToken: 'page two']))))
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('pageToken', equalTo('page two'))
+            .willReturn(okJson(JsonOutput.toJson([items: [[id: 'deleted-id', status: 'cancelled']],
+                nextSyncToken: 'initial-cursor']))))
+
+        when:
+        Map changes = gateway(maxResultsPerPage: 2).readChanges('Output',
+            [resourceUids: ['deleted-id': candidate], echo: [kept: true]], [candidate] as Set,
+            Instant.parse('2026-08-01T00:00:00Z'), Instant.parse('2026-09-01T00:00:00Z'))
+
+        then:
+        changes.events*.id == ['candidate-id']
+        changes.events*.uid == [candidate]
+        changes.events*.lastModified == [Instant.parse('2026-08-14T12:34:56Z')]
+        changes.events*.etag == ['"candidate-etag"']
+        changes.deleted == [[id: 'deleted-id', uid: candidate]]
+        changes.state.cursor == 'initial-cursor'
+        changes.state.resourceUids == ['deleted-id': candidate, 'candidate-id': candidate]
+        changes.state.echo == [kept: true]
+        server.verify(2, getRequestedFor(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('syncToken', absent())
+            .withQueryParam('timeMin', absent())
+            .withQueryParam('timeMax', absent())
+            .withQueryParam('updatedMin', absent())
+            .withQueryParam('orderBy', absent())
+            .withQueryParam('iCalUID', absent())
+            .withQueryParam('privateExtendedProperty', absent()))
+    }
+
+    def "incremental change read sends only sync options and requires final replacement cursor"() {
+        given:
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('syncToken', equalTo('old cursor'))
+            .withQueryParam('singleEvents', equalTo('true'))
+            .willReturn(okJson(JsonOutput.toJson([items: [], nextSyncToken: finalToken]))))
+
+        when:
+        Map changes = gateway().readChanges('Output', [cursor: 'old cursor'], [] as Set,
+            Instant.parse('2026-08-01T00:00:00Z'), Instant.parse('2026-09-01T00:00:00Z'))
+
+        then:
+        changes.state.cursor == 'new cursor'
+        changes.events.empty
+        changes.deleted.empty
+        server.verify(1, getRequestedFor(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('syncToken', equalTo('old cursor'))
+            .withQueryParam('timeMin', absent())
+            .withQueryParam('timeMax', absent())
+            .withQueryParam('updatedMin', absent())
+            .withQueryParam('orderBy', absent())
+            .withQueryParam('iCalUID', absent())
+            .withQueryParam('privateExtendedProperty', absent()))
+
+        where:
+        finalToken = 'new cursor'
+    }
+
+    def "expired cursor on a later page throws without returning a partial change result"() {
+        given:
+        String candidate = 'candidate-uid'
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('pageToken', absent())
+            .willReturn(okJson(JsonOutput.toJson([items: [timed('changed-id', candidate, 'Partial',
+                '2026-08-14T13:00:00Z', '2026-08-14T13:30:00Z')], nextPageToken: 'later']))))
+        server.stubFor(get(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('pageToken', equalTo('later'))
+            .willReturn(aResponse().withStatus(410)))
+
+        when:
+        gateway().readChanges('Output', [cursor: 'expired'], [candidate] as Set,
+            Instant.parse('2026-08-01T00:00:00Z'), Instant.parse('2026-09-01T00:00:00Z'))
+
+        then:
+        thrown(CalendarCursorExpiredException)
+        server.verify(2, getRequestedFor(urlPathEqualTo('/calendar/v3/calendars/output-id/events'))
+            .withQueryParam('syncToken', equalTo('expired')))
+    }
+
     def "event reads reject invalid ranges and enforce per-calendar page and result bounds"() {
         given:
         def gateway = gateway(maxPagesPerCalendar: 1, maxEventsPerCalendar: 1, maxResultsPerPage: 1)
@@ -229,6 +342,31 @@ class GoogleCalendarApiGatewayWireMockSpec extends Specification {
             .withRequestBody(notMatching('(?s).*"iCalUID".*'))
             .withRequestBody(matchingJsonPath('$.extendedProperties.private.plannerUid', equalTo(uid))))
         server.verify(0, postRequestedFor(anyUrl()))
+    }
+
+    def "upsert retains the decision etag when a later lookup sees a concurrent edit"() {
+        given:
+        String uid = ManagedEventIds.uidForBlock('concurrent')
+        Map newer = timed('provider-id', uid, 'Moved concurrently',
+            '2026-08-14T15:00:00Z', '2026-08-14T15:30:00Z',
+            ManagedEventIds.buildDescription('concurrent', 'old-plan')) + [etag: '"newer"']
+        stubUidLookup('output-id', uid, [newer])
+        stubUidLookup('blocker/id', uid, [])
+        server.stubFor(put(urlPathEqualTo('/calendar/v3/calendars/output-id/events/provider-id'))
+            .withHeader('If-Match', equalTo('"decision"'))
+            .willReturn(aResponse().withStatus(412)))
+        CalendarEvent incoming = CalendarEvent.builder().id(uid).uid(uid).title('Scheduled work')
+            .description(ManagedEventIds.buildDescription('concurrent', 'plan-1')).calendarName('Output')
+            .start(Instant.parse('2026-08-14T13:00:00Z')).end(Instant.parse('2026-08-14T13:30:00Z'))
+            .etag('"decision"').build()
+
+        when:
+        gateway().upsertEvent(incoming)
+
+        then:
+        thrown(GoogleCalendarApiGateway.GoogleCalendarGatewayException)
+        server.verify(1, putRequestedFor(urlPathEqualTo('/calendar/v3/calendars/output-id/events/provider-id'))
+            .withHeader('If-Match', equalTo('"decision"')))
     }
 
     def "upsert refuses cross-calendar, missing ownership, and mismatched live block before mutation"() {
