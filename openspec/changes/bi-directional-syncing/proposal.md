@@ -11,6 +11,7 @@ Rearranging a synced task is often faster in Google Calendar or a CalDAV client 
 - Ignore calendar edits that this process just wrote, and ignore events that were not created by this sync (personal meetings, other calendars, unowned events).
 - Detect calendar changes incrementally instead of rereading every event: Google Calendar `syncToken` for the API provider, and CalDAV `sync-collection` where the server advertises it, with a collection `ctag` check before any full reread.
 - Move a recurring task's next due through the same guarded recurrence update SmartPlanner apply already uses, extracted so apply and writeback share it. That update keeps the recurrence expression and does not complete the task. The datetime-only due POST stays limited to non-recurring tasks.
+- Save the pre-update due and recurrence information; if post-write due verification fails, retry the intended update once using that saved recurrence information and the new date. If repair fails or cannot be verified, log the task title, original/intended/reread due information and field differences, and stop dependent writes without a rollback.
 - Do not change recurrence completion, deadline writes, provider selection, or the existing rule that SmartPlanner never mutates deadlines.
 
 ## Capabilities
