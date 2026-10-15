@@ -42,12 +42,14 @@ class GuardedRecurringDueUpdateSpec extends Specification {
     def "first attempt success returns verified task without retry and preserves all guarded state"() {
         given:
         Map raw = recurringRaw()
+        raw.due.timezone = expectedTimezone
         List<Map> calls = []
         TodoistLifecycleGateway gateway = gateway(
             { String ignored -> copy(raw) },
             { String ignored, TodoistDue due, String replacement, String commandId ->
                 calls << [originalDate: due.date, tuple: new LinkedHashMap(due.syncTuple(replacement)), id: commandId]
                 raw.due = new LinkedHashMap(due.syncTuple(replacement))
+                raw.due.timezone = actualTimezone
                 new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
             })
 
@@ -59,7 +61,7 @@ class GuardedRecurringDueUpdateSpec extends Specification {
         verified.todoistDue.date == '2026-10-06T14:00:00Z'
         verified.todoistDue.string == 'every weekday'
         verified.todoistDue.lang == 'en'
-        verified.todoistDue.timezone == 'America/New_York'
+        verified.todoistDue.timezone == actualTimezone
         verified.deadlineDate.toString() == '2026-10-10'
         verified.labels == ['smartplanner-seen', 'work']
         verified.description == 'Human description'
@@ -67,18 +69,26 @@ class GuardedRecurringDueUpdateSpec extends Specification {
         calls.size() == 1
         calls[0].originalDate == '2026-10-05T09:00:00'
         calls[0].tuple == [date: '2026-10-06T14:00:00Z', string: 'every weekday',
-            is_recurring: true, lang: 'en', timezone: 'America/New_York']
+            is_recurring: true, lang: 'en', timezone: expectedTimezone]
+
+        where:
+        expectedTimezone   | actualTimezone
+        'America/New_York' | 'America/New_York'
+        null               | 'US/Eastern'
+        null               | null
     }
 
     def "failed initial verification is repaired once with original tuple and a new command id"() {
         given:
         Map raw = recurringRaw()
+        raw.due.timezone = expectedTimezone
         List<Map> calls = []
         TodoistLifecycleGateway gateway = gateway(
             { String ignored -> copy(raw) },
             { String ignored, TodoistDue due, String replacement, String commandId ->
                 calls << [date: due.date, string: due.string, timezone: due.timezone, id: commandId]
                 raw.due = new LinkedHashMap(due.syncTuple(replacement))
+                if (due.timezone == null) raw.due.timezone = 'US/Eastern'
                 if (calls.size() == 1) raw.due.string = 'provider-damaged-expression'
                 new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
             })
@@ -92,10 +102,45 @@ class GuardedRecurringDueUpdateSpec extends Specification {
         calls.size() == 2
         calls*.date == ['2026-10-05T09:00:00', '2026-10-05T09:00:00']
         calls*.string == ['every weekday', 'every weekday']
-        calls*.timezone == ['America/New_York', 'America/New_York']
+        calls*.timezone == [expectedTimezone, expectedTimezone]
+        verified.todoistDue.timezone == (expectedTimezone ?: 'US/Eastern')
         calls[0].id == '22222222-2222-2222-2222-222222222222'
         calls[1].id != calls[0].id
         UUID.fromString(calls[1].id as String)
+
+        where:
+        expectedTimezone << ['America/New_York', null]
+    }
+
+    def "timezone initialization exception does not allow missing fields or changes to a known timezone"() {
+        given:
+        Map raw = recurringRaw()
+        raw.due.timezone = expectedTimezone
+        int writes = 0
+        TodoistLifecycleGateway gateway = gateway(
+            { String ignored -> copy(raw) },
+            { String ignored, TodoistDue due, String replacement, String commandId ->
+                writes++
+                raw.due = new LinkedHashMap(due.syncTuple(replacement))
+                if (missing) raw.due.remove('timezone')
+                else raw.due.timezone = actualTimezone
+                new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+            })
+
+        when:
+        GuardedRecurringDueUpdate.update(gateway, config, 'task-1', '2026-10-06T14:00:00Z')
+
+        then:
+        def error = thrown(GuardedRecurringDueUpdateException)
+        writes == 2
+        error.message.contains("timezone: expected=${expectedTimezone == null ? '<null>' : "'${expectedTimezone}'"}")
+        error.message.contains("actual=${missing ? '<missing>' : actualTimezone == null ? '<null>' : "'${actualTimezone}'"} (unexpected difference)")
+
+        where:
+        expectedTimezone   | actualTimezone | missing
+        null               | null           | true
+        'America/New_York' | 'UTC'          | false
+        'America/New_York' | null           | false
     }
 
     def "initial rejected command fails without unsafe verification retry or fallback"() {
@@ -252,12 +297,14 @@ class GuardedRecurringDueUpdateSpec extends Specification {
     def "non-due guarded failure stops dependent work without an unauthorized due repair"() {
         given:
         Map raw = recurringRaw()
+        raw.due.timezone = null
         int writes = 0
         TodoistLifecycleGateway gateway = gateway(
             { String ignored -> copy(raw) },
             { String ignored, TodoistDue due, String replacement, String commandId ->
                 writes++
                 raw.due = new LinkedHashMap(due.syncTuple(replacement))
+                raw.due.timezone = 'US/Eastern'
                 raw.labels = ['unexpected-label']
                 new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
             })
@@ -268,6 +315,7 @@ class GuardedRecurringDueUpdateSpec extends Specification {
         then:
         def error = thrown(GuardedRecurringDueUpdateException)
         error.message.contains('non-due guarded postconditions failed')
+        error.message.contains("timezone: expected=<null>, actual='US/Eastern' (allowed timezone initialization)")
         writes == 1
     }
 

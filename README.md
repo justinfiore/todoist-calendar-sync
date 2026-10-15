@@ -456,6 +456,10 @@ enabled run performs a full Todoist bootstrap and establishes each configured ca
 ## Event Mapping Details
 
 - Event UID is deterministic from `todoistUserId-taskId` (Base32 encoded).
+- Legacy resources are stored and looked up at `<calendar URL>/<UID>.ics`. Calendar writeback
+  matches these known resource names and verifies the UID in the live event, avoiding UID-filter
+  queries that Google CalDAV ignores. Renamed/copied resources at unrelated addresses are not
+  discovered by this legacy lookup; SmartPlanner's general UID lookup is unchanged.
 - Event summary is Todoist task content (plus optional calendar `prefix`).
 - Event description includes project, labels, and mapped priority.
 - Due-date behavior:
@@ -484,6 +488,10 @@ live result, and uses `(task ID, completed_count)` as occurrence identity. Nativ
 the only advancement mechanism; detection normally occurs within zero to five minutes through a
 dedicated incremental `items` cursor. Prior occurrence events are retained and each managed event
 contains stable `https://app.todoist.com/app/task/<task-id>` links.
+
+Shared recurring-write verification permits Todoist to populate a non-null timezone when the saved
+timezone was explicitly null. Missing timezone fields and changes to an existing non-null timezone
+still fail verification, as do changes to other guarded fields.
 
 Due time is a scheduling preference. Deadline is date-only and soft unless the configured `hard`
 label is present. An approaching hard P4 can outrank an ordinary P1 inside the configured soon

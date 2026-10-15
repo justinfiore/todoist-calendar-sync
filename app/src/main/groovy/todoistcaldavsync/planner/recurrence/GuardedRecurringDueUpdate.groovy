@@ -74,7 +74,7 @@ final class GuardedRecurringDueUpdate {
 
         ReadResult first = verifyRead(gateway, config, taskId, original, intendedDue)
         if (first.verified != null) return first.verified
-        if (first.observation?.sameAs(intendedDue)) {
+        if (intendedDue.matches(first.observation)) {
             throw diagnosedFailure(GuardedRecurringDueOutcome.UNSUCCESSFUL, taskId, title,
                 originalDue, intendedDue, first, null,
                 'non-due guarded postconditions failed; due repair is not authorized', first.error)
@@ -133,7 +133,7 @@ final class GuardedRecurringDueUpdate {
             task.labels.toSet() == original.labels.toSet() &&
             task.description == original.description &&
             task.completedCount == original.completedCount
-        if (due.sameAs(intendedDue) && nonDueMatches) return ReadResult.success(due, task)
+        if (intendedDue.matches(due) && nonDueMatches) return ReadResult.success(due, task)
         ReadResult.observed(due, task, null)
     }
 
@@ -267,8 +267,14 @@ final class GuardedRecurringDueUpdate {
             new DueObservation(due, changed, intendedRaw)
         }
 
-        boolean sameAs(DueObservation other) {
-            other != null && DUE_FIELDS.every { fields[it] == other.fields[it] }
+        boolean matches(DueObservation actual) {
+            actual != null && DUE_FIELDS.every { matchesField(it, actual.fields[it]) }
+        }
+
+        private boolean matchesField(String name, FieldValue actual) {
+            FieldValue expected = fields[name]
+            expected == actual || (name == 'timezone' && expected.present && expected.value == null &&
+                actual.present && actual.value != null)
         }
 
         String differences(DueObservation actual) {
@@ -282,7 +288,8 @@ final class GuardedRecurringDueUpdate {
                 FieldValue expected = fields[name]
                 FieldValue observed = actual.fields[name]
                 String kind = name == 'date' ? 'intended date change' :
-                    (expected == observed ? 'preserved' : 'unexpected difference')
+                    expected == observed ? 'preserved' :
+                        matchesField(name, observed) ? 'allowed timezone initialization' : 'unexpected difference'
                 "${name}: expected=${expected.displayValue()}, actual=${observed.displayValue()} (${kind})"
             }.join(', ')
         }
