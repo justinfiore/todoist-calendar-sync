@@ -1,6 +1,9 @@
 package todoistcaldavsync
 
 import spock.lang.Specification
+import spock.lang.Unroll
+import groovy.yaml.YamlSlurper
+import todoistcaldavsync.planner.writeback.CalendarWritebackStore
 
 class TodoistCalDavSyncSpec extends Specification {
 
@@ -92,5 +95,72 @@ class TodoistCalDavSyncSpec extends Specification {
         expect:
         syncer.renderDescription([project_name: 'Home', label_names: ['focus'], priority: 4, id: 'task-1'])
             .contains('Todoist: https://app.todoist.com/app/task/task-1')
+    }
+
+    @Unroll
+    def "legacy calendar writeback enabled is #expected when section is #label"() {
+        given:
+        File configFile = File.createTempFile('todoist-calendar-writeback-config-', '.yaml')
+        File stateFile = File.createTempFile('todoist-calendar-writeback-config-', '.state')
+        stateFile.delete()
+        configFile.text = """
+            dryRun: true
+            ${fragment}
+            todoist:
+              labelsToInclude: [focus]
+            caldav:
+              calendars: []
+              rules: []
+        """.stripIndent()
+
+        when:
+        def configured = new TodoistCalDavSync(configFile, stateFile)
+
+        then:
+        configured.calendarWritebackEnabled == expected
+
+        cleanup:
+        configured?.destroyHttpClients()
+
+        where:
+        label     | fragment                                      || expected
+        'omitted' | ''                                            || false
+        'false'   | 'calendarWriteback:\n              enabled: false' || false
+        'true'    | 'calendarWriteback:\n              enabled: true'  || true
+    }
+
+    def "legacy calendar writeback rejects a non-boolean before client setup"() {
+        given:
+        File configFile = File.createTempFile('todoist-calendar-writeback-invalid-', '.yaml')
+        File stateFile = File.createTempFile('todoist-calendar-writeback-invalid-', '.state')
+        configFile.text = '''
+            calendarWriteback:
+              enabled: "true"
+            todoist:
+              labelsToInclude: [focus]
+            caldav:
+              calendars: []
+              rules: []
+        '''.stripIndent()
+
+        when:
+        new TodoistCalDavSync(configFile, stateFile)
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'calendarWriteback.enabled must be a boolean'
+    }
+
+    def "legacy example is default-off and documentation names the separate cursor store"() {
+        given:
+        File root = new File('..').canonicalFile
+        if (!new File(root, 'README.md').exists()) root = new File('.').canonicalFile
+        Map example = new YamlSlurper().parse(new File(root, 'conf/todoist-calendar-sync.conf.example.yaml')) as Map
+        String readme = new File(root, 'README.md').getText('UTF-8')
+
+        expect:
+        example.calendarWriteback.enabled == false
+        readme.contains("separate `${CalendarWritebackStore.FILENAME}` file")
+        CalendarWritebackStore.FILENAME == 'calendar-writeback.json'
     }
 }

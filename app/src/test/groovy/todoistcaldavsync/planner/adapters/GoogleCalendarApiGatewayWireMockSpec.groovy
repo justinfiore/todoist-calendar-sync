@@ -344,6 +344,31 @@ class GoogleCalendarApiGatewayWireMockSpec extends Specification {
         server.verify(0, postRequestedFor(anyUrl()))
     }
 
+    def "upsert retains the decision etag when a later lookup sees a concurrent edit"() {
+        given:
+        String uid = ManagedEventIds.uidForBlock('concurrent')
+        Map newer = timed('provider-id', uid, 'Moved concurrently',
+            '2026-08-14T15:00:00Z', '2026-08-14T15:30:00Z',
+            ManagedEventIds.buildDescription('concurrent', 'old-plan')) + [etag: '"newer"']
+        stubUidLookup('output-id', uid, [newer])
+        stubUidLookup('blocker/id', uid, [])
+        server.stubFor(put(urlPathEqualTo('/calendar/v3/calendars/output-id/events/provider-id'))
+            .withHeader('If-Match', equalTo('"decision"'))
+            .willReturn(aResponse().withStatus(412)))
+        CalendarEvent incoming = CalendarEvent.builder().id(uid).uid(uid).title('Scheduled work')
+            .description(ManagedEventIds.buildDescription('concurrent', 'plan-1')).calendarName('Output')
+            .start(Instant.parse('2026-08-14T13:00:00Z')).end(Instant.parse('2026-08-14T13:30:00Z'))
+            .etag('"decision"').build()
+
+        when:
+        gateway().upsertEvent(incoming)
+
+        then:
+        thrown(GoogleCalendarApiGateway.GoogleCalendarGatewayException)
+        server.verify(1, putRequestedFor(urlPathEqualTo('/calendar/v3/calendars/output-id/events/provider-id'))
+            .withHeader('If-Match', equalTo('"decision"')))
+    }
+
     def "upsert refuses cross-calendar, missing ownership, and mismatched live block before mutation"() {
         given:
         String uid = ManagedEventIds.uidForBlock('block-guard')

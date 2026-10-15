@@ -59,6 +59,15 @@ import todoistcaldavsync.planner.oauth.JsonFileLegacyGoogleOAuthCredentialSource
 import todoistcaldavsync.planner.oauth.LegacyGoogleOAuthQaImportOperation
 import todoistcaldavsync.planner.qa.QaCalendarProvisioningService
 import todoistcaldavsync.planner.qa.QaCalendarSpec
+import todoistcaldavsync.planner.adapters.CalDavHttpGateway
+import todoistcaldavsync.planner.adapters.CalendarCursorExpiredException
+import todoistcaldavsync.planner.adapters.CalendarReadGateway
+import todoistcaldavsync.planner.adapters.TodoistRestGateway
+import todoistcaldavsync.planner.domain.CalendarEvent
+import todoistcaldavsync.planner.domain.Task
+import todoistcaldavsync.planner.recurrence.GuardedRecurringDueUpdate
+import todoistcaldavsync.planner.writeback.CalendarWritebackDecision
+import todoistcaldavsync.planner.writeback.CalendarWritebackStore
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport
 import org.apache.commons.io.output.AppendableWriter
 
@@ -359,6 +368,11 @@ class TodoistCalDavSync {
     def configFile = null
     def dryRun = false
     def DRY_RUN_PREFIX = "Dry Run:"
+    boolean calendarWritebackEnabled = false
+    CalendarWritebackStore calendarWritebackStore
+    def calendarChangeGateway
+    def todoistWritebackGateway
+    PlannerConfig legacyPlannerConfig
 
     def caldavHttpClientsByCalendar = [:]
     def urlsByCalendar = [:]
@@ -371,6 +385,10 @@ class TodoistCalDavSync {
         def slurper = new YamlSlurper();
 		def config = slurper.parse(configFile);
 		this.config = config
+
+        // Validate the opt-in before constructing clients or starting any sync work.
+        this.calendarWritebackEnabled = CalendarWritebackDecision.enabled(config as Map)
+        this.calendarWritebackStore = new CalendarWritebackStore(configFile.absoluteFile.parentFile.toPath())
 
         if (config.dryRun) {
             this.dryRun = config.dryRun
@@ -596,10 +614,16 @@ class TodoistCalDavSync {
 			log.info("v1 API migration detected - forcing full sync to migrate calendar event IDs")
 			syncToken = '*'
 		}
+        if (calendarWritebackEnabled && !hasLegacyTaskCache()) {
+            log.info('Calendar writeback task cache is absent; forcing one full Todoist bootstrap')
+            syncToken = '*'
+        }
+        boolean fullItemsRead = syncToken == '*'
         def todoistParamsForItems = [sync_token: syncToken, resource_types: '["items"]']
         def todoistParams = [sync_token: '*', resource_types: '["projects", "labels", "user"]']
         def todoistData = [:]
         def items = []
+        def itemDelta = []
         def todoistUserId = 0
         def todoistEmail = ""
         try {
@@ -607,9 +631,10 @@ class TodoistCalDavSync {
             def itemsResponseData = todoistClient.postForm(todoistBasePath + "/sync", todoistParamsForItems)
             syncToken = itemsResponseData.sync_token
             items = itemsResponseData.items
+			itemDelta = items.collect { new LinkedHashMap(it as Map) }
 			log.info("Items before filtering: " + JsonOutput.prettyPrint(JsonOutput.toJson(items)))
             
-            if(items.size() > 0) {
+            if(items.size() > 0 || (calendarWritebackEnabled && fullItemsRead)) {
                 log.info("Calling Todoist Sync API for metadata with params: $todoistParams")
                 def metadataResponseData = todoistClient.postForm(todoistBasePath + "/sync", todoistParams)
                 if (metadataResponseData) {
@@ -672,7 +697,21 @@ class TodoistCalDavSync {
 
         def itemsByCalendar = sortItemsIntoCalendars(items)
 
-        if(updateCalendars(todoistUserId, itemsByCalendar)) {
+        Set<String> suppressCalendarWrites = [] as Set
+        if (calendarWritebackEnabled) {
+            Map writeback = processLegacyCalendarChanges(itemDelta, itemsByCalendar, todoistUserId,
+                fullItemsRead)
+            todoistUserId = writeback.userId ?: todoistUserId
+            suppressCalendarWrites.addAll(writeback.suppress as Set<String>)
+            (writeback.outbound as Map<String, List<Map>>).each { String name, List<Map> queued ->
+                List<Map> target = itemsByCalendar[name] ?: []
+                Set<String> present = target.collect { it.id.toString() } as Set
+                target.addAll(queued.findAll { !present.contains(it.id.toString()) })
+                itemsByCalendar[name] = target
+            }
+        }
+
+        if(updateCalendars(todoistUserId, itemsByCalendar, suppressCalendarWrites)) {
             log.info("Sync Succeeded, updating syncToken to: $syncToken")
             state.syncToken = syncToken
             saveStateFile(state)
@@ -1040,7 +1079,269 @@ class TodoistCalDavSync {
         log.info("Created fresh HttpClient for calendar: $calendarName")
     }
 
-    def updateCalendars(todoistUserId, itemsByCalendar) {
+    private boolean hasLegacyTaskCache() {
+        !urlsByCalendar.isEmpty() && urlsByCalendar.keySet().every { String name ->
+            Map saved = calendarWritebackStore.calendar(name)
+            saved.taskCacheInitialized == true && saved.knownTasks instanceof Map && saved.userId != null
+        }
+    }
+
+    /**
+     * Merge Todoist's item delta into a durable identity cache, then classify calendar changes.
+     * The cache is required because a calendar-only move commonly arrives with an empty Todoist delta.
+     */
+    private Map processLegacyCalendarChanges(List<Map> itemDelta, Map itemsByCalendar,
+                                             def currentUserId, boolean fullItemsRead) {
+        Map<String, Map> savedByCalendar = urlsByCalendar.keySet().collectEntries { String name ->
+            [(name): calendarWritebackStore.calendar(name)]
+        }
+        String userId = currentUserId?.toString()
+        if (!userId || userId == '0') {
+            userId = savedByCalendar.values().find { it.userId != null }?.userId?.toString()
+        }
+
+        Set<String> changedIds = (itemDelta ?: []).findAll { it.id != null }
+            .collect { it.id.toString() } as Set
+        savedByCalendar.each { String name, Map saved ->
+            Map known = fullItemsRead ? [:] : new LinkedHashMap((saved.knownTasks instanceof Map ? saved.knownTasks : [:]) as Map)
+            changedIds.each { known.remove(it) }
+            (itemsByCalendar[name] ?: []).findAll { Map item ->
+                item.is_deleted != true && item.checked != true && item.completed_at == null
+            }.each { Map item -> known[item.id.toString()] = new LinkedHashMap(item) }
+            saved.knownTasks = known
+            if (fullItemsRead) saved.taskCacheInitialized = true
+            if (userId) saved.userId = userId
+        }
+
+        if (!userId) {
+            log.info('Calendar writeback has no open included tasks to identify yet')
+            savedByCalendar.each { String name, Map saved ->
+                if (!dryRun) calendarWritebackStore.saveCalendar(name, saved)
+            }
+            return [userId: currentUserId, suppress: [] as Set, outbound: [:]]
+        }
+
+        // Rebuild the production reader each loop so OAuth bearer credentials can refresh.
+        if (calendarChangeGateway instanceof CalDavHttpGateway) calendarChangeGateway = null
+        def changes = legacyCalendarChangeGateway()
+        def todoist = legacyTodoistWriteGateway()
+        Set<String> suppress = [] as Set
+        Map<String, List<Map>> outbound = [:].withDefault { [] }
+        Instant rangeStart = Instant.parse('1970-01-01T00:00:00Z')
+        Instant rangeEnd = Instant.parse('2100-01-01T00:00:00Z')
+
+        savedByCalendar.each { String calendarName, Map saved ->
+            Map<String, Map> known = (saved.knownTasks ?: [:]) as Map<String, Map>
+            Set<String> candidateUids = known.keySet().collect {
+                CalendarWritebackDecision.legacyUid(userId, it)
+            } as Set
+            Set<String> recreateNow = new LinkedHashSet<>((saved.pendingRecreate ?: [])*.toString())
+
+            Map result
+            try {
+                result = changes.readChanges(calendarName, feedState(saved), candidateUids, rangeStart, rangeEnd)
+            } catch (CalendarCursorExpiredException expired) {
+                log.warn("Calendar cursor expired for ${calendarName}; retrying a full feed while retaining echoes")
+                Map retryState = feedState(saved)
+                retryState.remove('cursor')
+                result = changes.readChanges(calendarName, retryState, candidateUids, rangeStart, rangeEnd)
+            }
+
+            Set<String> newlyCancelled = [] as Set
+            Set<String> observedUids = [] as Set
+            (result.deleted ?: []).each { Map deleted ->
+                if (deleted.uid && candidateUids.contains(deleted.uid.toString())) {
+                    observedUids << deleted.uid.toString()
+                    newlyCancelled << deleted.uid.toString()
+                    suppress << deleted.uid.toString()
+                    log.info("Recorded cancelled calendar candidate ${deleted.uid}; Todoist task is unchanged")
+                }
+            }
+
+            Closure classify = { CalendarEvent event, Map.Entry<String, Map> match ->
+                observedUids << event.uid
+                Map task = match.value
+                Instant due = legacyDueInstant(task)
+                Instant updated = parseLegacyInstant(task.updated_at ?: task.updatedAt)
+                boolean echo = CalendarWritebackDecision.echo(event,
+                    calendarWritebackStore.echo(calendarName, event.uid))
+                boolean recurring = task.due instanceof Map && task.due.is_recurring == true
+                String decision = CalendarWritebackDecision.decide(due, updated, event.start,
+                    event.lastModified, recurring, echo)
+
+                switch (decision) {
+                    case CalendarWritebackDecision.UPDATE_TODOIST:
+                        if (!dryRun) {
+                            todoist.updateTaskDue(match.key, event.start.toString())
+                            refreshNonRecurringTask(todoist, match.key, task, event.start)
+                        }
+                        suppress << event.uid
+                        break
+                    case CalendarWritebackDecision.GUARDED_RECURRING:
+                        if (!dryRun) {
+                            Task verified = GuardedRecurringDueUpdate.update(todoist,
+                                legacyRecurrenceConfig(), match.key, event.start.toString())
+                            adoptVerifiedRecurringTask(task, verified, event.start)
+                        }
+                        suppress << event.uid
+                        break
+                    case CalendarWritebackDecision.UPDATE_CALENDAR:
+                        outbound[calendarName] << task
+                        break
+                    case CalendarWritebackDecision.NOOP:
+                    case CalendarWritebackDecision.SKIP:
+                        suppress << event.uid
+                        if (decision == CalendarWritebackDecision.SKIP) {
+                            log.warn("Recorded unresolved calendar/Todoist disagreement for task ${match.key}")
+                        }
+                        break
+                }
+            }
+
+            (result.events ?: []).each { CalendarEvent event ->
+                Map.Entry<String, Map> match = known.entrySet().find { entry ->
+                    CalendarWritebackDecision.legacyCandidate(event, userId, entry.key,
+                        urlsByCalendar.keySet() as Set<String>)
+                }
+                if (match == null) return
+                classify(event, match)
+            }
+
+            // A Todoist-only delta still needs a live conflict read. Otherwise an unresolved
+            // calendar move from an earlier tick can be overwritten merely because it was not
+            // repeated in this incremental calendar feed.
+            changedIds.each { String taskId ->
+                Map task = known[taskId]
+                if (task == null) return
+                String uid = CalendarWritebackDecision.legacyUid(userId, taskId)
+                if (observedUids.contains(uid)) return
+                if (!(changes instanceof CalendarReadGateway)) {
+                    throw new IllegalStateException('Legacy calendar change gateway must also implement CalendarReadGateway')
+                }
+                CalendarEvent live = (changes as CalendarReadGateway).findEventByUid(uid)
+                if (live != null) classify(live, new AbstractMap.SimpleImmutableEntry<String, Map>(taskId, task))
+            }
+
+            recreateNow.each { String uid ->
+                Map.Entry<String, Map> task = known.entrySet().find {
+                    CalendarWritebackDecision.legacyUid(userId, it.key) == uid
+                }
+                if (task != null) outbound[calendarName] << task.value
+            }
+
+            Map checkpoint = new LinkedHashMap((result.state ?: [:]) as Map)
+            checkpoint.knownTasks = known
+            checkpoint.taskCacheInitialized = saved.taskCacheInitialized == true
+            checkpoint.userId = userId
+            checkpoint.pendingRecreate = newlyCancelled as List
+            if (!dryRun) calendarWritebackStore.saveCalendar(calendarName, checkpoint)
+        }
+        [userId: userId, suppress: suppress, outbound: outbound]
+    }
+
+    private static Map feedState(Map saved) {
+        new LinkedHashMap(saved.findAll { key, value ->
+            !(key in ['knownTasks', 'taskCacheInitialized', 'userId', 'pendingRecreate'])
+        })
+    }
+
+    private def legacyCalendarChangeGateway() {
+        if (calendarChangeGateway != null) return calendarChangeGateway
+        Map defaultAuth = config.caldav?.default?.auth instanceof Map ? config.caldav.default.auth as Map : [:]
+        List<Map> endpoints = config.caldav.calendars.collect { Map calendar ->
+            Map auth = calendar.auth instanceof Map ? calendar.auth as Map : defaultAuth
+            String scheme = (auth.scheme ?: 'none').toString().toUpperCase(Locale.ROOT)
+            Map gatewayAuth = [:]
+            if (scheme == 'BASIC') {
+                gatewayAuth = [type: 'basic', username: auth.basicAuth?.username,
+                    passwordOverride: StringUtils.defaultString(auth.basicAuth?.password,
+                        System.getenv('CALDAV_AUTH_BASICAUTH_PASSWORD'))]
+            } else if (scheme == 'GOOGLE_OAUTH2') {
+                if (googleAuthProvider == null) googleAuthProvider = new GoogleAuthProvider(configFile.parentFile)
+                Credential credential = googleAuthProvider.getCredential(auth.google?.username?.toString())
+                if (credential.expiresInSeconds == null || credential.expiresInSeconds <= 60) credential.refreshToken()
+                gatewayAuth = [type: 'bearer', tokenOverride: credential.accessToken]
+            }
+            [name: calendar.name, url: calendar.url, auth: gatewayAuth]
+        }
+        calendarChangeGateway = new CalDavHttpGateway(calendars: endpoints,
+            managedCalendarName: endpoints[0].name,
+            timezone: ZoneId.systemDefault(),
+            allowInsecureHttp: endpoints.any { it.url.toString().startsWith('http://') })
+    }
+
+    private def legacyTodoistWriteGateway() {
+        if (todoistWritebackGateway == null) {
+            todoistWritebackGateway = new TodoistRestGateway(baseUrl: todoistApiBaseUrl,
+                tokenOverride: getTodoistAccessToken(),
+                allowInsecureHttp: todoistApiBaseUrl.toString().startsWith('http://'),
+                includeProjectNames: false)
+        }
+        todoistWritebackGateway
+    }
+
+    private PlannerConfig legacyRecurrenceConfig() {
+        if (legacyPlannerConfig == null) {
+            List windows = DayOfWeek.values().collect {
+                new PlannerConfig.WorkingWindow(it, LocalTime.MIDNIGHT, LocalTime.of(23, 59), 'legacy')
+            }
+            legacyPlannerConfig = PlannerConfig.builder().timezone(ZoneId.systemDefault())
+                .workingWindows(windows).build()
+        }
+        legacyPlannerConfig
+    }
+
+    private void refreshNonRecurringTask(def todoist, String taskId, Map task, Instant intendedStart) {
+        Map live
+        try {
+            live = todoist.fetchTask(taskId) as Map
+        } catch (Throwable e) {
+            throw new IllegalStateException("Todoist post-write reread unavailable for task ${taskId}", e)
+        }
+        Instant liveDue = legacyDueInstant(live)
+        Instant liveUpdated = parseLegacyInstant(live?.updated_at ?: live?.updatedAt)
+        if (liveDue != intendedStart || liveUpdated == null) {
+            throw new IllegalStateException("Todoist post-write verification failed for task ${taskId}")
+        }
+        // Keep label_names/project_name resolved by the legacy metadata pass. Only provider-live
+        // conflict fields replace their cached values.
+        task.due = new LinkedHashMap(live.due as Map)
+        task.updated_at = (live.updated_at ?: live.updatedAt).toString()
+        task.remove('updatedAt')
+    }
+
+    private static void adoptVerifiedRecurringTask(Map task, Task verified, Instant intendedStart) {
+        if (verified?.todoistDue?.instant != intendedStart || verified.updatedAt == null) {
+            throw new IllegalStateException("Todoist recurring post-write verification lacks live due/updated_at for task ${task.id}")
+        }
+        task.due = new LinkedHashMap(verified.todoistDue.syncTuple())
+        task.updated_at = verified.updatedAt.toString()
+        task.remove('updatedAt')
+    }
+
+    private Instant legacyDueInstant(Map item) {
+        String value = item?.due?.date?.toString()
+        if (!value) return null
+        try { return Instant.parse(value) } catch (Exception ignored) {}
+        try { return OffsetDateTime.parse(value).toInstant() } catch (Exception ignored) {}
+        try { return LocalDateTime.parse(value).atZone(ZoneId.systemDefault()).toInstant() } catch (Exception ignored) {}
+        try { return LocalDate.parse(value).atTime(9, 0).atZone(ZoneId.systemDefault()).toInstant() } catch (Exception ignored) {}
+        null
+    }
+
+    private static Instant parseLegacyInstant(def value) {
+        if (value == null) return null
+        try { Instant.parse(value.toString()) } catch (Exception ignored) { null }
+    }
+
+    private static CalendarEvent calendarEventForVEvent(VEvent event, String calendarName) {
+        Instant start = Instant.ofEpochMilli(event.startDate.date.time)
+        Instant end = start.plus(event.duration.duration)
+        CalendarEvent.builder().id(event.uid.value).uid(event.uid.value)
+            .title(event.summary?.value ?: '').calendarName(calendarName).start(start).end(end).build()
+    }
+
+    def updateCalendars(todoistUserId, itemsByCalendar, Set<String> suppressUids = [] as Set) {
         itemsByCalendar.each { calendarName, items ->
             def calendarUrl = urlsByCalendar[calendarName]
             def otherCalendarNames = urlsByCalendar.keySet().findAll { k -> !k.equals(calendarName)}
@@ -1056,6 +1357,10 @@ class TodoistCalDavSync {
                 calendar.getProperties().add(CalScale.GREGORIAN);
                 calendar.getComponents().add(vevent)
                 def uid = vevent.getUid()?.getValue()
+                if (suppressUids.contains(uid)) {
+                    log.info("Leaving calendar event unchanged after writeback decision: ${uid}")
+                    return
+                }
 
                 if(dryRun) {
                     log.info("$DRY_RUN_PREFIX Would have deleted event: ${item.content} with uid: ${uid} from calendars: ${otherCalendarNames}")
@@ -1075,6 +1380,9 @@ class TodoistCalDavSync {
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName ...")
                     log.debug("iCal event being PUT for ${item.content}:\n${calendar.toString()}")
                     putWithLinearBackoff(calendarName, calendarUrl, calendar, uid, item.content)
+                    if (calendarWritebackEnabled) {
+                        calendarWritebackStore.recordWrite(calendarEventForVEvent(vevent, calendarName), Instant.now())
+                    }
                     log.info("Putting event: ${item.content} with uid: ${uid} to calendar: $calendarName successful.")
                     doRateLimit()
                 }

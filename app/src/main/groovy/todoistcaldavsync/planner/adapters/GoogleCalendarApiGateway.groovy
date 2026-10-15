@@ -255,7 +255,8 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
         Map body = toGoogleEvent(event, timezone)
         String path = existing == null ? eventsPath(managedCalendar.id) :
             eventsPath(managedCalendar.id) + '/' + segment(existing.id)
-        Map headers = existing?.etag ? ['If-Match': existing.etag] : [:]
+        String expectedEtag = event.etag ?: existing?.etag
+        Map headers = expectedEtag ? ['If-Match': expectedEtag] : [:]
         GatewayResponse response = send(existing == null ? 'POST' : 'PUT', path, [:],
             JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true, headers)
         requireSuccess(response, existing == null ? 'create event' : 'update event')

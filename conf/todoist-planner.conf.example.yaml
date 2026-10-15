@@ -9,6 +9,11 @@ planner:
   timezone: America/New_York
   output_calendar: Todoist Planned
 
+  # Optional calendar-to-Todoist Due writeback for newer moves of owned,
+  # single-task managed events. Omitted/false preserves one-way behavior.
+  calendarWriteback:
+    enabled: false
+
   # Phase 7 production composition. Endpoints, credential environment-variable
   # names, and every durable state path are explicit. Relative paths resolve
   # against this configuration file's directory.

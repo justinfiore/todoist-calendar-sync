@@ -140,11 +140,15 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                                    Map<String, String> stamps, Map<String, String> resourceUids) {
         GatewayResponse response = send(endpoint, 'REPORT', endpoint.uri,
             ['Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'], syncCollectionReport(cursor))
-        if (cursor && response.statusCode() in [403, 409, 410]) {
+        if (cursor && hasDavElement(response.body(), 'valid-sync-token')) {
             throw new CalendarCursorExpiredException("CalDAV sync token expired for ${endpoint.name}")
         }
         requireStatus(response, [200, 207] as Set, 'REPORT', endpoint.name)
         ParsedMultistatus parsed = parseMultistatus(endpoint, response.body())
+        if (!parsed.syncToken) {
+            throw new CalDavGatewayException('SCHEMA',
+                "CalDAV sync-collection response omitted sync-token for ${endpoint.name}")
+        }
         Map<String, String> resolved = resolveCandidateResources(endpoint, candidates,
             parsed.resources*.href as Set<URI>, resourceUids)
         List<CalendarEvent> events = []
@@ -264,19 +268,35 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private ParsedMultistatus parseMultistatus(CalendarEndpoint endpoint, String body) {
         try {
             def root = new XmlSlurper(false, false).parseText(body ?: '')
+            if (root.depthFirst().any { node ->
+                localName(node.name()) == 'number-of-matches-within-limits' ||
+                    (localName(node.name()) == 'status' && statusCode(node.text()) == 507)
+            }) {
+                throw new CalDavGatewayException('TRUNCATED',
+                    "CalDAV multistatus was truncated for ${endpoint.name}; paging is unsupported")
+            }
             List<ReportResource> rows = []
             root.depthFirst().findAll { localName(it.name()) == 'response' }.each { node ->
-                def hrefNode = node.depthFirst().find { localName(it.name()) == 'href' }
+                def hrefNode = node.children().find { localName(it.name()) == 'href' }
                 if (hrefNode == null || !hrefNode.text()) return
                 URI href = endpoint.uri.resolve(hrefNode.text().trim())
                 if (!isWithinOrigin(endpoint.uri, href)) {
                     throw new CalDavGatewayException('ENDPOINT', 'CalDAV REPORT returned cross-origin href')
                 }
-                def dataNode = node.depthFirst().find { localName(it.name()) == 'calendar-data' }
-                def etagNode = node.depthFirst().find { localName(it.name()) == 'getetag' }
-                def modifiedNode = node.depthFirst().find { localName(it.name()) == 'getlastmodified' }
-                List<String> statuses = node.depthFirst().findAll { localName(it.name()) == 'status' }*.text()
-                boolean deleted = statuses.any { it =~ /\s(404|410)\s/ }
+                def responseStatus = node.children().find { localName(it.name()) == 'status' }
+                boolean deleted = statusCode(responseStatus?.text()) in [404, 410]
+                List successfulProperties = node.children().findAll { localName(it.name()) == 'propstat' }
+                    .findAll { propstat ->
+                        def status = propstat.children().find { localName(it.name()) == 'status' }
+                        Integer code = statusCode(status?.text())
+                        code != null && code >= 200 && code < 300
+                    }.collectMany { propstat ->
+                        def prop = propstat.children().find { localName(it.name()) == 'prop' }
+                        prop == null ? [] : prop.children().toList()
+                    }
+                def dataNode = successfulProperties.find { localName(it.name()) == 'calendar-data' }
+                def etagNode = successfulProperties.find { localName(it.name()) == 'getetag' }
+                def modifiedNode = successfulProperties.find { localName(it.name()) == 'getlastmodified' }
                 rows << new ReportResource(href, dataNode != null && dataNode.text() ? dataNode.text() : null,
                     etagNode?.text()?.trim() ?: null, parseHttpInstant(modifiedNode?.text()), deleted)
             }
@@ -295,7 +315,9 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         requireStatus(response, [200, 207] as Set, 'PROPFIND', endpoint.name)
         try {
             def root = new XmlSlurper(false, false).parseText(response.body() ?: '')
-            root.depthFirst().any { localName(it.name()) == 'sync-collection' }
+            successfulPropertyNodes(root, 'supported-report-set').any { property ->
+                property.depthFirst().any { localName(it.name()) == 'sync-collection' }
+            }
         } catch (Exception e) {
             throw new CalDavGatewayException('SCHEMA', "Invalid CalDAV capabilities for ${endpoint.name}", e)
         }
@@ -307,11 +329,38 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         requireStatus(response, [200, 207] as Set, 'PROPFIND', endpoint.name)
         try {
             def root = new XmlSlurper(false, false).parseText(response.body() ?: '')
-            def node = root.depthFirst().find { localName(it.name()) == 'getctag' }
+            def node = successfulPropertyNodes(root, 'getctag').find()
             node?.text()?.trim() ?: null
         } catch (Exception e) {
             throw new CalDavGatewayException('SCHEMA', "Invalid CalDAV ctag response for ${endpoint.name}", e)
         }
+    }
+
+    private static List successfulPropertyNodes(def root, String propertyName) {
+        root.depthFirst().findAll { localName(it.name()) == 'propstat' }.findAll { propstat ->
+            def status = propstat.children().find { localName(it.name()) == 'status' }
+            Integer code = statusCode(status?.text())
+            code != null && code >= 200 && code < 300
+        }.collectMany { propstat ->
+            def prop = propstat.children().find { localName(it.name()) == 'prop' }
+            prop == null ? [] : prop.children().findAll { localName(it.name()) == propertyName }.toList()
+        }
+    }
+
+    private static boolean hasDavElement(String body, String elementName) {
+        try {
+            def root = new XmlSlurper(false, true).parseText(body ?: '')
+            root.depthFirst().any { node ->
+                localName(node.name()) == elementName && node.namespaceURI() == 'DAV:'
+            }
+        } catch (Exception ignored) {
+            false
+        }
+    }
+
+    private static Integer statusCode(String status) {
+        def match = status =~ /(?:^|\s)(\d{3})(?:\s|$)/
+        match.find() ? Integer.valueOf(match.group(1)) : null
     }
 
     private Map<String, String> resolveCandidateResources(CalendarEndpoint endpoint, Set<String> candidates,

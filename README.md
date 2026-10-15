@@ -34,6 +34,8 @@ This app reads tasks from Todoist, filters them by labels/projects, routes each 
 - Chooses a destination calendar using first-match rule logic in `caldav.rules`.
 - Writes an event to the matched calendar and removes that same event UID from other configured calendars.
 - Persists Todoist sync state in a `.state` file next to your config file.
+- Optionally adopts a strictly newer move of a legacy-synced calendar event back into the task due.
+  This reverse path is disabled by default with `calendarWriteback.enabled: false`.
 - Supports CalDAV auth schemes:
   - `BASIC`
   - `GOOGLE_OAUTH2`
@@ -313,6 +315,18 @@ Contains Todoist auth and inclusion filters.
 - `0` means run once and exit.
 - `> 0` means continuous loop.
 
+#### `calendarWriteback.enabled` (boolean, default `false`)
+
+- Top-level legacy-sync opt-in; omission and `false` keep the original one-way behavior.
+- When `true`, legacy sync polls each configured calendar after the Todoist item delta and considers
+  only events whose UID matches a known open, included task.
+- A moved event updates only the Todoist due when its calendar last-modified time is strictly newer
+  than the task `updated_at`. A newer task keeps the existing calendar write. Missing or equal clocks
+  leave both sides unchanged.
+- Recurring tasks use the guarded recurrence-tuple update; calendar cancellation never completes or
+  deletes a Todoist task.
+- Values other than YAML booleans `true` and `false` are rejected before sync starts.
+
 #### `maxConnectionsPerHttpClient` (integer)
 
 - Max HTTP connections per calendar HTTP client.
@@ -432,6 +446,12 @@ State currently tracks values like:
 - `v1Migrated` (Todoist v9 -> v1 UID migration flag)
 
 If state file parsing fails, app logs an error and continues with empty state.
+
+Legacy calendar writeback keeps its calendar cursors, collection tags, known-task identity cache,
+and outbound-write echo records in a separate `calendar-writeback.json` file in the config directory.
+It does not add calendar cursors to the legacy `.state` file or SmartPlanner's
+`todoist-items-sync.json`. Absence of `calendar-writeback.json` means there is no cursor; the first
+enabled run performs a full Todoist bootstrap and establishes each configured calendar's feed state.
 
 ## Event Mapping Details
 

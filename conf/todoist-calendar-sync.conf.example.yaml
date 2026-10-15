@@ -2,6 +2,11 @@
 # Whether or not to run a dry run
 dryRun: false
 
+# Opt in to adopting strictly newer moves of this sync's events back into Todoist.
+# Omitted and false both preserve the default one-way Todoist-to-calendar behavior.
+calendarWriteback:
+  enabled: false
+
 todoist:
   # Access Token from Todoist Account
   # Or alternatively set environment variable TODOIST_ACCESS_TOKEN
@@ -50,7 +55,7 @@ caldav:
     # If no `auth` is specified for a calendar, it will use the `caldav.default.auth` configuration
     # An optional prefix to add to the event summary for every event for this calendar
     # To not use a prefix, just delete this property
-    prefix: TD: 
+    prefix: "TD: "
 
 
   # A list of "rules" where each rule contains a "rule" and a "calendarName"
@@ -70,4 +75,3 @@ caldav:
   rules:
   - calendarName: "Example calendar"
     rule: cal AND foo
-
