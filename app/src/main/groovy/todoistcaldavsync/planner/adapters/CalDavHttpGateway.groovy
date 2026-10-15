@@ -19,6 +19,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import java.util.function.Function
 
 /**
@@ -26,7 +27,7 @@ import java.util.function.Function
  * Calendar names are configuration identities and are retained on every event.
  * UID lookup always REPORTs every configured calendar and rejects collisions.
  */
-final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGateway {
+final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGateway, CalendarChangeGateway {
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(15)
     private static final DateTimeFormatter ICAL_UTC = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC)
     private static final DateTimeFormatter ICAL_LOCAL = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
@@ -85,7 +86,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         calendars.each { CalendarEndpoint endpoint ->
             report(endpoint, rangeReport(rangeStart, rangeEnd)).each { ReportResource resource ->
                 String calendarData = resource.calendarData ?: getResource(endpoint, resource.href)
-                result.addAll(parseCalendar(calendarData, endpoint.name, resource.href, defaultZone))
+                result.addAll(parseCalendar(calendarData, endpoint.name, resource.href, defaultZone,
+                    resource.lastModified, resource.etag))
             }
         }
         return Collections.unmodifiableList(result.toSorted { a, b ->
@@ -102,7 +104,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             report(endpoint, uidReport(uid)).each { ReportResource resource ->
                 // GET after UID REPORT is intentional: ownership decisions use live resource data.
                 String calendarData = getResource(endpoint, resource.href)
-                parseCalendar(calendarData, endpoint.name, resource.href, defaultZone).findAll { it.uid == uid }.each { matches << it }
+                parseCalendar(calendarData, endpoint.name, resource.href, defaultZone,
+                    resource.lastModified, resource.etag).findAll { it.uid == uid }.each { matches << it }
             }
         }
         if (matches.size() > 1) {
@@ -110,6 +113,109 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                 "CalDAV UID ${uid} exists in multiple configured calendars: ${matches*.calendarName}")
         }
         return matches ? matches[0] : null
+    }
+
+    @Override
+    Map readChanges(String calendarName, Map state, Set<String> candidateUids,
+                    Instant rangeStart, Instant rangeEnd) {
+        CalendarEndpoint endpoint = byName[calendarName]
+        if (endpoint == null) throw new IllegalArgumentException("Unknown CalDAV calendar: ${calendarName}")
+        if (rangeStart == null || rangeEnd == null || !rangeEnd.isAfter(rangeStart)) {
+            throw new IllegalArgumentException('rangeStart/rangeEnd must form a positive interval')
+        }
+        Set<String> candidates = Collections.unmodifiableSet(new LinkedHashSet<>(candidateUids ?: []))
+        Map input = state ?: [:]
+        Map<String, String> stamps = new LinkedHashMap<>((input.stamps instanceof Map ? input.stamps : [:]) as Map)
+        Map<String, String> resourceUids = new LinkedHashMap<>((input.resourceUids instanceof Map ? input.resourceUids : [:]) as Map)
+        boolean syncSupported = input.containsKey('syncSupported')
+            ? input.syncSupported == true : probeSyncCollection(endpoint)
+
+        if (syncSupported) {
+            return readSyncCollection(endpoint, input.cursor?.toString(), candidates, stamps, resourceUids)
+        }
+        return readFallback(endpoint, input, candidates, stamps, resourceUids, rangeStart, rangeEnd)
+    }
+
+    private Map readSyncCollection(CalendarEndpoint endpoint, String cursor, Set<String> candidates,
+                                   Map<String, String> stamps, Map<String, String> resourceUids) {
+        GatewayResponse response = send(endpoint, 'REPORT', endpoint.uri,
+            ['Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'], syncCollectionReport(cursor))
+        if (cursor && response.statusCode() in [403, 409, 410]) {
+            throw new CalendarCursorExpiredException("CalDAV sync token expired for ${endpoint.name}")
+        }
+        requireStatus(response, [200, 207] as Set, 'REPORT', endpoint.name)
+        ParsedMultistatus parsed = parseMultistatus(endpoint, response.body())
+        Map<String, String> resolved = resolveCandidateResources(endpoint, candidates,
+            parsed.resources*.href as Set<URI>, resourceUids)
+        List<CalendarEvent> events = []
+        List<Map> deleted = []
+        parsed.resources.each { ReportResource resource ->
+            String hrefKey = resource.href.toString()
+            String uid = resourceUids[hrefKey] ?: resolved[hrefKey]
+            if (resource.deleted) {
+                if (uid && candidates.contains(uid)) deleted << [id: hrefKey, uid: uid]
+                resourceUids.remove(hrefKey)
+                if (uid) stamps.remove(uid)
+            } else if (uid && candidates.contains(uid)) {
+                String data = resource.calendarData ?: getResource(endpoint, resource.href)
+                List<CalendarEvent> found = parseCalendar(data, endpoint.name, resource.href, defaultZone,
+                    resource.lastModified, resource.etag).findAll { it.uid == uid }
+                events.addAll(found)
+                if (found) {
+                    resourceUids[hrefKey] = uid
+                    stamps[uid] = stamp(resource, found[0])
+                }
+            }
+        }
+        [events: Collections.unmodifiableList(events), deleted: Collections.unmodifiableList(deleted),
+         state: immutableState([cursor: parsed.syncToken, syncSupported: true,
+                                stamps: stamps, resourceUids: resourceUids])]
+    }
+
+    private Map readFallback(CalendarEndpoint endpoint, Map input, Set<String> candidates,
+                             Map<String, String> stamps, Map<String, String> resourceUids,
+                             Instant rangeStart, Instant rangeEnd) {
+        String collectionTag = readCollectionTag(endpoint)
+        if (collectionTag != null && collectionTag == input.collectionTag?.toString()) {
+            return [events: Collections.emptyList(), deleted: Collections.emptyList(),
+                    state: immutableState([collectionTag: collectionTag, syncSupported: false,
+                                           stamps: stamps, resourceUids: resourceUids])]
+        }
+
+        List<ReportResource> members = report(endpoint, metadataRangeReport(rangeStart, rangeEnd))
+        Map<String, String> resolved = resolveCandidateResources(endpoint, candidates,
+            members*.href as Set<URI>, resourceUids)
+        Map<String, ReportResource> candidateMembers = [:]
+        members.each { ReportResource member ->
+            String hrefKey = member.href.toString()
+            String uid = resourceUids[hrefKey] ?: resolved[hrefKey]
+            if (uid && candidates.contains(uid)) candidateMembers[uid] = member
+        }
+        List<CalendarEvent> events = []
+        candidateMembers.each { String uid, ReportResource member ->
+            String currentStamp = stamp(member, null)
+            if (currentStamp == null || currentStamp != stamps[uid]) {
+                String data = member.calendarData ?: getResource(endpoint, member.href)
+                List<CalendarEvent> found = parseCalendar(data, endpoint.name, member.href, defaultZone,
+                    member.lastModified, member.etag).findAll { it.uid == uid }
+                events.addAll(found)
+                if (found) {
+                    resourceUids[member.href.toString()] = uid
+                    stamps[uid] = stamp(member, found[0])
+                }
+            }
+        }
+        List<Map> deleted = []
+        resourceUids.findAll { String href, String uid ->
+            candidates.contains(uid) && !candidateMembers.containsKey(uid)
+        }.each { String href, String uid ->
+            deleted << [id: href, uid: uid]
+            resourceUids.remove(href)
+            stamps.remove(uid)
+        }
+        [events: Collections.unmodifiableList(events), deleted: Collections.unmodifiableList(deleted),
+         state: immutableState([collectionTag: collectionTag, syncSupported: false,
+                                stamps: stamps, resourceUids: resourceUids])]
     }
 
     @Override
@@ -124,8 +230,10 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         CalendarEndpoint endpoint = byName[managedCalendarName]
         URI target = resourceUri(endpoint, event.uid)
         String body = renderCalendar(event)
+        Map<String, String> headers = ['Content-Type': 'text/calendar; charset=utf-8']
+        if (event.etag) headers['If-Match'] = event.etag
         GatewayResponse response = send(endpoint, 'PUT', target,
-            ['Content-Type': 'text/calendar; charset=utf-8'], body)
+            headers, body)
         requireStatus(response, [200, 201, 204] as Set, 'PUT', endpoint.name)
     }
 
@@ -150,8 +258,12 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         GatewayResponse response = send(endpoint, 'REPORT', endpoint.uri,
             ['Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'], body)
         requireStatus(response, [200, 207] as Set, 'REPORT', endpoint.name)
+        parseMultistatus(endpoint, response.body()).resources
+    }
+
+    private ParsedMultistatus parseMultistatus(CalendarEndpoint endpoint, String body) {
         try {
-            def root = new XmlSlurper(false, false).parseText(response.body() ?: '')
+            def root = new XmlSlurper(false, false).parseText(body ?: '')
             List<ReportResource> rows = []
             root.depthFirst().findAll { localName(it.name()) == 'response' }.each { node ->
                 def hrefNode = node.depthFirst().find { localName(it.name()) == 'href' }
@@ -161,14 +273,70 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                     throw new CalDavGatewayException('ENDPOINT', 'CalDAV REPORT returned cross-origin href')
                 }
                 def dataNode = node.depthFirst().find { localName(it.name()) == 'calendar-data' }
-                rows << new ReportResource(href, dataNode != null && dataNode.text() ? dataNode.text() : null)
+                def etagNode = node.depthFirst().find { localName(it.name()) == 'getetag' }
+                def modifiedNode = node.depthFirst().find { localName(it.name()) == 'getlastmodified' }
+                List<String> statuses = node.depthFirst().findAll { localName(it.name()) == 'status' }*.text()
+                boolean deleted = statuses.any { it =~ /\s(404|410)\s/ }
+                rows << new ReportResource(href, dataNode != null && dataNode.text() ? dataNode.text() : null,
+                    etagNode?.text()?.trim() ?: null, parseHttpInstant(modifiedNode?.text()), deleted)
             }
-            rows
+            def tokenNode = root.depthFirst().find { localName(it.name()) == 'sync-token' }
+            new ParsedMultistatus(rows, tokenNode?.text()?.trim() ?: null)
         } catch (CalDavGatewayException e) {
             throw e
         } catch (Exception e) {
             throw new CalDavGatewayException('SCHEMA', "Invalid CalDAV multistatus for ${endpoint.name}", e)
         }
+    }
+
+    private boolean probeSyncCollection(CalendarEndpoint endpoint) {
+        GatewayResponse response = send(endpoint, 'PROPFIND', endpoint.uri,
+            ['Depth': '0', 'Content-Type': 'application/xml; charset=utf-8'], capabilityPropfind())
+        requireStatus(response, [200, 207] as Set, 'PROPFIND', endpoint.name)
+        try {
+            def root = new XmlSlurper(false, false).parseText(response.body() ?: '')
+            root.depthFirst().any { localName(it.name()) == 'sync-collection' }
+        } catch (Exception e) {
+            throw new CalDavGatewayException('SCHEMA', "Invalid CalDAV capabilities for ${endpoint.name}", e)
+        }
+    }
+
+    private String readCollectionTag(CalendarEndpoint endpoint) {
+        GatewayResponse response = send(endpoint, 'PROPFIND', endpoint.uri,
+            ['Depth': '0', 'Content-Type': 'application/xml; charset=utf-8'], ctagPropfind())
+        requireStatus(response, [200, 207] as Set, 'PROPFIND', endpoint.name)
+        try {
+            def root = new XmlSlurper(false, false).parseText(response.body() ?: '')
+            def node = root.depthFirst().find { localName(it.name()) == 'getctag' }
+            node?.text()?.trim() ?: null
+        } catch (Exception e) {
+            throw new CalDavGatewayException('SCHEMA', "Invalid CalDAV ctag response for ${endpoint.name}", e)
+        }
+    }
+
+    private Map<String, String> resolveCandidateResources(CalendarEndpoint endpoint, Set<String> candidates,
+                                                           Set<URI> relevantHrefs, Map<String, String> known) {
+        Map<String, String> found = [:]
+        Set<String> knownCandidates = known.findAll { String href, String uid ->
+            relevantHrefs*.toString().contains(href)
+        }.values() as Set<String>
+        (candidates - knownCandidates).each { String uid ->
+            report(endpoint, uidReport(uid)).each { ReportResource resource ->
+                if (relevantHrefs.contains(resource.href)) found[resource.href.toString()] = uid
+            }
+        }
+        found
+    }
+
+    private static String stamp(ReportResource resource, CalendarEvent event) {
+        resource.etag ?: resource.lastModified?.toString() ?: event?.lastModified?.toString()
+    }
+
+    private static Map immutableState(Map value) {
+        Map copy = new LinkedHashMap(value)
+        if (copy.stamps instanceof Map) copy.stamps = Collections.unmodifiableMap(new LinkedHashMap(copy.stamps as Map))
+        if (copy.resourceUids instanceof Map) copy.resourceUids = Collections.unmodifiableMap(new LinkedHashMap(copy.resourceUids as Map))
+        Collections.unmodifiableMap(copy)
     }
 
     private String getResource(CalendarEndpoint endpoint, URI href) {
@@ -232,7 +400,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     }
 
     static List<CalendarEvent> parseCalendar(String ics, String calendarName, URI href,
-                                             ZoneId defaultZone = ZoneId.of('UTC')) {
+                                             ZoneId defaultZone = ZoneId.of('UTC'),
+                                             Instant resourceLastModified = null, String etag = null) {
         if (!ics) throw new CalDavGatewayException('SCHEMA', 'Empty iCalendar resource')
         List<String> lines = unfold(ics)
         List<Map<String, Property>> components = []
@@ -266,6 +435,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                     ? LocalDate.parse(startProp.value, ICAL_DATE).plusDays(1).atStartOfDay(defaultZone).toInstant()
                     : start.instant + Duration.ofMinutes(30)
             }
+            Instant componentLastModified = parseIcalInstant(props['LAST-MODIFIED']?.value)
             events << CalendarEvent.builder()
                 .id(href.toString() + (components.size() > 1 ? "#${idx}" : ''))
                 .uid(unescape(uid))
@@ -274,6 +444,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                 .calendarName(calendarName)
                 .start(start.instant)
                 .end(endInstant)
+                .lastModified(componentLastModified ?: resourceLastModified)
+                .etag(etag)
                 .allDay(start.dateOnly)
                 .build()
         }
@@ -290,6 +462,25 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         new DateValue(LocalDateTime.parse(raw, ICAL_LOCAL).atZone(zone).toInstant(), false)
     }
 
+    private static Instant parseIcalInstant(String raw) {
+        if (!raw) return null
+        try {
+            raw.endsWith('Z') ? Instant.from(ICAL_UTC.parse(raw)) : LocalDateTime.parse(raw, ICAL_LOCAL)
+                .atZone(java.time.ZoneOffset.UTC).toInstant()
+        } catch (DateTimeParseException ignored) {
+            null
+        }
+    }
+
+    private static Instant parseHttpInstant(String raw) {
+        if (!raw) return null
+        try {
+            ZonedDateTime.parse(raw.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+        } catch (DateTimeParseException ignored) {
+            null
+        }
+    }
+
     private static String renderCalendar(CalendarEvent event) {
         [
             'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//todoist-caldav-sync//planner//EN',
@@ -304,7 +495,15 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private static String rangeReport(Instant start, Instant end) {
         """<?xml version="1.0" encoding="utf-8"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-  <d:prop><d:getetag/><c:calendar-data><c:expand start="${ICAL_UTC.format(start)}" end="${ICAL_UTC.format(end)}"/></c:calendar-data></d:prop>
+  <d:prop><d:getetag/><d:getlastmodified/><c:calendar-data><c:expand start="${ICAL_UTC.format(start)}" end="${ICAL_UTC.format(end)}"/></c:calendar-data></d:prop>
+  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${ICAL_UTC.format(start)}" end="${ICAL_UTC.format(end)}"/></c:comp-filter></c:comp-filter></c:filter>
+</c:calendar-query>"""
+    }
+
+    private static String metadataRangeReport(Instant start, Instant end) {
+        """<?xml version="1.0" encoding="utf-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><d:getlastmodified/></d:prop>
   <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="${ICAL_UTC.format(start)}" end="${ICAL_UTC.format(end)}"/></c:comp-filter></c:comp-filter></c:filter>
 </c:calendar-query>"""
     }
@@ -313,9 +512,35 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         String xmlUid = uid.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
         """<?xml version="1.0" encoding="utf-8"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-  <d:prop><d:getetag/></d:prop>
+  <d:prop><d:getetag/><d:getlastmodified/></d:prop>
   <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:prop-filter name="UID"><c:text-match collation="i;octet">${xmlUid}</c:text-match></c:prop-filter></c:comp-filter></c:comp-filter></c:filter>
 </c:calendar-query>"""
+    }
+
+    private static String capabilityPropfind() {
+        '''<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:"><d:prop><d:supported-report-set/></d:prop></d:propfind>'''
+    }
+
+    private static String ctagPropfind() {
+        '''<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
+  <d:prop><cs:getctag/><d:sync-token/></d:prop>
+</d:propfind>'''
+    }
+
+    private static String syncCollectionReport(String cursor) {
+        String token = cursor ? xmlEscape(cursor) : ''
+        """<?xml version="1.0" encoding="utf-8"?>
+<d:sync-collection xmlns:d="DAV:">
+  <d:sync-token>${token}</d:sync-token><d:sync-level>1</d:sync-level>
+  <d:prop><d:getetag/><d:getlastmodified/></d:prop>
+</d:sync-collection>"""
+    }
+
+    private static String xmlEscape(String value) {
+        value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            .replace('"', '&quot;').replace("'", '&apos;')
     }
 
     private URI resourceUri(CalendarEndpoint endpoint, String uid) {
@@ -356,7 +581,28 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
 
     private static final class Property { String value; Map params; Property(String v, Map p) { value=v; params=p } }
     private static final class DateValue { Instant instant; boolean dateOnly; DateValue(Instant i, boolean d) { instant=i; dateOnly=d } }
-    private static final class ReportResource { URI href; String calendarData; ReportResource(URI h, String d) { href=h; calendarData=d } }
+    private static final class ReportResource {
+        URI href
+        String calendarData
+        String etag
+        Instant lastModified
+        boolean deleted
+        ReportResource(URI href, String calendarData, String etag, Instant lastModified, boolean deleted) {
+            this.href = href
+            this.calendarData = calendarData
+            this.etag = etag
+            this.lastModified = lastModified
+            this.deleted = deleted
+        }
+    }
+    private static final class ParsedMultistatus {
+        List<ReportResource> resources
+        String syncToken
+        ParsedMultistatus(List<ReportResource> resources, String syncToken) {
+            this.resources = resources
+            this.syncToken = syncToken
+        }
+    }
 
     static final class CalendarEndpoint {
         final String name

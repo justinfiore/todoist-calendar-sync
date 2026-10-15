@@ -14,6 +14,8 @@ final class CalendarEvent {
     final String calendarName
     final Instant start
     final Instant end
+    final Instant lastModified
+    final String etag
     final boolean allDay
     final EventRole role
     final String matchedRuleName
@@ -30,6 +32,8 @@ final class CalendarEvent {
         this.calendarName = b.calendarName
         this.start = b.start
         this.end = b.end
+        this.lastModified = b.lastModified
+        this.etag = b.etag
         this.allDay = b.allDay
         this.role = b.role
         this.matchedRuleName = b.matchedRuleName
@@ -54,6 +58,8 @@ final class CalendarEvent {
             .calendarName(calendarName)
             .start(start)
             .end(end)
+            .lastModified(lastModified)
+            .etag(etag)
             .allDay(allDay)
             .role(role)
             .matchedRuleName(matchedRuleName)
@@ -84,6 +90,8 @@ final class CalendarEvent {
         private String calendarName
         private Instant start
         private Instant end
+        private Instant lastModified
+        private String etag
         private boolean allDay
         private EventRole role
         private String matchedRuleName
@@ -99,6 +107,8 @@ final class CalendarEvent {
         Builder calendarName(String v) { this.calendarName = v; this }
         Builder start(Instant v) { this.start = v; this }
         Builder end(Instant v) { this.end = v; this }
+        Builder lastModified(Instant v) { this.lastModified = v; this }
+        Builder etag(String v) { this.etag = v; this }
         Builder allDay(boolean v) { this.allDay = v; this }
         Builder role(EventRole v) { this.role = v; this }
         Builder matchedRuleName(String v) { this.matchedRuleName = v; this }

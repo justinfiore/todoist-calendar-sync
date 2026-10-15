@@ -14,6 +14,22 @@ interface CalendarGateway {
     List<CalendarEvent> fetchEvents(Instant rangeStart, Instant rangeEnd)
 }
 
+/** Change reads never persist a cursor: the caller checkpoints only after classification. */
+interface CalendarChangeGateway {
+    /**
+     * Returns [events: List<CalendarEvent>, deleted: List<Map> (id/uid), state: Map].
+     * State contains cursor, collectionTag, syncSupported, stamps and resourceUids as applicable.
+     * Invalid cursors throw CalendarCursorExpiredException; no partial results are returned.
+     * candidateUids restricts body reads/classification, never provider sync-token filters.
+     */
+    Map readChanges(String calendarName, Map state, Set<String> candidateUids,
+                    Instant rangeStart, Instant rangeEnd)
+}
+
+final class CalendarCursorExpiredException extends RuntimeException {
+    CalendarCursorExpiredException(String message) { super(message) }
+}
+
 /**
  * Read-only calendar access used by apply/reconcile paths.
  * <p>
