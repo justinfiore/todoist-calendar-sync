@@ -49,6 +49,83 @@ class CalDavChangeGatewayWireMockSpec extends Specification {
         server.verify(0, getRequestedFor(urlEqualTo('/cal/work/unrelated.ics')))
     }
 
+    def "legacy deterministic names resolve encoded candidate hrefs without an unfiltered UID query"() {
+        given:
+        stubSyncReport(syncMultistatus('complete', [
+            propertyResponse('/cal/work/candidate%2D1.ics', '"candidate-2"'),
+            propertyResponse('/cal/work/unrelated.ics', '"unrelated-2"')]))
+        stubEvent('/cal/work/candidate%2D1.ics', bodyUid)
+
+        when:
+        Map result = gateway(deterministicResourceNames: true).readChanges('Work',
+            [syncSupported: true], [CANDIDATE_UID, 'absent-candidate'] as Set, RANGE_START, RANGE_END)
+
+        then:
+        result.events*.uid == expectedUids
+        result.state.cursor == 'complete'
+        requests('REPORT', '/cal/work').size() == 1
+        server.verify(1, getRequestedFor(urlEqualTo('/cal/work/candidate%2D1.ics')))
+        server.verify(0, getRequestedFor(urlEqualTo('/cal/work/unrelated.ics')))
+
+        where:
+        bodyUid       | expectedUids
+        CANDIDATE_UID | [CANDIDATE_UID]
+        'wrong-uid'   | []
+    }
+
+    def "legacy exact-resource lookup checks all calendars skips absent members and rejects collisions"() {
+        given:
+        server.stubFor(request('REPORT', urlEqualTo('/cal/work'))
+            .withRequestBody(containing('calendar-multiget'))
+            .withRequestBody(containing('/cal/work/candidate-1.ics'))
+            .willReturn(xmlResponse(multistatus([propertyResponse('/cal/work/candidate-1.ics', '"live-etag"')]))))
+        server.stubFor(request('REPORT', urlEqualTo('/cal/other'))
+            .withRequestBody(containing('calendar-multiget'))
+            .withRequestBody(containing('/cal/other/candidate-1.ics'))
+            .willReturn(xmlResponse(multistatus([deletedResponse('/cal/other/candidate-1.ics')]))))
+        stubEvent('/cal/work/candidate-1.ics', CANDIDATE_UID)
+        def reader = gateway(deterministicResourceNames: true, calendars: [
+            [name: 'Work', url: absolute('/cal/work'), auth: [type: 'none']],
+            [name: 'Other', url: absolute('/cal/other'), auth: [type: 'none']]])
+
+        when:
+        def result = reader.findEventByUid(CANDIDATE_UID)
+
+        then:
+        result.uid == CANDIDATE_UID
+        result.calendarName == 'Work'
+        result.etag == '"live-etag"'
+        requests('REPORT', '/cal/work').size() == 1
+        requests('REPORT', '/cal/other').size() == 1
+        server.verify(0, getRequestedFor(urlEqualTo('/cal/other/candidate-1.ics')))
+
+        when:
+        server.stubFor(request('REPORT', urlEqualTo('/cal/other'))
+            .willReturn(xmlResponse(multistatus([propertyResponse('/cal/other/candidate-1.ics', '"other-etag"')]))))
+        stubEvent('/cal/other/candidate-1.ics', CANDIDATE_UID)
+        reader.findEventByUid(CANDIDATE_UID)
+
+        then:
+        def error = thrown(CalDavHttpGateway.CalDavGatewayException)
+        error.classification == 'UID_COLLISION'
+    }
+
+    def "empty incremental feed needs no UID discovery even for an unresolved candidate"() {
+        given:
+        stubSyncReport(syncMultistatus('token-1', []))
+
+        when:
+        Map result = gateway().readChanges('Work', [cursor: 'token-1', syncSupported: true],
+            [CANDIDATE_UID] as Set, RANGE_START, RANGE_END)
+
+        then:
+        result.events.empty
+        result.deleted.empty
+        result.state.cursor == 'token-1'
+        requests('REPORT', '/cal/work').size() == 1
+        server.verify(0, getRequestedFor(anyUrl()))
+    }
+
     def "sync-collection refuses a successful response without a replacement sync-token"() {
         given:
         stubSyncReport(multistatus([propertyResponse('/cal/work/candidate.ics', '"candidate-2"')]))
@@ -118,7 +195,116 @@ class CalDavChangeGatewayWireMockSpec extends Specification {
         server.verify(0, getRequestedFor(urlEqualTo('/cal/work/deleted.ics')))
     }
 
-    def "sync-collection rejects truncated multistatus instead of treating it as a page"() {
+    def "sync-collection follows collection truncation tokens and returns only the completed feed"() {
+        given:
+        stubSyncPage('', syncMultistatus('page-1', [
+            propertyResponse('/cal/work/candidate.ics', '"candidate-2"'),
+            truncatedResponse('/cal/work/', includeError)]))
+        stubSyncPage('page-1', syncMultistatus('page-2', [
+            propertyResponse('/cal/work/candidate.ics', '"candidate-3"'),
+            propertyResponse('/cal/work/unrelated.ics', '"unrelated-2"'),
+            deletedResponse('/cal/work/deleted.ics'), truncatedResponse('/cal/work', includeError)]))
+        stubSyncPage('page-2', syncMultistatus('complete', [
+            propertyResponse('/cal/work/other.ics', '"other-2"')]))
+        stubEvent('/cal/work/candidate.ics', CANDIDATE_UID)
+        stubEvent('/cal/work/other.ics', 'candidate-3')
+        Map state = [syncSupported: true, resourceUids: [
+            (absolute('/cal/work/candidate.ics')): CANDIDATE_UID,
+            (absolute('/cal/work/deleted.ics')): 'candidate-2',
+            (absolute('/cal/work/other.ics')): 'candidate-3']]
+
+        when:
+        Map result = gateway().readChanges('Work', state,
+            [CANDIDATE_UID, 'candidate-2', 'candidate-3'] as Set, RANGE_START, RANGE_END)
+
+        then:
+        result.events*.uid == [CANDIDATE_UID, 'candidate-3']
+        result.deleted*.uid == ['candidate-2']
+        result.state.cursor == 'complete'
+        result.state.stamps[CANDIDATE_UID] == '"candidate-3"'
+        !result.state.resourceUids.containsValue('candidate-2')
+        !state.containsKey('cursor')
+        requests('REPORT', '/cal/work').size() == 3
+        requests('REPORT', '/cal/work').every {
+            it.getHeader('Depth') == '0' && it.bodyAsString.contains('<d:nresults>500</d:nresults>')
+        }
+        server.verify(0, getRequestedFor(urlEqualTo('/cal/work/unrelated.ics')))
+        server.verify(0, getRequestedFor(urlEqualTo('/cal/work')))
+        server.verify(0, getRequestedFor(urlEqualTo('/cal/work/deleted.ics')))
+        server.verify(1, getRequestedFor(urlEqualTo('/cal/work/candidate.ics')))
+
+        where:
+        includeError << [true, false]
+    }
+
+    def "later page failure never returns partial events or advances caller state"() {
+        given:
+        stubSyncPage('saved', syncMultistatus('page-1', [
+            propertyResponse('/cal/work/candidate.ics', '"candidate-2"'),
+            truncatedResponse('/cal/work')]))
+        server.stubFor(request('REPORT', urlEqualTo('/cal/work'))
+            .withRequestBody(containing('<d:sync-token>page-1</d:sync-token>'))
+            .willReturn(aResponse().withStatus(403).withHeader('Content-Type', 'application/xml')
+                .withBody('<d:error xmlns:d="DAV:"><d:valid-sync-token/></d:error>')))
+        Map state = [cursor: 'saved', syncSupported: true, stamps: [(CANDIDATE_UID): 'old'],
+            resourceUids: [(absolute('/cal/work/candidate.ics')): CANDIDATE_UID]]
+
+        when:
+        gateway().readChanges('Work', state, [CANDIDATE_UID] as Set, RANGE_START, RANGE_END)
+
+        then:
+        thrown(CalendarCursorExpiredException)
+        state.cursor == 'saved'
+        state.stamps[CANDIDATE_UID] == 'old'
+        server.verify(0, getRequestedFor(anyUrl()))
+    }
+
+    def "sync page budget exhaustion fails without exposing an intermediate token"() {
+        given:
+        stubSyncPage('saved', syncMultistatus('page-1', [truncatedResponse('/cal/work')]))
+        stubSyncPage('page-1', syncMultistatus('page-2', [truncatedResponse('/cal/work')]))
+        Map state = [cursor: 'saved', syncSupported: true]
+
+        when:
+        gateway(maxSyncPages: 2).readChanges('Work', state, [] as Set, RANGE_START, RANGE_END)
+
+        then:
+        def error = thrown(CalDavHttpGateway.CalDavGatewayException)
+        error.classification == 'PAGINATION_LIMIT'
+        state.cursor == 'saved'
+        requests('REPORT', '/cal/work').size() == 2
+        server.verify(0, getRequestedFor(anyUrl()))
+    }
+
+    def "member storage errors are not mistaken for collection continuation"() {
+        given:
+        stubSyncReport(syncMultistatus('page-1', [truncatedResponse('/cal/work/candidate.ics')]))
+
+        when:
+        gateway().readChanges('Work', [syncSupported: true], [CANDIDATE_UID] as Set, RANGE_START, RANGE_END)
+
+        then:
+        def error = thrown(CalDavHttpGateway.CalDavGatewayException)
+        error.classification == 'TRUNCATED'
+        server.verify(0, getRequestedFor(anyUrl()))
+    }
+
+    def "truncated sync pages with a repeated token fail without downloading partial bodies"() {
+        given:
+        stubSyncPage('saved', syncMultistatus('saved', [truncatedResponse('/cal/work')]))
+
+        when:
+        gateway().readChanges('Work', [cursor: 'saved', syncSupported: true],
+            [] as Set, RANGE_START, RANGE_END)
+
+        then:
+        def error = thrown(CalDavHttpGateway.CalDavGatewayException)
+        error.classification == 'PAGINATION_LIMIT'
+        requests('REPORT', '/cal/work').size() == 1
+        server.verify(0, getRequestedFor(anyUrl()))
+    }
+
+    def "sync-collection still rejects truncation without a collection continuation marker"() {
         given:
         stubSyncReport("""<?xml version="1.0"?>
 <d:multistatus xmlns:d="DAV:">
@@ -210,10 +396,10 @@ class CalDavChangeGatewayWireMockSpec extends Specification {
             .withHeader('If-Match', equalTo('"etag-7"')))
     }
 
-    private CalDavHttpGateway gateway() {
-        new CalDavHttpGateway(calendars: [[name: 'Work',
+    private CalDavHttpGateway gateway(Map overrides = [:]) {
+        new CalDavHttpGateway([calendars: [[name: 'Work',
             url: "http://localhost:${server.port()}/cal/work", auth: [type: 'none']]],
-            managedCalendarName: 'Work', allowInsecureHttp: true)
+            managedCalendarName: 'Work', allowInsecureHttp: true] + overrides)
     }
 
     private Map fallbackState(String ctag, String stamp) {
@@ -250,6 +436,18 @@ class CalDavChangeGatewayWireMockSpec extends Specification {
     private void stubSyncReport(String body) {
         server.stubFor(request('REPORT', urlEqualTo('/cal/work')).withRequestBody(containing('sync-collection'))
             .willReturn(xmlResponse(body)))
+    }
+
+    private void stubSyncPage(String token, String body) {
+        server.stubFor(request('REPORT', urlEqualTo('/cal/work'))
+            .withRequestBody(containing('<d:sync-token>' + token + '</d:sync-token>'))
+            .willReturn(xmlResponse(body)))
+    }
+
+    private static String truncatedResponse(String href, boolean includeError = false) {
+        String error = includeError ? '<d:error><d:number-of-matches-within-limits/></d:error>' : ''
+        """<d:response><d:href>${href}</d:href><d:status>HTTP/1.1 507 Insufficient Storage</d:status>
+${error}</d:response>"""
     }
 
     private void stubMetadataReport(List<String> responses) {

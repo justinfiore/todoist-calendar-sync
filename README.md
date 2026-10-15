@@ -456,6 +456,10 @@ enabled run performs a full Todoist bootstrap and establishes each configured ca
 ## Event Mapping Details
 
 - Event UID is deterministic from `todoistUserId-taskId` (Base32 encoded).
+- Legacy resources are stored and looked up at `<calendar URL>/<UID>.ics`. Calendar writeback
+  matches these known resource names and verifies the UID in the live event, avoiding UID-filter
+  queries that Google CalDAV ignores. Renamed/copied resources at unrelated addresses are not
+  discovered by this legacy lookup; SmartPlanner's general UID lookup is unchanged.
 - Event summary is Todoist task content (plus optional calendar `prefix`).
 - Event description includes project, labels, and mapped priority.
 - Due-date behavior:

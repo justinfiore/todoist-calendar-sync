@@ -29,6 +29,9 @@ import java.util.function.Function
  */
 final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGateway, CalendarChangeGateway {
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(15)
+    static final int DEFAULT_MAX_SYNC_PAGES = 200
+    private static final int SYNC_PAGE_SIZE = 500
+    private static final int MAX_SYNC_RESOURCES = 100_000
     private static final DateTimeFormatter ICAL_UTC = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC)
     private static final DateTimeFormatter ICAL_LOCAL = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
     private static final DateTimeFormatter ICAL_DATE = DateTimeFormatter.BASIC_ISO_DATE
@@ -39,6 +42,9 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private final ZoneId defaultZone
     private final Duration timeout
     private final long maxResponseBytes
+    private final int maxSyncPages
+    // Only legacy composition guarantees that every managed resource is named uid.ics.
+    private final boolean deterministicResourceNames
     private final HttpClient client
     private final Function<String, String> secretResolver
 
@@ -63,8 +69,13 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             ZoneId.of((options.timezone ?: 'UTC').toString())
         this.timeout = options.timeout instanceof Duration ? options.timeout as Duration : DEFAULT_TIMEOUT
         this.maxResponseBytes = options.maxResponseBytes != null ? options.maxResponseBytes as long : 2_097_152L
+        this.maxSyncPages = options.maxSyncPages != null ? options.maxSyncPages as int : DEFAULT_MAX_SYNC_PAGES
+        this.deterministicResourceNames = options.deterministicResourceNames == true
         if (timeout.isZero() || timeout.isNegative() || maxResponseBytes < 1) {
             throw new IllegalArgumentException('CalDAV timeout and max_response_bytes must be positive')
+        }
+        if (maxSyncPages < 1 || maxSyncPages > 1000) {
+            throw new IllegalArgumentException('CalDAV maxSyncPages must be between 1 and 1000')
         }
         def resolver = options.secretResolver
         this.secretResolver = resolver != null
@@ -101,7 +112,10 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         if (!uid) throw new IllegalArgumentException('uid is required')
         List<CalendarEvent> matches = []
         calendars.each { CalendarEndpoint endpoint ->
-            report(endpoint, uidReport(uid)).each { ReportResource resource ->
+            report(endpoint, uidReport(endpoint, uid)).findAll { ReportResource resource ->
+                !resource.deleted && (!deterministicResourceNames ||
+                    resource.href.path == resourceUri(endpoint, uid).path)
+            }.each { ReportResource resource ->
                 // GET after UID REPORT is intentional: ownership decisions use live resource data.
                 String calendarData = getResource(endpoint, resource.href)
                 parseCalendar(calendarData, endpoint.name, resource.href, defaultZone,
@@ -138,22 +152,49 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
 
     private Map readSyncCollection(CalendarEndpoint endpoint, String cursor, Set<String> candidates,
                                    Map<String, String> stamps, Map<String, String> resourceUids) {
-        GatewayResponse response = send(endpoint, 'REPORT', endpoint.uri,
-            ['Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'], syncCollectionReport(cursor))
-        if (cursor && hasDavElement(response.body(), 'valid-sync-token')) {
-            throw new CalendarCursorExpiredException("CalDAV sync token expired for ${endpoint.name}")
+        // RFC 6578 continuation tokens are local to this read until the entire feed succeeds.
+        // A later-page failure must not expose changes or checkpoint an intermediate token.
+        Map<URI, ReportResource> members = [:]
+        Set<String> seenTokens = cursor ? [cursor] as Set : [] as Set
+        String nextCursor = cursor
+        boolean complete = false
+        for (int page = 0; page < maxSyncPages; page++) {
+            GatewayResponse response = send(endpoint, 'REPORT', endpoint.uri,
+                ['Depth': '0', 'Content-Type': 'application/xml; charset=utf-8'], syncCollectionReport(nextCursor))
+            if (nextCursor && hasDavElement(response.body(), 'valid-sync-token')) {
+                throw new CalendarCursorExpiredException("CalDAV sync token expired for ${endpoint.name}")
+            }
+            requireStatus(response, [200, 207] as Set, 'REPORT', endpoint.name)
+            ParsedMultistatus parsed = parseMultistatus(endpoint, response.body(), true)
+            if (!parsed.syncToken) {
+                throw new CalDavGatewayException('SCHEMA',
+                    "CalDAV sync-collection response omitted sync-token for ${endpoint.name}")
+            }
+            // Google CalDAV can repeat hrefs across pages. Only the latest observation applies.
+            parsed.resources.each { ReportResource resource -> members[resource.href] = resource }
+            if (members.size() > MAX_SYNC_RESOURCES) {
+                throw new CalDavGatewayException('RESULT_LIMIT',
+                    "CalDAV sync-collection exceeded the resource bound for ${endpoint.name}")
+            }
+            nextCursor = parsed.syncToken
+            if (!parsed.truncated) {
+                complete = true
+                break
+            }
+            if (!seenTokens.add(nextCursor)) {
+                throw new CalDavGatewayException('PAGINATION_LIMIT',
+                    "CalDAV sync-collection repeated a continuation token for ${endpoint.name}")
+            }
         }
-        requireStatus(response, [200, 207] as Set, 'REPORT', endpoint.name)
-        ParsedMultistatus parsed = parseMultistatus(endpoint, response.body())
-        if (!parsed.syncToken) {
-            throw new CalDavGatewayException('SCHEMA',
-                "CalDAV sync-collection response omitted sync-token for ${endpoint.name}")
+        if (!complete) {
+            throw new CalDavGatewayException('PAGINATION_LIMIT',
+                "CalDAV sync-collection exceeded the page bound for ${endpoint.name}")
         }
         Map<String, String> resolved = resolveCandidateResources(endpoint, candidates,
-            parsed.resources*.href as Set<URI>, resourceUids)
+            members.keySet(), resourceUids)
         List<CalendarEvent> events = []
         List<Map> deleted = []
-        parsed.resources.each { ReportResource resource ->
+        members.values().each { ReportResource resource ->
             String hrefKey = resource.href.toString()
             String uid = resourceUids[hrefKey] ?: resolved[hrefKey]
             if (resource.deleted) {
@@ -172,7 +213,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             }
         }
         [events: Collections.unmodifiableList(events), deleted: Collections.unmodifiableList(deleted),
-         state: immutableState([cursor: parsed.syncToken, syncSupported: true,
+         state: immutableState([cursor: nextCursor, syncSupported: true,
                                 stamps: stamps, resourceUids: resourceUids])]
     }
 
@@ -265,15 +306,31 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         parseMultistatus(endpoint, response.body()).resources
     }
 
-    private ParsedMultistatus parseMultistatus(CalendarEndpoint endpoint, String body) {
+    private ParsedMultistatus parseMultistatus(CalendarEndpoint endpoint, String body,
+                                               boolean allowSyncPages = false) {
         try {
             def root = new XmlSlurper(false, false).parseText(body ?: '')
-            if (root.depthFirst().any { node ->
-                localName(node.name()) == 'number-of-matches-within-limits' ||
-                    (localName(node.name()) == 'status' && statusCode(node.text()) == 507)
-            }) {
+            def limitMarkers = root.depthFirst().findAll { localName(it.name()) == 'number-of-matches-within-limits' }
+            def storageStatuses = root.depthFirst().findAll {
+                localName(it.name()) == 'status' && statusCode(it.text()) == 507
+            }
+            // A collection response with direct status 507 denotes a sync page. Google omits
+            // the DAV:error child shown in RFC 6578, so it cannot be required for continuation.
+            def continuation = root.children().find { node ->
+                def href = node.children().find { localName(it.name()) == 'href' }
+                def status = node.children().find { localName(it.name()) == 'status' }
+                localName(node.name()) == 'response' && href.text().trim() &&
+                    endpoint.uri.resolve(href.text().trim()).normalize().toString().replaceAll('/+$', '') ==
+                        endpoint.uri.normalize().toString().replaceAll('/+$', '') &&
+                    statusCode(status?.text()) == 507
+            }
+            boolean truncated = allowSyncPages && !continuation.isEmpty() && storageStatuses.size() == 1 &&
+                limitMarkers.size() == continuation.depthFirst().count {
+                    localName(it.name()) == 'number-of-matches-within-limits'
+                }
+            if ((!limitMarkers.isEmpty() || !storageStatuses.isEmpty()) && !truncated) {
                 throw new CalDavGatewayException('TRUNCATED',
-                    "CalDAV multistatus was truncated for ${endpoint.name}; paging is unsupported")
+                    "CalDAV multistatus has no usable sync continuation for ${endpoint.name}")
             }
             List<ReportResource> rows = []
             root.depthFirst().findAll { localName(it.name()) == 'response' }.each { node ->
@@ -284,6 +341,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                     throw new CalDavGatewayException('ENDPOINT', 'CalDAV REPORT returned cross-origin href')
                 }
                 def responseStatus = node.children().find { localName(it.name()) == 'status' }
+                if (truncated && statusCode(responseStatus?.text()) == 507) return
                 boolean deleted = statusCode(responseStatus?.text()) in [404, 410]
                 List successfulProperties = node.children().findAll { localName(it.name()) == 'propstat' }
                     .findAll { propstat ->
@@ -300,8 +358,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                 rows << new ReportResource(href, dataNode != null && dataNode.text() ? dataNode.text() : null,
                     etagNode?.text()?.trim() ?: null, parseHttpInstant(modifiedNode?.text()), deleted)
             }
-            def tokenNode = root.depthFirst().find { localName(it.name()) == 'sync-token' }
-            new ParsedMultistatus(rows, tokenNode?.text()?.trim() ?: null)
+            def tokenNode = root.children().find { localName(it.name()) == 'sync-token' }
+            new ParsedMultistatus(rows, tokenNode?.text()?.trim() ?: null, truncated)
         } catch (CalDavGatewayException e) {
             throw e
         } catch (Exception e) {
@@ -366,11 +424,23 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private Map<String, String> resolveCandidateResources(CalendarEndpoint endpoint, Set<String> candidates,
                                                            Set<URI> relevantHrefs, Map<String, String> known) {
         Map<String, String> found = [:]
+        if (relevantHrefs.isEmpty()) return found
+        if (deterministicResourceNames) {
+            Map<String, String> candidatesByPath = candidates.collectEntries { String uid ->
+                [(resourceUri(endpoint, uid).path): uid]
+            }
+            // Servers can encode the same path differently (for example @ versus %40).
+            relevantHrefs.each { URI href ->
+                String uid = candidatesByPath[href.path]
+                if (uid) found[href.toString()] = uid
+            }
+            return found
+        }
         Set<String> knownCandidates = known.findAll { String href, String uid ->
             relevantHrefs*.toString().contains(href)
         }.values() as Set<String>
         (candidates - knownCandidates).each { String uid ->
-            report(endpoint, uidReport(uid)).each { ReportResource resource ->
+            report(endpoint, uidReport(endpoint, uid)).each { ReportResource resource ->
                 if (relevantHrefs.contains(resource.href)) found[resource.href.toString()] = uid
             }
         }
@@ -557,7 +627,14 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
 </c:calendar-query>"""
     }
 
-    private static String uidReport(String uid) {
+    private String uidReport(CalendarEndpoint endpoint, String uid) {
+        if (deterministicResourceNames) {
+            return """<?xml version="1.0" encoding="utf-8"?>
+<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><d:getlastmodified/></d:prop>
+  <d:href>${xmlEscape(resourceUri(endpoint, uid).toASCIIString())}</d:href>
+</c:calendar-multiget>"""
+        }
         String xmlUid = uid.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
         """<?xml version="1.0" encoding="utf-8"?>
 <c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
@@ -583,6 +660,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         """<?xml version="1.0" encoding="utf-8"?>
 <d:sync-collection xmlns:d="DAV:">
   <d:sync-token>${token}</d:sync-token><d:sync-level>1</d:sync-level>
+  <d:limit><d:nresults>${SYNC_PAGE_SIZE}</d:nresults></d:limit>
   <d:prop><d:getetag/><d:getlastmodified/></d:prop>
 </d:sync-collection>"""
     }
@@ -647,9 +725,11 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private static final class ParsedMultistatus {
         List<ReportResource> resources
         String syncToken
-        ParsedMultistatus(List<ReportResource> resources, String syncToken) {
+        boolean truncated
+        ParsedMultistatus(List<ReportResource> resources, String syncToken, boolean truncated) {
             this.resources = resources
             this.syncToken = syncToken
+            this.truncated = truncated
         }
     }
 

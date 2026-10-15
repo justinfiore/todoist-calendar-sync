@@ -1174,6 +1174,7 @@ class TodoistCalDavSync {
                         if (!dryRun) {
                             todoist.updateTaskDue(match.key, event.start.toString())
                             refreshNonRecurringTask(todoist, match.key, task, event.start)
+                            log.info("Calendar writeback verified task ${match.key}: due ${due} -> ${event.start}, recurring=false, calendar=${calendarName}")
                         }
                         suppress << event.uid
                         break
@@ -1182,6 +1183,7 @@ class TodoistCalDavSync {
                             Task verified = GuardedRecurringDueUpdate.update(todoist,
                                 legacyRecurrenceConfig(), match.key, event.start.toString())
                             adoptVerifiedRecurringTask(task, verified, event.start)
+                            log.info("Calendar writeback verified task ${match.key}: due ${due} -> ${event.start}, recurring=true, recurrence preserved, calendar=${calendarName}")
                         }
                         suppress << event.uid
                         break
@@ -1266,6 +1268,7 @@ class TodoistCalDavSync {
         }
         calendarChangeGateway = new CalDavHttpGateway(calendars: endpoints,
             managedCalendarName: endpoints[0].name,
+            deterministicResourceNames: true,
             timezone: ZoneId.systemDefault(),
             allowInsecureHttp: endpoints.any { it.url.toString().startsWith('http://') })
     }
