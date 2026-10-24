@@ -43,10 +43,19 @@ class CalendarWritebackDecisionSpec extends Specification {
         DUE   | EARLIER     | null  | LATER
     }
 
-    def "echo match takes precedence over a newer calendar modification"() {
+    def "echo suppresses inbound feedback but allows a strictly newer Todoist edit"() {
         expect:
-        CalendarWritebackDecision.decide(DUE, EARLIER, START, LATER, false, true) ==
-            CalendarWritebackDecision.NOOP
+        CalendarWritebackDecision.decide(DUE, taskUpdated, START, modified, recurring, true) == expected
+
+        where:
+        taskUpdated | modified | recurring || expected
+        EARLIER     | LATER    | false     || CalendarWritebackDecision.NOOP
+        EARLIER     | LATER    | true      || CalendarWritebackDecision.NOOP
+        LATER       | EARLIER  | false     || CalendarWritebackDecision.UPDATE_CALENDAR
+        LATER       | EARLIER  | true      || CalendarWritebackDecision.UPDATE_CALENDAR
+        LATER       | LATER    | false     || CalendarWritebackDecision.NOOP
+        null        | LATER    | false     || CalendarWritebackDecision.NOOP
+        LATER       | null     | false     || CalendarWritebackDecision.NOOP
     }
 
     def "writeback enabled defaults off and accepts only a boolean value"() {

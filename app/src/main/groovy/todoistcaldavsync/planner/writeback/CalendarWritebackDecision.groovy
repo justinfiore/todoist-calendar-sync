@@ -14,9 +14,11 @@ final class CalendarWritebackDecision {
 
     static String decide(Instant due, Instant taskUpdated, Instant start, Instant modified,
                          boolean recurring, boolean echo = false) {
-        if (echo || due == start) return NOOP
-        if (due == null || start == null || taskUpdated == null || modified == null || taskUpdated == modified) return SKIP
+        if (due == start) return NOOP
+        if (due == null || start == null || taskUpdated == null || modified == null || taskUpdated == modified) return echo ? NOOP : SKIP
         if (taskUpdated.isAfter(modified)) return UPDATE_CALENDAR
+        // An echo blocks calendar-to-Todoist feedback, not a newer Todoist edit.
+        if (echo) return NOOP
         recurring ? GUARDED_RECURRING : UPDATE_TODOIST
     }
 
