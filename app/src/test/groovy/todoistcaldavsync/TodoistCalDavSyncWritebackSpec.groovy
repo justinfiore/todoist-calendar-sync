@@ -97,6 +97,41 @@ class TodoistCalDavSyncWritebackSpec extends Specification {
         calendarServer.verify(1, putRequestedFor(urlMatching('/caldav/work/.*\\.ics')))
     }
 
+    def "later Todoist due change updates a calendar echo from #source"() {
+        given:
+        stubTwoTodoistPolls(taskJson(false),
+            taskJson(false, '2026-08-08T14:00:00Z', '2026-08-07T12:00:00Z'))
+        stubCalendarWrites()
+        syncer = newSyncer()
+        CalendarChangeGateway changes = calendarGatewayMock()
+        TodoistLifecycleGateway todoist = Mock()
+        syncer.calendarChangeGateway = changes
+        syncer.todoistWritebackGateway = todoist
+        String uid = syncer.generateUidFromItem(42, [id: 'task-1'])
+        CalendarEvent echo = event(uid, '2026-08-07T10:00:00Z', '2026-08-07T11:00:00Z')
+        2 * changes.readChanges('Work', _, _, _, _) >>> [
+            [events: [], deleted: [], state: [cursor: 'one']],
+            [events: fromFeed ? [echo] : [], deleted: [], state: [cursor: 'two']]
+        ]
+        (fromFeed ? 1 : 2) * (changes as CalendarReadGateway).findEventByUid(uid) >>> [null, echo]
+
+        when:
+        syncer.sync()
+        syncer.sync()
+
+        then:
+        0 * todoist._
+        calendarServer.verify(2, putRequestedFor(urlEqualTo("/caldav/work/${uid}.ics")))
+        calendarServer.verify(1, putRequestedFor(urlEqualTo("/caldav/work/${uid}.ics"))
+            .withRequestBody(containing('DTSTART:20260808T140000Z')))
+        syncer.calendarWritebackStore.echo('Work', uid).start == '2026-08-08T14:00:00Z'
+
+        where:
+        source        | fromFeed
+        'change feed' | true
+        'live lookup' | false
+    }
+
     def "newer recurring move uses guarded tuple update and never datetime-only update"() {
         given:
         stubTwoTodoistPolls(taskJson(true), '[]')
