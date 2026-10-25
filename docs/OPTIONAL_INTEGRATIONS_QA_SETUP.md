@@ -1,5 +1,9 @@
 # Testing Slack, Weather, and AI integrations
 
+For the selected Google-only, private Slack, exact-location weather and xAI subscription campaign,
+use the [isolated QA replay](SMARTPLANNER_QA_REPLAY.md). It supersedes this guide's generic API-key,
+location and public-channel examples for that campaign and separates offline contracts from gated live checks.
+
 This guide configures and tests SmartPlanner's optional integrations in an isolated environment. Test
 them one at a time in this order:
 

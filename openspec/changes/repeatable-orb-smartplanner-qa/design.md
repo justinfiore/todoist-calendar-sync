@@ -77,6 +77,20 @@ never assume the original environment snapshot updates when a local token rotate
 orb processes while a device authorization is pending. xAI device authorization is still pending and
 no xAI credential secret has been created at this setup checkpoint.
 
+**Later setup checkpoint (2026-10-25):** xAI device login succeeded and its complete protected JSON
+record is saved as `SMARTPLANNER_XAI_SUBSCRIPTION_CREDENTIAL_JSON_B64`. The public catalog returned
+HTTP 200 with a `data` list; a separately committed parser regression fix makes opt-in remote status
+report `ready`/entitlement available. Catalog model visibility does not prove Responses compatibility.
+Both Google grants refreshed again through the existing service, and remote token-info checks matched
+account subject/email, client audience and required scopes. The QA grant listed four calendars, including
+the two candidate QA names; the normal event-only grant read events successfully on both candidates.
+Their sampled event lists were empty, not proof of calendar ownership. Updated canonical Google
+records were saved back to Project Secrets. Open-Meteo returned 72 aligned hourly samples in the
+selected timezone, and the Todoist project read succeeded. No Calendar/Todoist resources were changed.
+Slack secrets exist in project metadata but still require an orb environment refresh and read-only
+verification. The replay guide defines a concrete proposed fixture scope; live campaign authorization,
+model inference, Slack feedback and native UI observations remain separate outstanding gates.
+
 ### Authorization and cleanup stay resource-scoped
 
 Document the approved account/project/calendar/channel inventory before remote actions. Separate authorization for bounded xAI subscription requests, Slack test messages, fixture creation, scoped Todoist/Calendar writes, and cleanup. Preview is not a global no-write switch: `apply-safe`, recurrence lifecycle, and newly enabled writeback require their own gates. Unknown outcomes stop dependent actions until provider reconciliation, not blind retry.
