@@ -34,7 +34,7 @@ final class XaiDeviceLogin {
         Map device=parse(start)
         if(start.status<200 || start.status>=300 || !device.device_code || !device.user_code ||
             !(device.verification_uri ?: device.verification_uri_complete)) throw new SubscriptionAuthException('device_authorization_invalid')
-        URI verification=validated(device.verification_uri_complete ?: device.verification_uri)
+        URI verification=validated(device.verification_uri_complete ?: device.verification_uri, true)
         out.append('Open ').append(verification.toString())
             .append(' and enter code ').append(device.user_code.toString()).append('\n')
         long interval=Math.max(1L,(device.interval ?: 5) as long)
@@ -73,10 +73,11 @@ final class XaiDeviceLogin {
         throw new SubscriptionAuthException('login_timeout')
     }
 
-    private static URI validated(def raw) {
+    private static URI validated(def raw, boolean verification = false) {
         URI endpoint=URI.create(raw?.toString())
         String host=endpoint.host?.toLowerCase(Locale.ROOT)
-        if(endpoint.scheme!='https' || !(endpoint.port in [-1,443]) || host!='auth.x.ai' ||
+        boolean allowedHost = host == 'auth.x.ai' || (verification && host == 'accounts.x.ai')
+        if(endpoint.scheme!='https' || !(endpoint.port in [-1,443]) || !allowedHost ||
             endpoint.userInfo || endpoint.fragment) throw new SubscriptionAuthException('provider_endpoint_unsafe')
         endpoint
     }

@@ -101,7 +101,9 @@ todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
 
 SmartPlanner requests the source-visible public client and scopes `openid profile email offline_access
 grok-cli:access api:access`, owns the resulting rotating grant, and pins auth traffic to `auth.x.ai` and
-inference to `api.x.ai`. Explicit `--auth-flow browser` exits 3 because xAI uses device authorization.
+inference to `api.x.ai`. The browser verification URL may use `accounts.x.ai` (observed during the
+2026-10-25 live login attempt); that host is allowed only for verification, never token exchange.
+Explicit `--auth-flow browser` exits 3 because xAI uses device authorization.
 An HTTP 401/403/usage error after successful login is a live compatibility or account-tier result; the
 launcher does not switch to Grok Build's proxy or an `XAI_API_KEY`.
 
