@@ -7,7 +7,9 @@ write**. Use the companion [Google runbook](SMARTPLANNER_QA_RUNBOOK.md),
 
 - **Google Calendar API only** (`google_calendar_api`); no CalDAV QA or provider fallback.
 - Open-Meteo at **40.7253341, -80.0984618**, **America/New_York**.
-- A private Slack channel, private-channel app manifest, outbound **Socket Mode** only.
+- The owner-designated Slack QA channel, app support for **both public and private channels**, and
+  outbound **Socket Mode** only. The owner reinstalled the existing app with both history scopes and
+  matching message events after the initial private-only manifest failed the channel readiness gate.
 - **xAI subscription device OAuth** (`grok_build_subscription`, CLI provider `grok`), no OpenAI,
   API-key, vendor-cache, CLI-proxy, or cross-provider fallback.
 
@@ -47,7 +49,7 @@ workspace setup `blocked`; do not substitute a minimal, incomplete YAML.
 RUN_ID=qa-YYYYMMDD-unique
 AUTH_ROOT=/absolute/service-owned/path/outside-repo/qa-ai-auth
 scripts/smartplanner-qa.sh init "$RUN_ID" --auth-root "$AUTH_ROOT" \
-  --account DISPOSABLE_EMAIL --slack-channel PRIVATE_CHANNEL_ID \
+  --account DISPOSABLE_EMAIL --slack-channel QA_CHANNEL_ID \
   --slack-user ALLOWED_USER_ID --model OWNER_VALIDATED_XAI_MODEL
 RUN="$PWD/.qa/runs/$RUN_ID"
 CFG="$RUN/planner.yaml"
@@ -131,7 +133,7 @@ Record actual returned IDs and ownership privately before execution. The propose
   (hard blocker). Existing same-name calendars are candidates, not proof of ownership. Review IDs,
   before inventories and prior campaign leftovers before reuse; never delete a reused calendar.
   Create one synthetic blocker event, then at most one managed event per ordinary task.
-- The owner-designated private Slack channel and allowed member only, at most 40 synthetic test
+- The owner-designated Slack QA channel and allowed member only, at most 40 synthetic test
   messages/replies. No other channel, workspace-wide install change, or unsolicited user message.
 - Four bounded xAI schema requests plus at most two combined feedback requests, using synthetic
   fixture content only and an explicitly catalogued model. Catalog access is not inference proof.
@@ -231,23 +233,50 @@ failure is a failed case even if transport returns 200. Compare plan, config, ap
 provider inventories: model output must have **no direct write authority**. Test redaction with
 synthetic canaries using hermetic capture assertions; never publish raw prompts or streams.
 
-### D. Private Slack and supervised daemon
+### D. Slack and supervised daemon
 
-After integrating PR #19 and rebuilding, generate the private manifest without config/log flags:
+After integrating PR #19 and rebuilding, generate a seed manifest without config/log flags:
 
 ```bash
-"$BIN" --operation slack-app-manifest --slack-app-name 'SmartPlanner QA' --slack-channel-types private
+"$BIN" --operation slack-app-manifest --slack-app-name 'SmartPlanner' --slack-channel-types both
 ```
 
 If installed help/source lacks this operation, stop and build the integrated revision first; do not
 claim the current binary supports it. Manually import the generated manifest in Slack's app dashboard,
-verify private `groups:history` / `message.groups`, Socket Mode/interactivity and no inbound Request
+verify `groups:history` / `message.groups` and `channels:history` / `message.channels`, Socket
+Mode/interactivity and no inbound Request
 URL, create the `connections:write` app token, install to the approved workspace and invite the bot
-only to the approved private channel. Store raw `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in protected
+only to the approved QA channel. When updating an existing app, preserve its branding and
+Slack-generated flags; add missing scopes/events rather than resetting its configuration to the seed.
+The app-manifest settings URL is stored outside Git as project environment variable
+`SMARTPLANNER_SLACK_APP_MANIFEST_URL`. Store raw `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in protected
 environment secrets, not Base64 JSON or YAML. Record neither identities nor tokens in UI evidence.
 
+**Readiness gate:** authenticate the bot (`auth.test`), authenticate the app token
+(`apps.connections.open`, discard its secret WebSocket URL), and read one message at most with
+`conversations.history` in the exact configured channel. Record only success/error/scope names, never
+the response bodies, messages, user profiles or socket URL. This does not post a message. Channel
+metadata/user-profile APIs need additional read scopes that the minimal manifest intentionally omits;
+do not request those scopes merely to run optional diagnostics.
+
+Initially on 2026-10-25 both tokens authenticated, but history on the supplied channel returned `missing_scope`,
+`needed: channels:history`; the installed grant had `groups:history`, not `channels:history`. This
+blocks a campaign until resolved. Resolve with the owner: use a private target compatible with the
+current manifest, or explicitly select public-channel support, regenerate with
+`--slack-channel-types public` (or `both` if both are intended), import/update the manifest in the
+Slack dashboard and **reinstall/re-authorize** the app. The manifest must include the matching
+`message.channels` event, not only the history scope. Preserve the existing app identity/slash command
+when updating; do not silently install a second app. If Slack issues a new bot token, update its
+Project Secret privately and refresh the orb environment before repeating the read-only gate.
+Changing an existing channel's privacy is an owner decision, not an automated workaround.
+
+The owner subsequently reinstalled the existing app with **both** scope/event pairs. Rechecking
+`auth.test`, QA-channel `conversations.history`, and `apps.connections.open` all succeeded with the
+existing saved tokens; no token replacement or test message was needed. This passes credential/channel
+readiness only, not slash-command delivery, thread interactions, inference, or the combined campaign.
+
 Initially disable AI/weather again to isolate Slack; leave recurrence/writeback off. Enable messaging
-and daemon, configure private destination, explicit allowed actor, one named `daily` planning run,
+and daemon, configure the QA destination, explicit allowed actor, one named `daily` planning run,
 help/status/replan rules only, `run_on_startup: false`, and safe scheduling intervals. No approval or
 apply-safe phrase. Use an orb-supervised service (command contains paths, never secrets):
 

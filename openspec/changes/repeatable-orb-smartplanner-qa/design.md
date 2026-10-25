@@ -87,9 +87,30 @@ the two candidate QA names; the normal event-only grant read events successfully
 Their sampled event lists were empty, not proof of calendar ownership. Updated canonical Google
 records were saved back to Project Secrets. Open-Meteo returned 72 aligned hourly samples in the
 selected timezone, and the Todoist project read succeeded. No Calendar/Todoist resources were changed.
-Slack secrets exist in project metadata but still require an orb environment refresh and read-only
-verification. The replay guide defines a concrete proposed fixture scope; live campaign authorization,
-model inference, Slack feedback and native UI observations remain separate outstanding gates.
+The orb environment was refreshed with no QA services running. Initial Slack history access required
+`channels:history`, which the private-only installed manifest lacked. The owner updated and reinstalled
+the existing app, preserving its identity/branding and adding public-channel scope/event support while
+retaining private support. Bot authentication, history access on the exact QA channel, and app-token
+Socket Mode authentication then all passed with the existing saved tokens; no messages were posted.
+The app-manifest dashboard URL is a non-secret project environment variable
+`SMARTPLANNER_SLACK_APP_MANIFEST_URL`, not tracked configuration.
+
+The private run workspace passes offline preflight, with canonical Google records moved rather than
+copied and `grok-4.3` selected from the observed catalog as an unproven inference candidate. The
+replay guide defines the disposable fixture scope; model inference, Slack feedback, native UI and
+exact-plan mutation approvals remain distinct campaign gates. The owner requested that the prepared
+branch be committed/pushed and execution start in a new **medium-sized orb**. That execution orb
+becomes the sole credential-refresh owner; this source orb must not refresh or start its QA daemon
+after handoff.
+
+Preparation verification: the contract helper passed 848 tests in 49 suites; full `:app:build
+:app:installDist` passed 1,121 tests in 70 suites, with zero failures/errors/skips. The installed
+manifest generator emitted both public/private scope-event pairs without configuration or credentials.
+Helper regression tests use fake credentials and isolated homes, not real providers. Existing
+weather/confirmation/suggestion tests already exercise the asymmetric isolation and authorization
+contracts, so no duplicate tests were added for those boundaries. Historical evidence and the partial
+Google bootstrap example remain byte-identical. Live readiness checks above are separate from these
+hermetic results and do not complete any live campaign ledger row.
 
 ### Authorization and cleanup stay resource-scoped
 
