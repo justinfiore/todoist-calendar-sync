@@ -268,8 +268,22 @@ calendar data because token revocation does not roll back provider mutations.
 
 #### Start the long-running daemon
 
-After the isolated preview/apply gates pass, import `conf/smartplanner-slack-app-manifest.example.yaml`, invite the
-app to the configured channel, enable `planner.daemon` plus Slack `socket_mode`, and run:
+Slack app setup can happen before any provider configuration or credentials. For a private QA channel,
+generate a manifest using the installed launcher:
+
+```bash
+todoist-caldav-sync --operation slack-app-manifest \
+  --slack-app-name 'SmartPlanner QA' --slack-channel-types private \
+  > smartplanner-slack-app.yaml
+```
+
+No `-f` or `-l` is needed and no provider is contacted. For source-checkout build instructions and
+owner-controlled Slack import/install steps, see [Slack setup](docs/SLACK_INTEGRATION.md#register-the-app).
+The default channel type is public; private QA requires the generated `groups:history` scope and
+`message.groups` event. Match `planner.messaging.app_name` to `SmartPlanner QA` in this example.
+
+After the isolated preview/apply gates pass, install the app and invite it to the configured channel,
+enable `planner.daemon` plus Slack `socket_mode`, and run:
 
 ```bash
 export SLACK_BOT_TOKEN='xoxb-...'

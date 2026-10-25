@@ -15,19 +15,61 @@ Authoritative references:
 
 ## Register the app
 
-1. Copy/import `conf/smartplanner-slack-app-manifest.example.yaml` when creating a Slack App.
-2. The default registered app and bot display name is **SmartPlanner**. To rename it, edit both
-   `display_information.name` and `features.bot_user.display_name` before importing/updating the
-   manifest. Set the same operator-facing label in `planner.messaging.app_name`.
-3. Keep Socket Mode and interactivity enabled. No inbound Request URL is needed.
-4. Install the app to the workspace and invite it to the configured channel.
-5. Create an app-level token with `connections:write` and store the `xapp-*` value only in the
-   environment variable named by `app_token_env`.
-6. Store the bot `xoxb-*` token only in the environment variable named by `bot_token_env`.
+Generate the manifest **before** configuring providers or obtaining credentials. From a source
+checkout, build the installed launcher once:
 
-The example manifest requests `app_mentions:read`, `assistant:write`, `channels:history`, `chat:write`,
-and `commands`; it subscribes to `app_mention` and `message.channels`. For a private destination,
-add `groups:history` and `message.groups`. Do not grant private-channel scopes unless needed.
+```bash
+./gradlew :app:installDist
+app/build/install/todoist-caldav-sync/bin/todoist-caldav-sync \
+  --operation slack-app-manifest > smartplanner-slack-app.yaml
+```
+
+With `todoist-caldav-sync` installed on PATH, the private-channel QA setup is:
+
+```bash
+todoist-caldav-sync --operation slack-app-manifest \
+  --slack-app-name 'SmartPlanner QA' --slack-channel-types private \
+  > smartplanner-slack-app.yaml
+```
+
+This offline operation writes only YAML to stdout. It needs no `-f`, `-l`, Todoist/Google/Slack
+credentials, or provider configuration; it does not contact Slack, register/install an app, start
+providers, or create state. Shell redirection creates the output file. Do not combine it with
+planner/auth/provisioning flags.
+
+- `--slack-app-name` sets the app name (default **SmartPlanner**, 1–35 characters). The bot name
+  is derived in lowercase, replacing unsupported characters with underscores (for example,
+  **SmartPlanner QA** → `smartplanner_qa`); names with no usable bot characters fall back to
+  `smartplanner`.
+- `--slack-channel-types public|private|both` defaults to `public`. Public selects
+  `channels:history` / `message.channels`; private selects `groups:history` / `message.groups`
+  **instead**. Choose `both` only when both channel types are needed.
+- `--slack-command /planner-qa` optionally changes the default `/smartplanner` slash command.
+  Commands must contain 1–31 lowercase letters, digits, underscores, or hyphens after `/`.
+
+Then the workspace owner performs the Slack-side steps:
+
+1. Open [Your Apps](https://api.slack.com/apps), choose **Create New App → From a manifest**,
+   select the intended workspace, and paste the generated YAML in the YAML editor.
+2. Review the app name, permissions, events, and slash command, then create the app. Socket Mode
+   and interactivity are enabled; no public inbound port or Request URL is needed.
+3. Install the app to the workspace and explicitly invite it to the configured destination channel
+   (including private channels). Updating scopes on an existing app requires reinstalling it.
+4. Create an app-level token with `connections:write` and store the `xapp-*` value only in the
+   environment variable named by `app_token_env`.
+5. Store the bot `xoxb-*` token only in the environment variable named by `bot_token_env`.
+6. Set `planner.messaging.app_name` and `planner.messaging.command` to the generated app name
+   and slash command; set `destination` to the invited channel's ID. Generation does not edit config.
+
+All variants retain `app_mentions:read`, `assistant:write`, `chat:write`, `commands`, and
+`app_mention`. No DM, channel-discovery, channel-join, or admin scopes are requested. The packaged
+template is `conf/smartplanner-slack-app-manifest.example.yaml`; the default generated manifest
+matches that public-channel example. Do not grant private-channel scopes unless needed.
+
+The template uses Slack's `agent_view` because new apps cannot use the older `assistant_view`.
+The daemon still handles configured channel mentions, slash commands, and proposal-thread replies;
+generation does not add DM handling. See the [manifest reference](https://docs.slack.dev/reference/app-manifest/)
+for Slack's import constraints. Import/review in the owner workspace remains the final Slack-side check.
 
 ## Configure SmartPlanner
 
