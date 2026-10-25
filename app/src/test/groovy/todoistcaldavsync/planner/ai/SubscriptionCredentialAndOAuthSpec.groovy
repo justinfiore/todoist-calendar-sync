@@ -244,6 +244,46 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
         calls.last()[1].keySet()==['token','token_type_hint','client_id'] as Set
     }
 
+    def "xAI remote status validates the public data catalog without exposing credentials"() {
+        given:
+        def store = new SubscriptionCredentialStore(root.toPath(), 'grok')
+        store.save(new SubscriptionCredential(provider: 'grok', adapterRevision: XaiDeviceOAuthAdapter.REVISION,
+            issuer: 'https://auth.x.ai', clientId: XaiDeviceOAuthAdapter.CLIENT_ID,
+            accessToken: 'private-xai-access', refreshToken: 'private-xai-refresh',
+            expiresAt: now.plusSeconds(600), scopes: XaiDeviceOAuthAdapter.SCOPES))
+        SubscriptionOAuthTransport transport = [
+            postForm: { a, b, c -> throw new AssertionError('unexpected refresh') },
+            get: { uri, headers, timeout ->
+                assert uri.toString() == 'https://api.x.ai/v1/models'
+                assert headers.Authorization == 'Bearer private-xai-access'
+                new OAuthHttpResponse(httpStatus, JsonOutput.toJson(catalog).bytes)
+            }
+        ] as SubscriptionOAuthTransport
+        def service = new SubscriptionCredentialService(store, new XaiDeviceOAuthAdapter(), transport, { now })
+
+        when:
+        Map result
+        String error
+        try { result = service.status(true) }
+        catch (SubscriptionAuthException e) { error = e.code }
+
+        then:
+        error == expectedError
+        if (expectedError == null) {
+            assert result.state == 'ready' && result.remoteEntitlement == 'available'
+            assert !JsonOutput.toJson(result).contains('private-xai')
+            assert !JsonOutput.toJson(result).contains('grok-fixture-model')
+        }
+        store.load().get().refreshToken == 'private-xai-refresh'
+
+        where:
+        httpStatus | catalog                                                   | expectedError
+        200        | [object: 'list', data: [[id: 'grok-fixture-model']]]        | null
+        200        | [data: [id: 'not-a-list']]                                 | 'remote_status_invalid'
+        200        | [models: []]                                              | 'remote_status_invalid'
+        403        | [error: 'not entitled']                                    | 'entitlement_unavailable'
+    }
+
     def "xAI adapter is bounded to the source-visible registration and exact requested scopes"() {
         given: def adapter=new XaiDeviceOAuthAdapter()
         expect:

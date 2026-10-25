@@ -107,6 +107,10 @@ Explicit `--auth-flow browser` exits 3 because xAI uses device authorization.
 An HTTP 401/403/usage error after successful login is a live compatibility or account-tier result; the
 launcher does not switch to Grok Build's proxy or an `XAI_API_KEY`.
 
+Remote status validates the public `/v1/models` response's `data` list for both providers. A successful
+catalog probe is not proof that the selected model can complete a structured suggestion; run the
+separate bounded inference gate before enabling the daemon.
+
 ## Preview, rollout, rollback, and cleanup
 
 After local and remote status succeed, keep Slack/daemon disabled and set `enabled: true` for exactly one

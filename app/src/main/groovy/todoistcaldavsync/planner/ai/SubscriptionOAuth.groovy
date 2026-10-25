@@ -192,7 +192,7 @@ final class SubscriptionCredentialService {
         if (probe.status == 403) throw new SubscriptionAuthException('entitlement_unavailable')
         if (probe.status < 200 || probe.status >= 300) throw new SubscriptionAuthException('remote_status_unavailable')
         Map catalog=parse(probe)
-        Object catalogModels=adapter.provider()=='codex' ? catalog.data : catalog.models
+        Object catalogModels=catalog.data
         if (!(catalogModels instanceof Collection)) throw new SubscriptionAuthException('remote_status_invalid')
         [state:'ready', refreshOwner:'smartplanner', generation:store.load().get().generation,
          adapterRevision:c.adapterRevision, remoteEntitlement:'available']
