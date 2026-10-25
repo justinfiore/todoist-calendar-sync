@@ -48,6 +48,7 @@ import todoistcaldavsync.planner.ProductionPlannerOrchestrator
 import todoistcaldavsync.planner.SmartPlannerDaemon
 import todoistcaldavsync.planner.ai.AiSubscriptionAuthOperation
 import todoistcaldavsync.planner.config.PlannerConfig
+import todoistcaldavsync.planner.messaging.SlackAppManifest
 import todoistcaldavsync.planner.messaging.SlackSocketModeMessagingSurface
 import todoistcaldavsync.planner.state.DeliveryLedger
 import todoistcaldavsync.planner.domain.Approval
@@ -100,11 +101,14 @@ class TodoistCalDavSync {
                    Closure aiAuthFactory = { aiConfig -> new AiSubscriptionAuthOperation(aiConfig) }) {
         def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
             writer: new PrintWriter(new AppendableWriter(out), true))
-        cli.setFooter('Operations: legacy-sync (default), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, ai-auth-login, ai-auth-status, ai-auth-logout, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
+        cli.setFooter('Operations: legacy-sync (default), slack-app-manifest (no config or credentials required), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, ai-auth-login, ai-auth-status, ai-auth-logout, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
         cli.h(longOpt: 'help', args: 0, 'Show the help')
         cli._(longOpt: 'operation', args: 1, argName: 'operation', 'Operation (default: legacy-sync)')
+        cli._(longOpt: 'slack-app-name', args: 1, argName: 'name', 'Manifest app/bot name (default: SmartPlanner)')
+        cli._(longOpt: 'slack-channel-types', args: 1, argName: 'public|private|both', 'Manifest channel access (default: public)')
+        cli._(longOpt: 'slack-command', args: 1, argName: '/command', 'Manifest slash command (default: /smartplanner)')
         cli._(longOpt: 'range-start', args: 1, argName: 'instant', 'ISO-8601 range start')
         cli._(longOpt: 'range-end', args: 1, argName: 'instant', 'ISO-8601 exclusive range end')
         cli._(longOpt: 'format', args: 1, argName: 'format', 'capacity format: markdown|json')
@@ -132,6 +136,30 @@ class TodoistCalDavSync {
             cli.usage()
             return 0
         }
+        String operation = optionString(options, 'operation') ?: 'legacy-sync'
+        List<String> manifestOptions = ['slack-app-name', 'slack-channel-types', 'slack-command']
+        if (operation == 'slack-app-manifest') {
+            try {
+                // Inspect parsed options, not raw argv: values may themselves contain dashes.
+                def supplied = options.getParseResult().matchedOptions()
+                if (supplied.any { spec -> !spec.names().any { it in (['--operation'] + manifestOptions.collect { '--' + it }) } } ||
+                    !options.arguments().empty) {
+                    throw new IllegalArgumentException('Only --slack-app-name, --slack-channel-types, and --slack-command are allowed with slack-app-manifest')
+                }
+                out.append(SlackAppManifest.render(
+                    options.hasOption('slack-app-name') ? options.getProperty('slack-app-name').toString() : 'SmartPlanner',
+                    options.hasOption('slack-channel-types') ? options.getProperty('slack-channel-types').toString() : 'public',
+                    options.hasOption('slack-command') ? options.getProperty('slack-command').toString() : '/smartplanner'))
+                return 0
+            } catch (IllegalArgumentException e) {
+                err.append("Error: ${e.message}\n")
+                return 2
+            }
+        }
+        if (manifestOptions.any { options.hasOption(it) }) {
+            err.append('Error: manifest options require --operation slack-app-manifest\n')
+            return 2
+        }
         if (!options.f) {
             err.append('Error: you must specify the config file\n')
             return 2
@@ -142,7 +170,6 @@ class TodoistCalDavSync {
         }
         try {
             File configFile = new File(options.f.toString())
-            String operation = optionString(options, 'operation') ?: 'legacy-sync'
             Set<String> authOperations = ['ai-auth-login', 'ai-auth-status', 'ai-auth-logout'] as Set
             if (!(operation in authOperations)) {
                 def logConfig = new ConfigSlurper().parse(new File(options.l.toString()).toURI().toURL())
