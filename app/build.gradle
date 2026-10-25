@@ -62,6 +62,12 @@ application {
     applicationName = 'todoist-caldav-sync'
 }
 
+processResources {
+    from(rootProject.file('conf')) {
+        include 'smartplanner-slack-app-manifest.example.yaml'
+    }
+}
+
 startScripts {
     doLast {
         def winScriptFile = file(getWindowsScript())

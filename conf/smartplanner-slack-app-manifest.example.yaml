@@ -4,10 +4,10 @@ display_information:
   background_color: "#2C2D30"
 features:
   bot_user:
-    display_name: SmartPlanner
+    display_name: smartplanner
     always_online: true
-  assistant_view:
-    assistant_description: Proposes and iterates capacity-aware plans.
+  agent_view:
+    agent_description: Proposes and iterates capacity-aware plans.
     suggested_prompts:
       - title: Plan my day
         message: plan daily
