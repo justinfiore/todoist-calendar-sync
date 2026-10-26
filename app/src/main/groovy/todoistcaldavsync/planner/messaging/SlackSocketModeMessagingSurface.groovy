@@ -87,6 +87,13 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
         }
         this.outbound = new SlackMessagingGateway(outboundOptions)
 
+        this.socketModeApp = new SocketModeApp(appToken, Backend.JavaWebSocket, createSlackApp())
+        this.socketModeApp.startAsync()
+        this.connected = true
+    }
+
+    /** SDK handler wiring is independent of opening the outbound socket. */
+    App createSlackApp() {
         App app = new App(AppConfig.builder().singleTeamBotToken(botToken).build())
         String command = config.command?.toString() ?: '/smartplanner'
         app.command(command) { req, ctx ->
@@ -104,22 +111,20 @@ final class SlackSocketModeMessagingSurface implements MessagingSurface {
         }
         app.event(AppMentionEvent) { req, ctx ->
             AppMentionEvent e = req.event
-            Admission admission = admit(new MessagingEvent(eventId: req.payload?.eventId ?: req.context?.requestId ?: "mention:${e.channel}:${e.ts}",
+            Admission admission = admit(new MessagingEvent(eventId: req.eventId ?: "mention:${e.channel}:${e.ts}",
                 type: 'app_mention', actorId: e.user, channelId: e.channel,
                 messageTs: e.ts, threadTs: e.threadTs, text: stripLeadingMention(e.text), bot: false))
             return admission == Admission.BUSY ? busyResponse() : ctx.ack()
         }
         app.event(MessageEvent) { req, ctx ->
             MessageEvent e = req.event
-            Admission admission = admit(new MessagingEvent(eventId: req.payload?.eventId ?: req.context?.requestId ?: "message:${e.channel}:${e.ts}",
+            Admission admission = admit(new MessagingEvent(eventId: req.eventId ?: "message:${e.channel}:${e.ts}",
                 type: 'thread_reply', actorId: e.user, channelId: e.channel,
                 messageTs: e.ts, threadTs: e.threadTs, text: e.text ?: '',
                 bot: e.botId != null || e.subtype == 'bot_message'))
             return admission == Admission.BUSY ? busyResponse() : ctx.ack()
         }
-        this.socketModeApp = new SocketModeApp(appToken, Backend.JavaWebSocket, app)
-        this.socketModeApp.startAsync()
-        this.connected = true
+        app
     }
 
     @Override

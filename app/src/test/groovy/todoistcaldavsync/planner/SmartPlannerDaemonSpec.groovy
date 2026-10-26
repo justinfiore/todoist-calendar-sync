@@ -352,6 +352,46 @@ class SmartPlannerDaemonSpec extends Specification {
         surface.close()
     }
 
+    def 'Socket Mode SDK payloads deliver mentions and thread replies with stable event identities'() {
+        given:
+        def received = new java.util.concurrent.LinkedBlockingQueue<MessagingEvent>()
+        def surface = new SlackSocketModeMessagingSurface([
+            channel: 'C123', botTokenEnv: 'BOT', appTokenEnv: 'APP'
+        ], { 'synthetic-token' })
+        surface.@handler = { received.add(it) } as java.util.function.Consumer<MessagingEvent>
+        def app = surface.createSlackApp()
+        def context = new com.slack.api.bolt.context.builtin.EventContext()
+        def eventRequest = new com.slack.api.bolt.request.builtin.EventRequest(
+            groovy.json.JsonOutput.toJson([type: 'event_callback', event_id: eventId,
+                event: [type: type, user: 'U1', channel: 'C123', ts: '5000.2',
+                    thread_ts: '5000.1', text: text]]), new com.slack.api.bolt.request.RequestHeaders([:]))
+        def payload = com.slack.api.bolt.util.EventsApiPayloadParser.buildEventPayload(eventRequest)
+        def handlers = app.@eventHandlers[type]
+
+        when:
+        def response = handlers.first().apply(payload, context)
+        def delivered = received.poll(2, TimeUnit.SECONDS)
+
+        then:
+        response.statusCode == 200
+        delivered != null
+        delivered.eventId == eventId
+        delivered.type == expectedType
+        delivered.text == expectedText
+        delivered.actorId == 'U1'
+        delivered.channelId == 'C123'
+        delivered.messageTs == '5000.2'
+        delivered.threadTs == '5000.1'
+
+        cleanup:
+        surface?.close()
+
+        where:
+        type          | eventId       | text                 | expectedType   | expectedText
+        'message'     | 'Ev-reply'    | 'replan mornings'    | 'thread_reply' | 'replan mornings'
+        'app_mention' | 'Ev-mention'  | '<@UBOT> plan daily' | 'app_mention'  | 'plan daily'
+    }
+
     def 'Socket Mode surface publishes channel parents and replies with the original thread identity'() {
         given:
         List<Map> payloads = []
