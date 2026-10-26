@@ -40,6 +40,21 @@ todoist-caldav-sync ... --operation ai-suggest --plan-id ID \
   --ai-type task_suggestions --correlation-id review-2026-08-14
 ```
 
+The command emits result JSON, then exits **0 for accepted results** (including an empty suggestion
+bundle) or **1 for rejected results**. Usage/configuration errors retain exit **2**. Rejections no
+longer exit zero: shell consumers must capture the actual exit without discarding the JSON, especially
+under `set -e`. HTTP 200 proves transport success only, not validation acceptance or a useful nonempty
+suggestion. Acceptance and suggestion count are separate observations; neither grants write authority.
+
+Existing JSON compatibility fields are retained. The error's `class` and safe `detail` are accompanied
+by optional `reasonCode`, `statusCode`, `responseBytes`, `structuredTextBytes`, and `responseTruncated`;
+the audit receipt carries the same safe metadata, never raw exception/model text. `responseBytes`
+measures observed wire bytes, with null for unknown. `responseTruncated: true` marks an incomplete,
+lower-bound observation rather than a complete response size. `structuredTextBytes` is the extracted
+structured output's UTF-8 byte count only when known, not the wire size. See the
+[QA replay outcome guidance](SMARTPLANNER_QA_REPLAY.md#c-xai-status-optional-device-login-and-four-strict-schemas)
+for evidence handling. Diagnostics do not change validation, providers, limits, retries or authority.
+
 Allowed types are task suggestions, event-classification suggestions, temporary planning overrides,
 and conversational feedback interpretation, subject to configuration. In daemon proposal threads,
 unmatched feedback may produce a bounded suggestion that is persisted against the exact current plan
@@ -58,3 +73,10 @@ sends its own rotating bearer to `api.x.ai/v1/responses`; it does not import Gro
 CLI proxy. Both remain pending owner-run disposable live entitlement/inference validation. SmartPlanner does not invoke
 `codex exec`, `grok -p`, ACP, or coding-agent subprocesses; does not rely on prompt-only tool
 restrictions; and never falls back to separately billed public APIs.
+
+Subscription inference uses SSE and accepts output only after `response.completed`. The xAI-specific
+default wire limit is 262144 bytes (other providers retain 65536); explicit configured limits are not
+overridden. For the verified `grok-4.6`/`grok-4.7` request contract, low reasoning effort and bounded
+`max_output_tokens` reduce stream size. Temporary overrides receive the same range/expiry bounds used
+by local validation, and request-specific schema constants constrain correlation and applicable
+plan/proposal identities. None of these controls bypass validation or grant mutation authority.

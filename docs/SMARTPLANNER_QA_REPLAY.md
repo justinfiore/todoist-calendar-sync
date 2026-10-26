@@ -213,7 +213,20 @@ reason to use an API key. Keep configured model explicit; do not guess a model f
 
 Enable only AI with `grok_build_subscription`, external `subscription.auth_root`, experimental protocol
 acknowledgment, exact `api.x.ai` host allowlist, redaction and all four allowed types. No `secret_env`
-or API key. Generate a fresh preview and run each command separately:
+or API key. For the grok-4.6/4.7 replay, use `max_response_bytes: 262144` (the xAI-specific default
+when omitted). Existing explicit 65536-byte settings remain enforced and must be deliberately updated:
+the bound counts the complete SSE stream, including encrypted reasoning and framing, not only JSON.
+The gateway sends the configured `max_tokens` as xAI `max_output_tokens` and selects low reasoning
+effort for these two verified model versions. Other model capabilities are not guessed; OpenAI SIWC
+continues to omit its preview-unsupported fields. The token limit caps visible output, not reasoning.
+
+Temporary overrides now receive the exact permitted range and request-time expiry constraints used by
+local validation. Use a fresh plan; an old or expired plan is not a useful compatibility fixture. A
+request outside the permitted range may correctly produce an empty bundle. For useful-output coverage,
+also request a duration override within that range and independently check its target, value, binding,
+range and expiry. Keep credential-dependent real-model tests private and ignored; normal automated
+tests must require neither credentials nor network access. Generate a fresh preview and run each
+command separately:
 
 ```bash
 "$BIN" -f "$CFG" -l "$LOG" --operation ai-suggest --plan-id "$PLAN_ID" \
@@ -232,6 +245,32 @@ Require strict all-or-nothing schema/known-ID/plan-hash/input binding and metada
 failure is a failed case even if transport returns 200. Compare plan, config, application state and
 provider inventories: model output must have **no direct write authority**. Test redaction with
 synthetic canaries using hermetic capture assertions; never publish raw prompts or streams.
+
+`ai-suggest` now emits its result JSON and exits **1 for rejection**, **0 for acceptance** (including
+an accepted empty bundle); usage/configuration failures retain exit **2**. This is a shell compatibility
+change: do not assume every emitted result exits zero. Run each case separately, or explicitly capture
+the status in an `if` when using `set -e`; never use `|| true` to mark a failed case successful. Keep the
+JSON and actual exit together in the private ledger. Do not automatically retry a rejected request.
+
+Record these three outcomes separately:
+
+1. **Transport success**: an available HTTP `statusCode` of 200 means the server replied successfully,
+   not that extraction, schema validation or semantic binding succeeded.
+2. **Acceptance**: `accepted: true` and exit 0 mean a validated bundle was returned. An empty
+   `bundle.suggestions` is allowed and remains accepted, not a rejection.
+3. **Useful nonempty output**: acceptance plus at least one suggestion is a separate QA observation;
+   nonempty output alone does not establish usefulness, correctness or mutation authority.
+
+Result compatibility fields remain `accepted`, `error` (`class`, safe `detail`), `audit`, and `bundle`
+(`type`, `contentHash`, suggestion `id`/`type` summaries). Optional safe diagnostics in `error` and
+`audit` include `reasonCode`, `statusCode`, `responseBytes`, `structuredTextBytes`, and
+`responseTruncated`. Reason codes are application-defined, never raw exception/model text. Unknown
+measurements are `null`, not zero. `responseBytes` counts **observed wire response bytes**, not the
+extracted JSON text length. `responseTruncated: true` means the observation is incomplete and any byte
+count is only a lower bound, not the full response size. `structuredTextBytes` counts the extracted
+structured output's **UTF-8 bytes only if known**; it is separate from wire bytes, and may remain null
+when extraction never completed. Zero denotes a known zero measurement. Review even metadata before
+publishing; diagnostics do not change validation, providers, limits, retries or authority.
 
 ### D. Slack and supervised daemon
 

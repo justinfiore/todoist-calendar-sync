@@ -164,6 +164,12 @@ todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy --operation ai-sug
   --plan-id PLAN_ID --ai-type task_suggestions --correlation-id CORRELATION_ID
 ```
 
+`ai-suggest` emits result JSON and exits **0 when accepted** (even with zero suggestions), **1 when
+rejected**, or **2 for usage/configuration errors**. Rejections previously exited zero; shell consumers
+must now capture the nonzero outcome as well as the JSON. HTTP 200, validation acceptance, and a useful
+nonempty suggestion are distinct outcomes; none permits direct writes. See
+[LLM diagnostics and byte-count semantics](docs/LLM_INTEGRATION.md).
+
 Subscription AI remains opt-in and live-unvalidated. Merging/upgrading changes nothing until an operator
 selects a subscription provider, creates its protected auth root, authenticates it, and enables AI.
 OpenAI requires browser SIWC; xAI requires a device code opened in any browser. Neither implemented flow

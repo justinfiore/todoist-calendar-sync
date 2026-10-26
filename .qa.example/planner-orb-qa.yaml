@@ -116,7 +116,8 @@ planner:
     connect_timeout: PT5S
     request_timeout: PT30S
     max_request_bytes: 65536
-    max_response_bytes: 65536
+    # Includes the full xAI SSE stream, encrypted reasoning and framing.
+    max_response_bytes: 262144
     max_items: 100
     max_string_chars: 500
     max_tokens: 1200

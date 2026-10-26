@@ -186,7 +186,15 @@ final class LlmTransportResponse {
     }
 }
 
-final class LlmBodyLimitException extends IOException { LlmBodyLimitException() { super('body limit exceeded') } }
+final class LlmBodyLimitException extends IOException {
+    final Integer statusCode
+    final Integer responseBytes
+    LlmBodyLimitException(Integer statusCode = null, Integer responseBytes = null) {
+        super('body limit exceeded')
+        this.statusCode = statusCode
+        this.responseBytes = responseBytes
+    }
+}
 
 /** JDK transport: HTTPS only, redirects NEVER, finite connect/request timeouts, bounded read. */
 final class JavaLlmHttpTransport implements LlmHttpTransport {
@@ -204,7 +212,7 @@ final class JavaLlmHttpTransport implements LlmHttpTransport {
         response.body().withCloseable { InputStream stream ->
             bytes = stream.readNBytes(r.maxResponseBytes + 1)
         }
-        if (bytes.length > r.maxResponseBytes) throw new LlmBodyLimitException()
+        if (bytes.length > r.maxResponseBytes) throw new LlmBodyLimitException(response.statusCode(), bytes.length)
         new LlmTransportResponse(response.statusCode(), response.headers().map(), bytes)
     }
 }

@@ -111,6 +111,15 @@ Remote status validates the public `/v1/models` response's `data` list for both 
 catalog probe is not proof that the selected model can complete a structured suggestion; run the
 separate bounded inference gate before enabling the daemon.
 
+For `grok-4.6` and `grok-4.7`, the gateway selects low reasoning effort and sends the smaller of the
+request/configured token budgets as `max_output_tokens`. Other model capabilities are not inferred.
+The xAI response-byte default is 262144; an explicit smaller setting remains enforced. This bounds
+the entire SSE wire stream, including encrypted reasoning and framing, not only the visible JSON.
+The output-token limit does not cap reasoning tokens. Subscription requests bind correlation and
+applicable plan/proposal identities in the JSON schema; temporary overrides also receive the exact
+planning range and expiry constraints. Local semantic validation remains authoritative and fail-closed.
+See the [campaign replay](SMARTPLANNER_QA_REPLAY.md) for real-model test and evidence requirements.
+
 ## Preview, rollout, rollback, and cleanup
 
 After local and remote status succeed, keep Slack/daemon disabled and set `enabled: true` for exactly one

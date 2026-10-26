@@ -49,7 +49,8 @@ class LlmSchemaValidator {
         JsonSchemaContract.Result contract = JsonSchemaContract.validate(request.suggestionType, json)
         if (!contract.valid) {
             return ValidationResult.reject(contract.malformed ? LlmErrorClass.MALFORMED_JSON : LlmErrorClass.SCHEMA_REJECTED,
-                contract.malformed ? 'response is not strict JSON' : 'response violates versioned JSON schema')
+                contract.malformed ? 'response is not strict JSON' : 'response violates versioned JSON schema',
+                contract.malformed ? 'malformed_json' : 'schema_violation')
         }
         try {
             Object parsed = contract.value
@@ -71,9 +72,9 @@ class LlmSchemaValidator {
                     case 'conversational_feedback_interpretation' -> parseFeedback(row as Map, request)
                     default -> throw new Rejected('unknown suggestion type')
                 }
-                if (!ids.add(suggestion.suggestionId)) fail("duplicate suggestionId at index ${idx}")
+                if (!ids.add(suggestion.suggestionId)) fail('duplicate_suggestion')
                 logicalTargetKeys(suggestion).each { String key ->
-                    if (!logicalTargets.add(key)) fail("duplicate logical target at index ${idx}")
+                    if (!logicalTargets.add(key)) fail('duplicate_target')
                 }
                 suggestions << suggestion
             }
@@ -88,8 +89,8 @@ class LlmSchemaValidator {
             ValidationResult.accept(bundle)
         } catch (UnsafeRejected ignored) {
             ValidationResult.reject(LlmErrorClass.UNSAFE_OUTPUT, 'response contains unsafe action material')
-        } catch (Rejected ignored) {
-            ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'response failed semantic validation')
+        } catch (Rejected rejected) {
+            ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'response failed semantic validation', rejected.reasonCode)
         } catch (Exception ignored) {
             ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'response validation failed')
         }
@@ -163,7 +164,8 @@ class LlmSchemaValidator {
         if (!end.isAfter(start) || Duration.between(start,end) > Duration.ofDays(31)) fail('invalid range')
         if (r.planningRangeStart == null || r.planningRangeEnd == null ||
             start.isBefore(r.planningRangeStart) || end.isAfter(r.planningRangeEnd)) fail('range outside context')
-        if (!expires.isAfter(now) || expires.isBefore(end) || Duration.between(now, expires) > MAX_OVERRIDE_LIFETIME) fail('invalid expiry')
+        if (!expires.isAfter(now)) fail('expired_override')
+        if (expires.isBefore(end) || Duration.between(now, expires) > MAX_OVERRIDE_LIFETIME) fail('invalid_expiry')
         new TemporaryPlanningOverride(id, r.planId, r.planVersion, r.planHash, r.planningInputHash, taskIds, type, value,
             start, end, expires, finite(m.confidence), narrative(m.rationale, MAX_TEXT))
     }
@@ -206,7 +208,7 @@ class LlmSchemaValidator {
     private static String identifier(def value, String name, int max) {
         String s = rawText(value, max)
         def redacted = AiRedactor.redactText(s, max)
-        if (!IDENTIFIER.matcher(s).matches() || redacted.redactionCount || redacted.text != s) fail("invalid ${name}")
+        if (!IDENTIFIER.matcher(s).matches() || redacted.redactionCount || redacted.text != s) fail('invalid_identifier')
         s
     }
     private static String actionable(def value, int max) {
@@ -274,9 +276,27 @@ class LlmSchemaValidator {
         JsonOutput.toJson([schemaVersion:SCHEMA_VERSION,suggestionType:request.suggestionType,
             correlationId:request.correlationId,suggestions:rows])
     }
-    private static void fail(String ignored) { throw new Rejected() }
+    private static void fail(String reason) {
+        String code = switch (reason) {
+            case 'taskId outside context', 'task outside context' -> 'unknown_task'
+            case 'event outside context' -> 'unknown_event'
+            case 'evidence outside context' -> 'unknown_evidence'
+            case 'plan mismatch' -> 'plan_mismatch'
+            case 'feedback identity mismatch' -> 'feedback_identity_mismatch'
+            case 'feedback action not allowed' -> 'feedback_action_not_allowed'
+            case 'invalid range' -> 'invalid_range'
+            case 'range outside context' -> 'range_outside_context'
+            case 'invalid label value' -> 'invalid_label'
+            case 'invalid summary value' -> 'invalid_summary'
+            default -> LlmError.safeReasonCode(reason) ?: 'invalid_value'
+        }
+        throw new Rejected(code)
+    }
     private static void unsafe(String ignored) { throw new UnsafeRejected() }
-    private static class Rejected extends RuntimeException {}
+    private static class Rejected extends RuntimeException {
+        final String reasonCode
+        Rejected(String code = 'invalid_value') { reasonCode = LlmError.safeReasonCode(code) ?: 'invalid_value' }
+    }
     private static class UnsafeRejected extends Rejected {}
 }
 
@@ -357,6 +377,6 @@ final class ValidationResult {
     final AiSuggestionBundle bundle; final LlmError error
     private ValidationResult(AiSuggestionBundle b,LlmError e){bundle=b;error=e}
     static ValidationResult accept(AiSuggestionBundle b){new ValidationResult(b,null)}
-    static ValidationResult reject(LlmErrorClass c,String d){new ValidationResult(null,new LlmError(c,d))}
+    static ValidationResult reject(LlmErrorClass c,String d,String code=null){new ValidationResult(null,new LlmError(c,d,null,null,false,[reasonCode:code]))}
     boolean isAccepted(){bundle!=null&&error==null}
 }
