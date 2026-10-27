@@ -68,6 +68,31 @@ class AiConfirmationAndOverrideSpec extends Specification {
             AiSuggestionConfirmationService.allowlist(actors))
     }
 
+    def "private confirmation accepts allowlisted Slack member #member without weakening correlation checks"() {
+        given:
+        Plan base=baseline(); def bundle=overrideBundle(base)
+        Path dir=Files.createTempDirectory('ai-slack-actor-')
+        def service=confirmations(dir,[member])
+
+        expect:
+        !service.decide(bundle,'override-1',base,'U99999999','unlisted','CONFIRM',now).confirmed
+        !service.decide(bundle,'override-1',base,member,member,'CONFIRM',now).confirmed
+        !service.decide(bundle,'override-1',base,'password.synthetic','credential','CONFIRM',now).confirmed
+
+        when:
+        def accepted=service.decide(bundle,'override-1',base,member,'exact-slack-confirmation','CONFIRM',now)
+        def retained=new AiSuggestionDecisionStore(dir,SIGNING_KEY).list()
+
+        then:
+        accepted.confirmed
+        retained.size()==1
+        retained[0].actorId==member
+        retained[0].confirmed
+
+        where:
+        member << ['U12345678','W12345678']
+    }
+
     def "selected mixed overrides compose on one baseline regardless of order without changing sources or control"() {
         given:
         Plan base=baseline([task('t1'),task('t2',20),task('control',15)],120)

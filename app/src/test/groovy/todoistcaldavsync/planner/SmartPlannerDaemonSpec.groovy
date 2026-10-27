@@ -526,6 +526,8 @@ class SmartPlannerDaemonSpec extends Specification {
         Map contextConfig = [tasks: [scheduling_eligible_labels: ['schedule'], default_duration_minutes: 30,
             contexts: [focus: [match_labels: ['deep-focus'], preferred_windows: ['weekday 11:00-12:00'],
                 preferred_bonus: 10000, avoid_penalty: 10000]]]]
+        contextConfig.integration = config(state).planner.integration
+        contextConfig.integration.feedback.allowed_actors = ['U12345678']
         def parts = build(state, now, new InMemoryMessagingSurface(), provider, source, source,
             null, null, contextConfig)
         SmartPlannerDaemon daemon = parts[0]
@@ -534,7 +536,7 @@ class SmartPlannerDaemonSpec extends Specification {
         def proposal = daemon.runNow('daily')
 
         when: 'unmatched natural-language feedback produces only a pending suggestion'
-        surface.emit(new MessagingEvent(eventId: 'ai-feedback', type: 'thread_reply', actorId: 'U1',
+        surface.emit(new MessagingEvent(eventId: 'ai-feedback', type: 'thread_reply', actorId: 'U12345678',
             channelId: 'C123', messageTs: '2500.1', threadTs: proposal.threadTs,
             text: 'Please make tomorrow less busy'))
         def pending = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
@@ -563,7 +565,7 @@ class SmartPlannerDaemonSpec extends Specification {
 
         when: 'the authorized deterministic phrase confirms the exact pending suggestion'
         now.set(initial.plusSeconds(60))
-        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U1',
+        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U12345678',
             channelId: 'C123', messageTs: '2500.2', threadTs: proposal.threadTs, text: 'try again'))
         def confirmed = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
             .find('C123', proposal.threadTs)
@@ -594,7 +596,7 @@ class SmartPlannerDaemonSpec extends Specification {
         daemon = parts[0]
         surface = parts[4]
         daemon.start()
-        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U1',
+        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U12345678',
             channelId: 'C123', messageTs: '2500.2', threadTs: proposal.threadTs, text: 'try again'))
 
         then:

@@ -27,7 +27,7 @@
 ## 5. Verify and deliver the implementation before live replay
 
 - [x] 5.1 Run focused AI/daemon/orchestrator contracts, `scripts/smartplanner-qa.sh contracts`, a fresh credential-free full build and distribution install; verify zero failures/errors/skips, strict OpenSpec validity and clean whitespace, recording actual totals rather than reusing earlier campaign numbers.
-- [ ] 5.2 Review and scan the tracked diff, commit only implementation/tests/docs and accurately completed task updates in a separate commit from the proposal, push `fix/xai-device-login-qa-plan`, and verify PR #20 head plus automatic exact-head CI/comment subscriptions; exclude private live harnesses, configs, credentials and evidence from Git.
+- [x] 5.2 Review and scan the tracked diff, commit only implementation/tests/docs and accurately completed task updates in a separate commit from the proposal, push `fix/xai-device-login-qa-plan`, and verify PR #20 head plus automatic exact-head CI/comment subscriptions; exclude private live harnesses, configs, credentials and evidence from Git.
 
 ## 6. Run a new isolated campaign with native Todoist evidence
 
