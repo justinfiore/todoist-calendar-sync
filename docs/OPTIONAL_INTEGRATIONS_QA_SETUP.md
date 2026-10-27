@@ -1,5 +1,9 @@
 # Testing Slack, Weather, and AI integrations
 
+For the selected Google-only, owner-designated Slack, exact-location weather and xAI subscription campaign,
+use the [isolated QA replay](SMARTPLANNER_QA_REPLAY.md). It supersedes this guide's generic API-key,
+location and channel examples for that campaign and separates offline contracts from gated live checks.
+
 This guide configures and tests SmartPlanner's optional integrations in an isolated environment. Test
 them one at a time in this order:
 
@@ -237,6 +241,10 @@ todoist-caldav-sync -f /private/path/planner-qa.yaml -l conf/log4j.groovy \
 The final two types are required only if they will be used with Slack. A valid provider reply must
 still pass the repository's strict schema and identity checks. Pass the standalone AI gate only if:
 
+- capture both result JSON and exit status: `ai-suggest` exits 0 for accepted results (including an
+  empty bundle), 1 for rejected results, and 2 for usage/configuration errors; HTTP 200 alone is not
+  acceptance, and acceptance alone is not a useful nonempty suggestion. Under `set -e`, capture a
+  rejected case explicitly in an `if` rather than discarding its failure with `|| true`;
 - a valid structured response is accepted and bound to the exact plan/hash/input hash;
 - suggestions do not change the stored plan, Todoist, calendar, configuration, or application state;
 - audit data contains metadata/hashes, not raw prompts, responses, or credentials;

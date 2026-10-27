@@ -77,6 +77,7 @@ final class AiAssistanceService {
                 allowedFeedbackActions: feedbackActions,
                 planningRangeStart: plan.slots ? plan.slots.collect { it.start }.min() : null,
                 planningRangeEnd: plan.slots ? plan.slots.collect { it.end }.max() : null,
+                requestedAt: started,
                 maxTokens: config.maxTokens
             ])
         } catch (Exception ignored) {
@@ -87,53 +88,57 @@ final class AiAssistanceService {
         catch (Exception ignored) {
             Instant completed = clock.get()
             LlmError error = new LlmError(LlmErrorClass.TRANSPORT, 'LLM gateway failed safely', null, null, true)
-            return AssistanceResult.rejected(error, receipt(request, context, started, completed, 0, null, null, error.errorClass, null))
+            return AssistanceResult.rejected(error, receipt(request, context, started, completed, null, null, null, error, null))
         }
         if (gatewayResult == null) {
             Instant completed = clock.get()
             LlmError error = new LlmError(LlmErrorClass.TRANSPORT, 'LLM gateway returned no result', null, null, true)
-            return AssistanceResult.rejected(error, receipt(request, context, started, completed, 0, null, null, error.errorClass, null))
+            return AssistanceResult.rejected(error, receipt(request, context, started, completed, null, null, null, error, null))
         }
         Instant completed = clock.get()
         if (!gatewayResult.success) {
             return AssistanceResult.rejected(gatewayResult.error, receipt(request, context, started, completed,
-                0, null, null, gatewayResult.error.errorClass, null))
+                gatewayResult.error.responseBytes, null, null, gatewayResult.error, null,
+                gatewayResult.error.structuredTextBytes))
         }
         // Revalidate at the authority-free service boundary even for validating adapters.
+        Integer textBytes = gatewayResult.response.jsonText?.getBytes(StandardCharsets.UTF_8)?.length
         ValidationResult validation
         try { validation = validator.validate(request, gatewayResult.response.jsonText, completed) }
         catch (Exception ignored) {
             LlmError error = new LlmError(LlmErrorClass.SCHEMA_REJECTED, 'LLM response validation failed safely')
             return AssistanceResult.rejected(error, receipt(request, context, started, completed,
-                gatewayResult.response?.responseBytes ?: 0, gatewayResult.response?.promptTokens,
-                gatewayResult.response?.completionTokens, error.errorClass, gatewayResult.response?.contentHash))
+                gatewayResult.response.responseBytes, gatewayResult.response.promptTokens,
+                gatewayResult.response.completionTokens, error, gatewayResult.response.contentHash, textBytes))
         }
         if (!validation.accepted) {
             return AssistanceResult.rejected(validation.error, receipt(request, context, started, completed,
                 gatewayResult.response.responseBytes, gatewayResult.response.promptTokens,
-                gatewayResult.response.completionTokens, validation.error.errorClass,
-                gatewayResult.response.contentHash))
+                gatewayResult.response.completionTokens, validation.error,
+                gatewayResult.response.contentHash, textBytes))
         }
         LlmAuditReceipt audit = receipt(request, context, started, completed,
             gatewayResult.response.responseBytes, gatewayResult.response.promptTokens,
-            gatewayResult.response.completionTokens, null, validation.bundle.contentHash)
+            gatewayResult.response.completionTokens, null, validation.bundle.contentHash, textBytes)
         AssistanceResult.accepted(validation.bundle, audit)
     }
 
     private LlmAuditReceipt receipt(LlmRequest request, ContextBuildResult context,
-                                    Instant start, Instant end, int responseBytes,
+                                    Instant start, Instant end, Integer responseBytes,
                                     Integer promptTokens, Integer completionTokens,
-                                    LlmErrorClass errorClass, String responseHash) {
+                                    LlmError error, String responseHash, Integer structuredTextBytes = null) {
         int requestBytes = JsonOutput.toJson(request.context).getBytes(StandardCharsets.UTF_8).length
         new LlmAuditReceipt([correlationId: request.correlationId, schemaType: request.suggestionType,
             schemaVersion: request.schemaVersion, provider: request.provider, model: request.model,
             planHash: request.planHash, planningInputHash: request.planningInputHash,
             startedAt: start, completedAt: end,
             requestBytes: requestBytes, responseBytes: responseBytes,
+            structuredTextBytes: structuredTextBytes, responseTruncated: error?.responseTruncated ?: false,
+            statusCode: error?.statusCode, reasonCode: error?.reasonCode,
             redactionCount: context.redactionCount, omittedCount: context.omittedCount,
             promptTokens: promptTokens, completionTokens: completionTokens,
-            outcome: errorClass == null ? 'ACCEPTED_SUGGESTIONS' : 'REJECTED',
-            errorClass: errorClass, responseContentHash: responseHash])
+            outcome: error == null ? 'ACCEPTED_SUGGESTIONS' : 'REJECTED',
+            errorClass: error?.errorClass, responseContentHash: responseHash])
     }
 }
 

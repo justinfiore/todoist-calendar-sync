@@ -26,6 +26,7 @@ final class LlmRequest {
     final Set<String> allowedFeedbackActions
     final Instant planningRangeStart
     final Instant planningRangeEnd
+    final Instant requestedAt
     final int maxTokens
 
     LlmRequest(Map values) {
@@ -46,6 +47,7 @@ final class LlmRequest {
         this.allowedFeedbackActions = Collections.unmodifiableSet(new LinkedHashSet<>(values.allowedFeedbackActions ?: []))
         this.planningRangeStart = parseInstant(values.planningRangeStart, 'planningRangeStart')
         this.planningRangeEnd = parseInstant(values.planningRangeEnd, 'planningRangeEnd')
+        this.requestedAt = parseInstant(values.requestedAt, 'requestedAt') ?: Instant.now()
         this.maxTokens = (values.maxTokens ?: 1200) as int
         if (schemaVersion != 1) throw new IllegalArgumentException('schemaVersion must be 1')
         if (planVersion < 1) throw new IllegalArgumentException('planVersion must be >= 1')
@@ -131,19 +133,48 @@ enum LlmErrorClass {
 
 /** Redacted classified error. detail must never include request/response bodies or credentials. */
 final class LlmError {
+    private static final Set<String> REASON_CODES = Collections.unmodifiableSet((
+        LlmErrorClass.values()*.name()*.toLowerCase(Locale.ROOT) + [
+            'invalid_value', 'unknown_task', 'unknown_event', 'unknown_evidence',
+            'plan_mismatch', 'feedback_identity_mismatch', 'feedback_action_not_allowed',
+            'invalid_range', 'range_outside_context', 'expired_override', 'invalid_expiry',
+            'duplicate_suggestion', 'duplicate_target', 'schema_violation',
+            'invalid_label', 'invalid_summary', 'invalid_identifier',
+            'empty_stream', 'malformed_sse_event', 'invalid_text_delta',
+            'provider_attempted_tool_use', 'provider_stream_error', 'response_failed',
+            'subscription_sharing_usage_limit_exceeded', 'subscription_sharing_usage_unavailable',
+            'response_incomplete', 'stream_interrupted_before_completion', 'completed_response_has_no_text'
+        ]) as Set<String>)
     final LlmErrorClass errorClass
     final String detail
     final Integer statusCode
     final Duration retryAfter
     final boolean retryable
+    final String reasonCode
+    final Integer responseBytes
+    final Integer structuredTextBytes
+    final boolean responseTruncated
 
     LlmError(LlmErrorClass errorClass, String detail, Integer statusCode = null,
-             Duration retryAfter = null, boolean retryable = false) {
+             Duration retryAfter = null, boolean retryable = false, Map diagnostics = [:]) {
         this.errorClass = errorClass
         this.detail = AiRedactor.redactText((detail ?: errorClass?.name() ?: 'LLM error'), 300).text
         this.statusCode = statusCode
         this.retryAfter = retryAfter
         this.retryable = retryable
+        this.reasonCode = safeReasonCode(diagnostics.reasonCode) ?: errorClass?.name()?.toLowerCase(Locale.ROOT)
+        this.responseBytes = diagnostics.responseBytes as Integer
+        this.structuredTextBytes = diagnostics.structuredTextBytes as Integer
+        this.responseTruncated = diagnostics.responseTruncated == true
+    }
+
+    static String safeReasonCode(def value) {
+        value instanceof String && REASON_CODES.contains(value) ? value : null
+    }
+
+    LlmError withResponseMetadata(Integer status, Integer wireBytes, Integer textBytes = null, boolean truncated = false) {
+        new LlmError(errorClass, detail, status, retryAfter, retryable,
+            [reasonCode: reasonCode, responseBytes: wireBytes, structuredTextBytes: textBytes, responseTruncated: truncated])
     }
 
     @Override
@@ -180,7 +211,11 @@ final class LlmAuditReceipt {
     final Instant startedAt
     final Instant completedAt
     final int requestBytes
-    final int responseBytes
+    final Integer responseBytes
+    final Integer structuredTextBytes
+    final boolean responseTruncated
+    final Integer statusCode
+    final String reasonCode
     final int redactionCount
     final int omittedCount
     final Integer promptTokens
@@ -201,7 +236,11 @@ final class LlmAuditReceipt {
         startedAt = v.startedAt
         completedAt = v.completedAt
         requestBytes = (v.requestBytes ?: 0) as int
-        responseBytes = (v.responseBytes ?: 0) as int
+        responseBytes = v.responseBytes as Integer
+        structuredTextBytes = v.structuredTextBytes as Integer
+        responseTruncated = v.responseTruncated == true
+        statusCode = v.statusCode as Integer
+        reasonCode = LlmError.safeReasonCode(v.reasonCode)
         redactionCount = (v.redactionCount ?: 0) as int
         omittedCount = (v.omittedCount ?: 0) as int
         promptTokens = v.promptTokens as Integer
@@ -220,6 +259,8 @@ final class LlmAuditReceipt {
          provider: provider, model: model, planHash: planHash, planningInputHash: planningInputHash,
          startedAt: startedAt?.toString(), completedAt: completedAt?.toString(),
          requestBytes: requestBytes, responseBytes: responseBytes,
+         structuredTextBytes: structuredTextBytes, responseTruncated: responseTruncated,
+         statusCode: statusCode, reasonCode: reasonCode,
          redactionCount: redactionCount, omittedCount: omittedCount,
          promptTokens: promptTokens, completionTokens: completionTokens,
          outcome: outcome, errorClass: errorClass?.name(), responseContentHash: responseContentHash]

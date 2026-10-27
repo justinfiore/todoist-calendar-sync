@@ -69,6 +69,24 @@ class AiSubscriptionFailClosedSpec extends Specification {
         error.message.contains('secret_env is not allowed')
     }
 
+    def "xAI stream default accounts for framing while explicit and other provider bounds remain unchanged"() {
+        when:
+        def defaults=PlannerConfig.fromMap(planner:[availability:[working_windows:[weekday:['09:00-12:00']]],
+            ai:[enabled:false,provider:provider]])
+        def explicit=PlannerConfig.fromMap(planner:[availability:[working_windows:[weekday:['09:00-12:00']]],
+            ai:[enabled:false,provider:provider,max_response_bytes:32768]])
+
+        then:
+        defaults.ai.maxResponseBytes==expected
+        explicit.ai.maxResponseBytes==32768
+
+        where:
+        provider                  | expected
+        'grok_build_subscription' | 262144
+        'codex_subscription'      | 65536
+        'openai_compatible'       | 65536
+    }
+
     def "xAI auth operation dispatches only the Hermes-style device flow and owns its credential"() {
         given:
         File root=File.createTempDir('xai-auth-operation-','')

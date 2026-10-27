@@ -1,0 +1,141 @@
+# Complete Google-only QA profile. Use scripts/smartplanner-qa.sh init to copy privately.
+# REQUIRED_* values must be resolved before preflight can pass. No secret values belong here.
+planner:
+  mode: preview
+  timezone: America/New_York
+  output_calendar: SmartPlanner QA Output
+  calendarWriteback:
+    enabled: false
+  integration:
+    todoist:
+      base_url: https://api.todoist.com/api/v1
+      token_env: TODOIST_ACCESS_TOKEN
+      timeout: PT10S
+      include_project_names: true
+    calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: secrets/google-oauth-client.json
+        token_store_dir: tokens/normal-event-only
+        qa_token_store_dir: tokens/qa-calendar-management
+        account_email: REQUIRED_ACCOUNT@example.test
+        oauth_callback_port: 8787
+        calendars:
+          - name: SmartPlanner QA Output
+            id: REQUIRED_OUTPUT_CALENDAR
+            role: managed_output
+          - name: SmartPlanner QA Blockers
+            id: REQUIRED_BLOCKER_CALENDAR
+            role: hard_blocker
+    weather:
+      base_url: https://api.open-meteo.com/v1/forecast
+      timeout: PT10S
+      max_response_bytes: 1048576
+    feedback:
+      allowed_actors: [REQUIRED_SLACK_USER]
+      rules:
+        - name: replan
+          pattern: '(?i)^\s*(replan|try again)(?:\s+(?<feedback>.*))?$'
+          action: replan
+        - name: status
+          pattern: '(?i)^\s*status\s*$'
+          action: status
+        - name: help
+          pattern: '(?i)^\s*help\s*$'
+          action: help
+    state:
+      plans_dir: state/plans
+      applications_dir: state/applications
+      decisions_dir: state/decisions
+      deliveries_dir: state/deliveries
+  daemon:
+    enabled: false
+    startup_connectivity_check: true
+    shutdown_timeout: PT20S
+    planning_runs:
+      - name: daily
+        horizon: P3D
+        interval: PT6H
+        initial_delay: PT0S
+        run_on_startup: false
+  availability:
+    working_windows:
+      weekday: ["09:00-17:00"]
+      weekend: ["09:00-17:00"]
+    calendars:
+      - calendar: SmartPlanner QA Output
+        default_role: managed_output
+      - calendar: SmartPlanner QA Blockers
+        default_role: hard_blocker
+    unknown_calendar_fallback: informational
+  tasks:
+    scheduling_eligible_labels: [smartplanner-qa]
+    manual_label: manual
+    default_duration_minutes: 30
+    recurrence:
+      enabled: false
+  batching:
+    enabled: false
+  stability:
+    freeze_within: PT0S
+    minimum_buffer_between_blocks_minutes: 10
+    keep_manual_moves: true
+  weather:
+    enabled: false
+    provider: open_meteo
+    latitude: 40.7253341
+    longitude: -80.0984618
+    timezone: America/New_York
+    max_age: PT6H
+    forecast_horizon_days: 7
+    fallback: fail_closed
+    task_rules:
+      - name: qa-outdoor-dry
+        match_labels: [qa-outdoor]
+        require:
+          precipitation_probability_max: 25
+          precipitation_mm_max: 0.5
+          wind_speed_kph_max: 25
+        preferred:
+          daylight: true
+  messaging:
+    enabled: false
+    provider: slack
+    slack_mode: socket_mode
+    destination: REQUIRED_SLACK_CHANNEL
+    app_name: SmartPlanner QA
+    command: /smartplanner
+    bot_token_env: SLACK_BOT_TOKEN
+    app_token_env: SLACK_APP_TOKEN
+    enabled_kinds: [proposal]
+    working_status: "is working on your request…"
+  ai:
+    enabled: false
+    provider: grok_build_subscription
+    model: REQUIRED_MODEL
+    connect_timeout: PT5S
+    request_timeout: PT30S
+    max_request_bytes: 65536
+    # Includes the full xAI SSE stream, encrypted reasoning and framing.
+    max_response_bytes: 262144
+    max_items: 100
+    max_string_chars: 500
+    max_tokens: 1200
+    redaction_enabled: true
+    require_confirmation: true
+    allowed_suggestion_types:
+      - task_suggestions
+      - event_classification_suggestions
+      - temporary_planning_overrides
+      - conversational_feedback_interpretation
+    safety:
+      never_apply_changes_directly: true
+      require_structured_output: true
+      require_confirmation_for_policy_changes: true
+      send_minimum_necessary_data: true
+    subscription:
+      auth_root: /REQUIRED_EXTERNAL_AUTH_ROOT
+      experimental_protocol_acknowledged: true
+      login_timeout: PT5M
+      grok:
+        allowed_hosts: [api.x.ai]

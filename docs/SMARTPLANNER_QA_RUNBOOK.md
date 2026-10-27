@@ -1,5 +1,9 @@
 # SmartPlanner Google QA runbook
 
+See the [isolated QA replay and case-to-test matrix](SMARTPLANNER_QA_REPLAY.md) for the run-scoped
+helper, protected grant restoration, selected xAI/private Slack/weather stages and evidence gates.
+It is a replay checklist, not evidence that a live campaign has completed.
+
 This runbook is for a dedicated disposable Todoist account and dedicated disposable Google account.
 It is not authorization to use live credentials. During implementation review, run only the hermetic
 review commands in the final section. Do not inspect real `.qa/` contents, authenticate, contact a

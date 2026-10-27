@@ -13,6 +13,7 @@ import todoistcaldavsync.planner.ai.SubscriptionCredentialStore
 import todoistcaldavsync.planner.ai.SubscriptionResponsesLlmGateway
 import todoistcaldavsync.planner.ai.SubscriptionProviderAdapter
 import todoistcaldavsync.planner.ai.XaiDeviceOAuthAdapter
+import todoistcaldavsync.planner.ai.*
 import todoistcaldavsync.planner.apply.PlanApplier
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
@@ -196,9 +197,14 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
 
     /** Deterministic preview with conversation-scoped, non-persisted planning overrides. */
     Plan preview(Instant rangeStart, Instant rangeEnd, String previousPlanId, Map overrides) {
-        Instant now = clock.get()
         List<Task> tasks = applyTemporaryOverrides(normalizedEligibleTasks(), overrides ?: [:])
         List<CalendarEvent> events = calendarRead.fetchEvents(rangeStart, rangeEnd)
+        propose(tasks, events, rangeStart, rangeEnd, previousPlanId, overrides ?: [:], clock.get(), [])
+    }
+
+    private Plan propose(List<Task> tasks, List<CalendarEvent> events, Instant rangeStart, Instant rangeEnd,
+                         String previousPlanId, Map overrides, Instant now, List<PlanningExplanation> explanations,
+                         String confirmedPlanId = null) {
         List<CalendarEvent> classified = new EventClassifier(plannerConfig).classifyAll(events)
         def availability = new AvailabilityCalculator(plannerConfig).calculate(rangeStart, rangeEnd, classified)
         Plan previous = loadPrevious(previousPlanId ?: integrationConfig.previousPlanId)
@@ -216,8 +222,114 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
             ? (overrides.freeze_task_ids as Collection).collect { it.toString() } as Set : [] as Set
         Plan plan = new DeterministicScheduler(plannerConfig).propose(
             tasks, availability.slots, rangeStart, rangeEnd, now, previous, frozen, forecast)
+        if (explanations) {
+            plan = Plan.builder().id(confirmedPlanId ?: plan.id).version(plan.version).createdAt(plan.createdAt).mode(plan.mode)
+                .tasks(plan.tasks).slots(plan.slots).scheduledBlocks(plan.scheduledBlocks).unscheduled(plan.unscheduled)
+                .changes(plan.changes).explanations(plan.explanations + explanations).metrics(plan.metrics)
+                .humanDiff(plan.humanDiff).build()
+        }
         planStore.save(plan)
         return plan
+    }
+
+    Map prepareAiPending(AiSuggestionBundle supplied, ConversationRecord conversation, String sourceEvent) {
+        if (!plannerConfig.ai.enabled) throw new IllegalArgumentException('AI is disabled')
+        Instant now = clock.get()
+        def validator = new LlmSchemaValidator()
+        def canonical = validator.canonicalize(supplied, now)
+        if (!canonical.accepted || canonical.bundle.suggestionType != 'temporary_planning_overrides' ||
+            !canonical.bundle.suggestions) throw new IllegalArgumentException('no validated task override is ready')
+        AiSuggestionBundle bundle = canonical.bundle
+        Plan plan = requirePlan(conversation.planId)
+        Instant start = plan.slots*.start.min(), end = plan.slots*.end.max()
+        if (!start || !end || !end.isAfter(now) || bundle.planId != plan.id ||
+            bundle.planVersion != conversation.planVersion || bundle.planHash != conversation.planHash ||
+            bundle.planHash != PlanHash.compute(plan)) throw new IllegalArgumentException('stale suggestion plan or range')
+        bundle.suggestions.each { TemporaryPlanningOverride o ->
+            if (o.rangeStart != start || o.rangeEnd != end || o.expiresAt.isBefore(end))
+                throw new IllegalArgumentException('override must cover the exact reviewed planning range')
+        }
+        Instant expiry = ([now.plusSeconds(900)] + bundle.suggestions*.expiresAt).min()
+        aiDecisionStore().sealPending([schemaVersion: 1, action: 'replan', sourceEventId: sourceEvent,
+            channelId: conversation.channelId, threadTs: conversation.threadTs, planId: plan.id,
+            planVersion: plan.version, planHash: bundle.planHash, planningInputHash: bundle.planningInputHash,
+            contentHash: bundle.contentHash, correlationId: bundle.correlationId,
+            canonicalJson: validator.exportCanonical(bundle), suggestionIds: bundle.suggestions*.suggestionId,
+            rangeStart: start.toString(), rangeEnd: end.toString(), expiresAt: expiry.toString()])
+    }
+
+    /** Exact human confirmation produces a preview, never an apply approval. */
+    Plan previewConfirmedAi(ConversationRecord conversation, String actor) {
+        Map pending = conversation.pendingConfirmation
+        def store = aiDecisionStore()
+        Instant now = clock.get()
+        if (!plannerConfig.ai.enabled || !integrationConfig.feedback.allowedActors.contains(actor) ||
+            pending.schemaVersion != 1 || !store.authenticPending(pending) ||
+            pending.channelId != conversation.channelId || pending.threadTs != conversation.threadTs ||
+            pending.planId != conversation.planId || pending.planVersion != conversation.planVersion ||
+            pending.planHash != conversation.planHash || !Instant.parse(pending.expiresAt.toString()).isAfter(now))
+            throw new IllegalArgumentException('pending AI authority is missing, altered, unauthorized or expired; request fresh review')
+        Plan plan = requirePlan(conversation.planId)
+        Instant start = Instant.parse(pending.rangeStart.toString()), end = Instant.parse(pending.rangeEnd.toString())
+        if (!end.isAfter(now) || start != plan.slots*.start.min() || end != plan.slots*.end.max())
+            throw new IllegalArgumentException('reviewed planning range is no longer valid')
+        List<Task> source = applyTemporaryOverrides(normalizedEligibleTasks(), conversation.overrides)
+        if (PlanningInputHash.taskSetHash(source) != PlanningInputHash.taskSetHash(plan.tasks))
+            throw new IllegalArgumentException('source tasks changed; request fresh review')
+        List<CalendarEvent> events = calendarRead.fetchEvents(start, end)
+        def restored = new LlmSchemaValidator().restore(pending.canonicalJson?.toString(),
+            pending.correlationId?.toString(), plan, events, now)
+        if (!restored.accepted || restored.bundle.contentHash != pending.contentHash ||
+            restored.bundle.planningInputHash != pending.planningInputHash ||
+            restored.bundle.suggestions*.suggestionId != pending.suggestionIds)
+            throw new IllegalArgumentException('pending suggestion or planning input changed; request fresh review')
+        AiSuggestionBundle bundle = restored.bundle
+        // Validate the complete set before recording any authorizing decision.
+        bundle.suggestions.each { TemporaryPlanningOverride o ->
+            if (o.rangeStart != start || o.rangeEnd != end || o.expiresAt.isBefore(end))
+                throw new IllegalArgumentException('override cannot cover reviewed range')
+        }
+        if (pending.confirmedActor != actor || !pending.confirmedAt || !pending.successorPlanId)
+            throw new IllegalArgumentException('durable exact confirmation intent is required')
+        Plan retained = planStore.load(pending.successorPlanId.toString())
+        if (retained != null) return retained
+        def confirmation = new AiSuggestionConfirmationService(store,
+            AiSuggestionConfirmationService.allowlist(integrationConfig.feedback.allowedActors))
+        List<String> decisionIds = bundle.suggestions.collect { suggestion ->
+            String correlation = 'confirm-' + AiValues.sha256(pending.sourceEventId + '|' + suggestion.suggestionId).substring(0, 32)
+            def result = confirmation.decide(bundle, suggestion.suggestionId, plan, events, actor, correlation, 'CONFIRM', now)
+            if (result.confirmed) return result.record.decisionId
+            if (result.outcome == 'IDEMPOTENT_REPLAY') return result.record.priorDecisionId
+            throw new IllegalArgumentException('exact AI decision was refused')
+        }
+        List<Task> transformed = new ConfirmedOverrideApplier().apply(source, store, decisionIds, bundle, plan, events, start, end, now)
+        List<PlanningExplanation> explanations = bundle.suggestions.collect { TemporaryPlanningOverride o ->
+            PlanningExplanation.of('AI_CONFIRMED_TEMPORARY_OVERRIDE',
+                "Confirmed temporary ${o.overrideType}: ${o.value}", 'task', o.taskIds.join(','),
+                [suggestionId: o.suggestionId, rangeStart: start.toString(), rangeEnd: end.toString()])
+        }
+        propose(transformed, events, start, end, plan.id, conversation.overrides, now, explanations,
+            pending.successorPlanId.toString())
+    }
+
+    Map confirmAiIntent(ConversationRecord conversation, String actor) {
+        Map pending = conversation.pendingConfirmation
+        def store = aiDecisionStore()
+        if (!integrationConfig.feedbackActors().contains(actor) || pending.schemaVersion != 1 ||
+            !store.authenticPending(pending) || pending.planId != conversation.planId ||
+            pending.planHash != conversation.planHash || pending.planVersion != conversation.planVersion ||
+            pending.channelId != conversation.channelId || pending.threadTs != conversation.threadTs ||
+            !Instant.parse(pending.expiresAt.toString()).isAfter(clock.get()) ||
+            (pending.confirmedActor != null && pending.confirmedActor != actor))
+            throw new IllegalArgumentException('pending AI authority is invalid or expired; request fresh review')
+        String confirmedAt = pending.confirmedAt ?: clock.get().toString()
+        String successorId = 'ai-preview-' + AiValues.sha256(
+            [pending.contentHash, pending.planId, pending.channelId, pending.threadTs, confirmedAt].join('|'))
+        store.sealPending(pending + [confirmedActor: actor, confirmedAt: confirmedAt, successorPlanId: successorId])
+    }
+
+    private AiSuggestionDecisionStore aiDecisionStore() {
+        AiSuggestionDecisionStore.serviceOwned(integrationConfig.decisionsDir)
     }
 
     /** Startup probe: authenticate and perform bounded Todoist and CalDAV reads without writes. */

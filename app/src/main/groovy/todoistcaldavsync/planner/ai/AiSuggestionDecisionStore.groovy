@@ -52,6 +52,52 @@ final class AiSuggestionDecisionStore {
     private Path identityPath(){contained(directory.resolve('.ai-suggestion-store-id'))}
     private Path lockPath(){contained(directory.resolve('.ai-suggestion-decisions.lock'))}
 
+    /** The key and retained decisions are one private service-owned state unit. */
+    static synchronized AiSuggestionDecisionStore serviceOwned(Path directory) {
+        Files.createDirectories(directory)
+        Path key = directory.resolve('.ai-suggestion-signing-key')
+        FileChannel.open(directory.resolve('.ai-signing-key.lock'), StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE).withCloseable { channel ->
+            channel.lock().withCloseable {
+                if (!Files.exists(key)) {
+                    if (Files.exists(directory.resolve('.ai-suggestion-store-id')) ||
+                        Files.exists(directory.resolve('ai-suggestion-decisions.json')))
+                        throw new IllegalArgumentException('retained AI state requires its original signing key')
+                    byte[] material = new byte[32]
+                    new java.security.SecureRandom().nextBytes(material)
+                    Files.createFile(key, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                        java.nio.file.attribute.PosixFilePermissions.fromString('rw-------')))
+                    FileChannel.open(key, StandardOpenOption.WRITE).withCloseable { file ->
+                        file.write(java.nio.ByteBuffer.wrap(material)); file.force(true)
+                    }
+                }
+                if (Files.size(key) != 32) throw new IllegalArgumentException('invalid AI signing key state')
+                new AiSuggestionDecisionStore(directory, Files.readAllBytes(key))
+            }
+        }
+    }
+
+    Map sealPending(Map values) {
+        provenanceId()
+        Map unsigned = new TreeMap(values)
+        unsigned.remove('signature')
+        unsigned + [signature: hex(pendingMac(unsigned))]
+    }
+
+    boolean authenticPending(Map values) {
+        try {
+            Map unsigned = new TreeMap(values)
+            String signature = unsigned.remove('signature')?.toString()
+            signature ==~ /^[0-9a-f]{64}$/ && MessageDigest.isEqual(pendingMac(unsigned), decodeHex(signature))
+        } catch (Exception ignored) { false }
+    }
+
+    private byte[] pendingMac(Map values) {
+        Mac mac = Mac.getInstance('HmacSHA256')
+        mac.init(new SecretKeySpec(signingKey, 'HmacSHA256'))
+        mac.doFinal(('ai-pending-v1|' + JsonOutput.toJson(values)).getBytes(StandardCharsets.UTF_8))
+    }
+
     @PackageScope DecisionAppendOutcome appendClassified(AiSuggestionDecisionRecord candidate) {
         if(candidate==null)throw new IllegalArgumentException('candidate is required')
         withLock {
@@ -214,9 +260,9 @@ final class AiSuggestionDecisionRecord {
     final String correlationId;final Instant decidedAt;final String action;final String status;final String priorDecisionId;final String signature
     @PackageScope AiSuggestionDecisionRecord(Map v){
         storeId=req(v.storeId);decisionId=v.decisionId?.toString();suggestionId=req(v.suggestionId);schemaType=req(v.schemaType);schemaVersion=(v.schemaVersion?:0)as int
-        bundleContentHash=req(v.bundleContentHash);planId=req(v.planId);planVersion=(v.planVersion?:0)as int;planHash=req(v.planHash);planningInputHash=req(v.planningInputHash);actorId=opaque(v.actorId);correlationId=opaque(v.correlationId)
+        bundleContentHash=req(v.bundleContentHash);planId=req(v.planId);planVersion=(v.planVersion?:0)as int;planHash=req(v.planHash);planningInputHash=req(v.planningInputHash);actorId=req(v.actorId);correlationId=opaque(v.correlationId)
         decidedAt=v.decidedAt instanceof Instant?v.decidedAt as Instant:Instant.parse(req(v.decidedAt));action=req(v.action);status=req(v.status);priorDecisionId=optionalOpaque(v.priorDecisionId);signature=v.signature?.toString()
-        if(schemaVersion!=1||planVersion<1||!(action in ['CONFIRM','REJECT'] as Set)||!(schemaType in LlmSchemaValidator.TYPES)||!(status in STATUSES)||
+        if(!OpaqueIdentifier.validActor(actorId)||schemaVersion!=1||planVersion<1||!(action in ['CONFIRM','REJECT'] as Set)||!(schemaType in LlmSchemaValidator.TYPES)||!(status in STATUSES)||
             !(bundleContentHash==~/^[0-9a-f]{64}$/)||!(planHash==~/^[0-9a-f]{64}$/)||!(planningInputHash==~/^[0-9a-f]{64}$/)||(status.startsWith('CONFIRMED_')&&action!='CONFIRM')||
             (status=='REJECTED_BY_USER'&&action!='REJECT'))throw new IllegalArgumentException('invalid AI decision')
     }
@@ -245,7 +291,7 @@ final class AiSuggestionConfirmationService {
     static final Predicate<String> DENY_ALL={String ignored->false}as Predicate
     private final AiSuggestionDecisionStore store;private final Predicate<String> authorization
     AiSuggestionConfirmationService(AiSuggestionDecisionStore store,Predicate<String> authorization=DENY_ALL){if(store==null)throw new IllegalArgumentException('store required');this.store=store;this.authorization=authorization?:DENY_ALL}
-    static Predicate<String> allowlist(Collection<String> actors){Set a=(actors?:[]).collect{String value=it?.toString();if(!OpaqueIdentifier.valid(value))throw new IllegalArgumentException('invalid allowlisted actor');value}as Set;{String actor->actor!=null&&a.contains(actor)}as Predicate}
+    static Predicate<String> allowlist(Collection<String> actors){Set a=(actors?:[]).collect{String value=it?.toString();if(!OpaqueIdentifier.validActor(value))throw new IllegalArgumentException('invalid allowlisted actor');value}as Set;{String actor->actor!=null&&a.contains(actor)}as Predicate}
 
     ConfirmationResult decide(AiSuggestionBundle bundle,String suggestionId,Plan currentPlan,String actor,String correlation,String action,Instant now){
         decide(bundle,suggestionId,currentPlan,Collections.emptyList(),actor,correlation,action,now)
@@ -255,7 +301,7 @@ final class AiSuggestionConfirmationService {
         if(now==null)return ConfirmationResult.reject('authoritative now is required')
         if(bundle==null||currentPlan==null||!LlmSchemaValidator.isAuthentic(bundle))return ConfirmationResult.reject('validator-issued bundle and current plan are required')
         String who=actor
-        if(!OpaqueIdentifier.valid(who))return ConfirmationResult.reject('actor is not a valid opaque identifier')
+        if(!OpaqueIdentifier.validActor(who))return ConfirmationResult.reject('actor is not a valid opaque identifier')
         if(!OpaqueIdentifier.valid(correlation))return ConfirmationResult.reject('confirmation correlation is not a valid opaque identifier')
         boolean allowed=false;try{allowed=authorization.test(who)}catch(Exception ignored){}
         if(!allowed)return ConfirmationResult.reject('actor is not authorized')
@@ -290,6 +336,8 @@ final class OpaqueIdentifier {
     private static final java.util.regex.Pattern SENSITIVE=java.util.regex.Pattern.compile(
         /(?i)(?:^|[._:@-])(?:authorization|bearer|client[._-]?secret|access[._-]?token|refresh[._-]?token|private[._-]?key|api[._-]?key|auth[._-]?token|bearer[._-]?token|webhook(?:[._-]?url)?|signing[._-]?secret|password|credential|secret|token|key)(?:[._:@-]|$)|^(?:sk|xox[baprs]|gh[pousr])[-_]/)
     private OpaqueIdentifier(){}
+    // Private decision actors may be Slack members; prompt/correlation redaction stays unchanged.
+    static boolean validActor(String value){value==~/^[UW][A-Z0-9]{8,127}$/ || valid(value)}
     static boolean valid(String value){
         if(value==null||!SYNTAX.matcher(value).matches()||SENSITIVE.matcher(value).find())return false
         def redacted=AiRedactor.redactText(value,128)

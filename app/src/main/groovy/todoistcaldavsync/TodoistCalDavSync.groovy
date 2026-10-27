@@ -98,7 +98,8 @@ class TodoistCalDavSync {
                    Closure qaCalendarProvisioningFactory = { googleConfig, qaRoot, stateFile ->
                        new QaCalendarProvisioningService(config: googleConfig, qaRoot: qaRoot, stateFile: stateFile)
                    },
-                   Closure aiAuthFactory = { aiConfig -> new AiSubscriptionAuthOperation(aiConfig) }) {
+                   Closure aiAuthFactory = { aiConfig -> new AiSubscriptionAuthOperation(aiConfig) },
+                   Closure plannerFactory = { configFile -> new ProductionPlannerOrchestrator(configFile) }) {
         def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
             writer: new PrintWriter(new AppendableWriter(out), true))
         cli.setFooter('Operations: legacy-sync (default), slack-app-manifest (no config or credentials required), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, ai-auth-login, ai-auth-status, ai-auth-logout, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
@@ -263,7 +264,7 @@ class TodoistCalDavSync {
                 out.append(JsonOutput.prettyPrint(JsonOutput.toJson(rows))).append('\n')
                 return 0
             }
-            ProductionPlannerOrchestrator orchestrator = new ProductionPlannerOrchestrator(configFile)
+            def orchestrator = plannerFactory.call(configFile)
             try {
                 def json = { value -> JsonOutput.prettyPrint(JsonOutput.toJson(value)) }
                 switch (operation) {
@@ -321,12 +322,15 @@ class TodoistCalDavSync {
                             requiredOption(options, 'ai-type'), requiredOption(options, 'correlation-id'),
                             optionString(options, 'feedback'))
                         out.append(json([accepted: result.bundle != null,
-                            error: result.error != null ? [class: result.error.errorClass?.name(), detail: result.error.detail] : null,
+                            error: result.error != null ? [class: result.error.errorClass?.name(), detail: result.error.detail,
+                                reasonCode: result.error.reasonCode, statusCode: result.error.statusCode,
+                                responseBytes: result.error.responseBytes, structuredTextBytes: result.error.structuredTextBytes,
+                                responseTruncated: result.error.responseTruncated] : null,
                             audit: result.audit?.toMap(),
                             bundle: result.bundle != null ? [type: result.bundle.suggestionType,
                                 contentHash: result.bundle.contentHash,
                                 suggestions: result.bundle.suggestions.collect { [id: it.suggestionId, type: it.class.simpleName] }] : null])).append('\n')
-                        break
+                        return result.bundle != null ? 0 : 1
                     default:
                         throw new IllegalArgumentException("Unsupported operation: ${operation}")
                 }

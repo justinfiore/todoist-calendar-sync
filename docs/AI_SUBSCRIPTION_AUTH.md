@@ -101,9 +101,24 @@ todoist-caldav-sync -f conf/planner.yaml -l conf/log4j.groovy \
 
 SmartPlanner requests the source-visible public client and scopes `openid profile email offline_access
 grok-cli:access api:access`, owns the resulting rotating grant, and pins auth traffic to `auth.x.ai` and
-inference to `api.x.ai`. Explicit `--auth-flow browser` exits 3 because xAI uses device authorization.
+inference to `api.x.ai`. The browser verification URL may use `accounts.x.ai` (observed during the
+2026-10-25 live login attempt); that host is allowed only for verification, never token exchange.
+Explicit `--auth-flow browser` exits 3 because xAI uses device authorization.
 An HTTP 401/403/usage error after successful login is a live compatibility or account-tier result; the
 launcher does not switch to Grok Build's proxy or an `XAI_API_KEY`.
+
+Remote status validates the public `/v1/models` response's `data` list for both providers. A successful
+catalog probe is not proof that the selected model can complete a structured suggestion; run the
+separate bounded inference gate before enabling the daemon.
+
+For `grok-4.6` and `grok-4.7`, the gateway selects low reasoning effort and sends the smaller of the
+request/configured token budgets as `max_output_tokens`. Other model capabilities are not inferred.
+The xAI response-byte default is 262144; an explicit smaller setting remains enforced. This bounds
+the entire SSE wire stream, including encrypted reasoning and framing, not only the visible JSON.
+The output-token limit does not cap reasoning tokens. Subscription requests bind correlation and
+applicable plan/proposal identities in the JSON schema; temporary overrides also receive the exact
+planning range and expiry constraints. Local semantic validation remains authoritative and fail-closed.
+See the [campaign replay](SMARTPLANNER_QA_REPLAY.md) for real-model test and evidence requirements.
 
 ## Preview, rollout, rollback, and cleanup
 

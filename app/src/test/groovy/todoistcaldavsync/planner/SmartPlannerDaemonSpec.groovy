@@ -1,6 +1,7 @@
 package todoistcaldavsync.planner
 
 import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
 
 import spock.lang.Specification
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
@@ -23,6 +24,9 @@ import todoistcaldavsync.planner.domain.CalendarEvent
 import todoistcaldavsync.planner.domain.EventRole
 import todoistcaldavsync.planner.domain.ManagedEventIds
 import todoistcaldavsync.planner.ai.LlmErrorClass
+import todoistcaldavsync.planner.ai.*
+import todoistcaldavsync.planner.domain.PlanHash
+import todoistcaldavsync.planner.domain.Proposal
 import todoistcaldavsync.planner.messaging.InMemoryMessagingSurface
 import todoistcaldavsync.planner.messaging.MessagingEvent
 import todoistcaldavsync.planner.messaging.MessagingSurface
@@ -352,6 +356,46 @@ class SmartPlannerDaemonSpec extends Specification {
         surface.close()
     }
 
+    def 'Socket Mode SDK payloads deliver mentions and thread replies with stable event identities'() {
+        given:
+        def received = new java.util.concurrent.LinkedBlockingQueue<MessagingEvent>()
+        def surface = new SlackSocketModeMessagingSurface([
+            channel: 'C123', botTokenEnv: 'BOT', appTokenEnv: 'APP'
+        ], { 'synthetic-token' })
+        surface.@handler = { received.add(it) } as java.util.function.Consumer<MessagingEvent>
+        def app = surface.createSlackApp()
+        def context = new com.slack.api.bolt.context.builtin.EventContext()
+        def eventRequest = new com.slack.api.bolt.request.builtin.EventRequest(
+            groovy.json.JsonOutput.toJson([type: 'event_callback', event_id: eventId,
+                event: [type: type, user: 'U1', channel: 'C123', ts: '5000.2',
+                    thread_ts: '5000.1', text: text]]), new com.slack.api.bolt.request.RequestHeaders([:]))
+        def payload = com.slack.api.bolt.util.EventsApiPayloadParser.buildEventPayload(eventRequest)
+        def handlers = app.@eventHandlers[type]
+
+        when:
+        def response = handlers.first().apply(payload, context)
+        def delivered = received.poll(2, TimeUnit.SECONDS)
+
+        then:
+        response.statusCode == 200
+        delivered != null
+        delivered.eventId == eventId
+        delivered.type == expectedType
+        delivered.text == expectedText
+        delivered.actorId == 'U1'
+        delivered.channelId == 'C123'
+        delivered.messageTs == '5000.2'
+        delivered.threadTs == '5000.1'
+
+        cleanup:
+        surface?.close()
+
+        where:
+        type          | eventId       | text                 | expectedType   | expectedText
+        'message'     | 'Ev-reply'    | 'replan mornings'    | 'thread_reply' | 'replan mornings'
+        'app_mention' | 'Ev-mention'  | '<@UBOT> plan daily' | 'app_mention'  | 'plan daily'
+    }
+
     def 'Socket Mode surface publishes channel parents and replies with the original thread identity'() {
         given:
         List<Map> payloads = []
@@ -444,26 +488,55 @@ class SmartPlannerDaemonSpec extends Specification {
         daemon?.close()
     }
 
+    private Closure validatedOverrides(AtomicReference<Instant> now, List<String> requestedTypes = [],
+                                       Closure adjust = { List rows -> rows }) {
+        { plan, String type, String correlationId, String feedback ->
+            requestedTypes << type
+            def request = new LlmRequest(correlationId: correlationId, suggestionType: type,
+                planId: plan.id, planVersion: plan.version, planHash: PlanHash.compute(plan),
+                planningInputHash: PlanningInputHash.compute(plan), allowedTaskIds: plan.tasks*.id,
+                expectedProposalId: Proposal.fromPlan(plan).id, allowedFeedbackActions: ['REQUEST_CHANGES'],
+                planningRangeStart: plan.slots*.start.min(), planningRangeEnd: plan.slots*.end.max())
+            Map row = type == 'conversational_feedback_interpretation'
+                ? [suggestionId: 'feedback-1', proposalId: request.expectedProposalId, planId: plan.id,
+                   planVersion: plan.version, planHash: request.planHash, action: 'REQUEST_CHANGES', reason: 'adjust estimate']
+                : [suggestionId: 'duration-1', planId: plan.id, planVersion: plan.version,
+                   planHash: request.planHash, planningInputHash: request.planningInputHash,
+                   taskIds: ['t1'], overrideType: 'duration_minutes', value: 45,
+                   rangeStart: request.planningRangeStart.toString(), rangeEnd: request.planningRangeEnd.toString(),
+                   expiresAt: request.planningRangeEnd.toString(), confidence: 0.95, rationale: 'adjust estimate']
+            List rows = [row]
+            if (type == 'temporary_planning_overrides') rows << (row + [suggestionId: 'context-1',
+                overrideType: 'context_label', value: 'deep-focus'])
+            if (type == 'temporary_planning_overrides') rows = adjust.call(rows)
+            new LlmSchemaValidator().validate(request, JsonOutput.prettyPrint(JsonOutput.toJson([schemaVersion: 1,
+                suggestionType: type, correlationId: correlationId, suggestions: rows])), now.get())
+        }
+    }
+
     def 'LLM feedback requires deterministic confirmation before a replan and never writes providers'() {
         given:
         File state = Files.createTempDirectory('smartplanner-ai-confirm-').toFile()
         def now = new AtomicReference<>(initial)
         List<String> requestedTypes = []
-        Closure provider = { plan, String type, String correlationId, String feedback ->
-            requestedTypes << type
-            if (type == 'conversational_feedback_interpretation') {
-                return [accepted: true, bundle: [suggestions: [[action: 'REQUEST_CHANGES', rationale: 'reduce load']]]]
-            }
-            [accepted: true, bundle: [suggestions: [[overrideType: 'exclude', taskIds: ['t1'], value: true]]]]
-        }
-        def parts = build(state, now, new InMemoryMessagingSurface(), provider)
+        Closure provider = validatedOverrides(now, requestedTypes)
+        def source = new InMemoryTodoistGateway([
+            [id: 't1', content: 'Target report', labels: ['schedule'], priority: 2, duration: [amount: 30, unit: 'minute']],
+            [id: 't2', content: 'Control report', labels: ['schedule'], priority: 1, duration: [amount: 30, unit: 'minute']]])
+        Map contextConfig = [tasks: [scheduling_eligible_labels: ['schedule'], default_duration_minutes: 30,
+            contexts: [focus: [match_labels: ['deep-focus'], preferred_windows: ['weekday 11:00-12:00'],
+                preferred_bonus: 10000, avoid_penalty: 10000]]]]
+        contextConfig.integration = config(state).planner.integration
+        contextConfig.integration.feedback.allowed_actors = ['U12345678']
+        def parts = build(state, now, new InMemoryMessagingSurface(), provider, source, source,
+            null, null, contextConfig)
         SmartPlannerDaemon daemon = parts[0]
         InMemoryMessagingSurface surface = parts[4]
         daemon.start()
         def proposal = daemon.runNow('daily')
 
         when: 'unmatched natural-language feedback produces only a pending suggestion'
-        surface.emit(new MessagingEvent(eventId: 'ai-feedback', type: 'thread_reply', actorId: 'U1',
+        surface.emit(new MessagingEvent(eventId: 'ai-feedback', type: 'thread_reply', actorId: 'U12345678',
             channelId: 'C123', messageTs: '2500.1', threadTs: proposal.threadTs,
             text: 'Please make tomorrow less busy'))
         def pending = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
@@ -473,14 +546,26 @@ class SmartPlannerDaemonSpec extends Specification {
         pending.iteration == 1
         pending.pendingConfirmation.action == 'replan'
         pending.pendingConfirmation.planId == pending.planId
-        pending.pendingConfirmation.overrides.exclude_task_ids == ['t1']
+        surface.replies.last().text.contains('45')
+        parts[1].planStore.load(pending.planId).tasks*.effectiveDuration*.toMinutes() == [30L, 30L]
         surface.replies.last().text.contains('Confirm with a configured `replan` phrase')
         parts[2].dueUpdates.empty
         parts[3].upserts.empty
 
+        when: 'a process restart restores the exact canonical suggestions without another LLM call'
+        daemon.close()
+        parts = build(state, now, new InMemoryMessagingSurface(), provider, source, source,
+            null, null, contextConfig)
+        daemon = parts[0]
+        surface = parts[4]
+        daemon.start()
+
+        then:
+        requestedTypes.size() == 2
+
         when: 'the authorized deterministic phrase confirms the exact pending suggestion'
         now.set(initial.plusSeconds(60))
-        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U1',
+        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U12345678',
             channelId: 'C123', messageTs: '2500.2', threadTs: proposal.threadTs, text: 'try again'))
         def confirmed = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
             .find('C123', proposal.threadTs)
@@ -489,12 +574,247 @@ class SmartPlannerDaemonSpec extends Specification {
         requestedTypes == ['conversational_feedback_interpretation', 'temporary_planning_overrides']
         confirmed.iteration == 2
         confirmed.pendingConfirmation.isEmpty()
-        confirmed.overrides.exclude_task_ids == ['t1']
+        def revised = parts[1].planStore.load(confirmed.planId)
+        revised.tasks.find { it.id == 't1' }.effectiveDuration.toMinutes() == 45
+        revised.tasks.find { it.id == 't2' }.effectiveDuration.toMinutes() == 30
+        revised.tasks.find { it.id == 't1' }.labels.contains('deep-focus')
+        def intervals = revised.scheduledBlocks.collectMany { it.memberIntervals }
+        java.time.Duration.between(intervals.find { it.taskId == 't1' }.start, intervals.find { it.taskId == 't1' }.end).toMinutes() == 45
+        java.time.Duration.between(intervals.find { it.taskId == 't2' }.start, intervals.find { it.taskId == 't2' }.end).toMinutes() == 30
+        intervals.find { it.taskId == 't1' }.start == Instant.parse('2026-08-17T11:00:00Z')
+        revised.slots*.end.max() <= Instant.parse(pending.pendingConfirmation.rangeEnd)
+        revised.explanations.count { it.code == 'AI_CONFIRMED_TEMPORARY_OVERRIDE' } == 2
+        source.fetchTasks()*.duration*.amount == [30, 30]
+        source.fetchTasks()*.labels == [['schedule'], ['schedule']]
+        parts[2].dueUpdates.empty
+        parts[3].upserts.empty
+
+        when: 'the exact confirmation envelope is redelivered after another restart'
+        daemon.close()
+        parts = build(state, now, new InMemoryMessagingSurface(), provider, source, source,
+            null, null, contextConfig)
+        daemon = parts[0]
+        surface = parts[4]
+        daemon.start()
+        surface.emit(new MessagingEvent(eventId: 'ai-confirm', type: 'thread_reply', actorId: 'U12345678',
+            channelId: 'C123', messageTs: '2500.2', threadTs: proposal.threadTs, text: 'try again'))
+
+        then:
+        parts[1].planStore.listPlanIds().size() == 2
+        surface.replies.empty
+
+        cleanup:
+        daemon?.close()
+    }
+
+    def 'concurrent exact AI confirmations cannot publish two successor proposals'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-ai-concurrent-').toFile()
+        def now = new AtomicReference<>(initial)
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        boolean holdReads = false
+        def source = new InMemoryTodoistGateway([[id: 't1', content: 'Target', labels: ['schedule'],
+            priority: 2, duration: [amount: 30, unit: 'minute']]])
+        TodoistReadGateway reader = { ->
+            if (holdReads) { entered.countDown(); assert release.await(5, TimeUnit.SECONDS) }
+            source.fetchTasks()
+        } as TodoistReadGateway
+        def parts = build(state, now, new InMemoryMessagingSurface(), validatedOverrides(now), reader, source)
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+        def proposal = daemon.runNow('daily')
+        parts[4].emit(new MessagingEvent(eventId: 'suggest', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2850.1', threadTs: proposal.threadTs, text: 'adjust estimate'))
+        holdReads = true
+        List<Throwable> failures = new java.util.concurrent.CopyOnWriteArrayList<>()
+        Closure confirm = { String id ->
+            try { parts[4].emit(new MessagingEvent(eventId: id, type: 'thread_reply', actorId: 'U1',
+                channelId: 'C123', messageTs: '2850.' + id, threadTs: proposal.threadTs, text: 'try again')) }
+            catch (Throwable failure) { failures.add(failure) }
+        }
+
+        when:
+        Thread first = Thread.start { confirm('first') }
+        assert entered.await(5, TimeUnit.SECONDS)
+        Thread second = Thread.start { confirm('second') }
+        new spock.util.concurrent.PollingConditions(timeout: 3).eventually {
+            assert second.state == Thread.State.BLOCKED
+        }
+        release.countDown()
+        first.join(5000)
+        second.join(5000)
+
+        then:
+        !first.alive && !second.alive
+        failures.empty
+        new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
+            .find('C123', proposal.threadTs).iteration == 2
+        parts[1].planStore.listPlanIds().size() == 2
+        parts[4].replies.count { it.text.contains('Revised proposal') } == 1
+        parts[4].replies.any { it.text.contains('already resolved') }
+        source.dueUpdates.empty
+        parts[3].upserts.empty
+
+        cleanup:
+        release.countDown()
+        daemon?.close()
+    }
+
+    def 'interrupted AI generation reuses its durable intent and exact saved successor after restart'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-ai-interrupt-').toFile()
+        def now = new AtomicReference<>(initial)
+        boolean failPublicationBarrier = true
+        def failingStore = new ConversationStore(state.toPath().resolve('deliveries/conversations'), { Map root ->
+            if (failPublicationBarrier && root.conversations.values().any { it.status == 'PUBLISHING_REVISION' }) {
+                failPublicationBarrier = false
+                throw new IOException('injected interruption before publishing barrier')
+            }
+        })
+        def provider = validatedOverrides(now)
+        def parts = build(state, now, new InMemoryMessagingSurface(), provider, null, null, null, failingStore)
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+        def proposal = daemon.runNow('daily')
+        parts[4].emit(new MessagingEvent(eventId: 'suggest', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2900.1', threadTs: proposal.threadTs, text: 'adjust estimate'))
+
+        when:
+        parts[4].emit(new MessagingEvent(eventId: 'confirm-interrupted', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2900.2', threadTs: proposal.threadTs, text: 'try again'))
+
+        then:
+        thrown(Exception)
+        parts[1].planStore.listPlanIds().size() == 2
+
+        when:
+        def intent = failingStore.find('C123', proposal.threadTs).pendingConfirmation
+        def successor = parts[1].planStore.load(intent.successorPlanId)
+        parts[4].emit(new MessagingEvent(eventId: 'unrelated-feedback', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2900.3', threadTs: proposal.threadTs, text: 'yes'))
+
+        then: 'another action cannot erase the in-progress confirmation or approve its old plan'
+        failingStore.find('C123', proposal.threadTs).pendingConfirmation == intent
+        parts[4].replies.last().text.contains('already in progress')
+        parts[2].dueUpdates.empty
+        parts[3].upserts.empty
+
+        when:
+        daemon.close()
+        now.set(initial.plusSeconds(120))
+        parts = build(state, now, new InMemoryMessagingSurface(), provider)
+        daemon = parts[0]
+        daemon.start() // recovers the interrupted confirmation event
+        def resolved = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', proposal.threadTs)
+
+        then:
+        resolved.iteration == 2
+        resolved.planId == successor.id
+        resolved.resolvedAiConfirmation.successorPlanId == successor.id
+        parts[1].planStore.listPlanIds().size() == 2
+        parts[1].planStore.load(successor.id).createdAt == successor.createdAt
+        parts[4].replies.count { it.text.contains('Revised proposal') } == 1
         parts[2].dueUpdates.empty
         parts[3].upserts.empty
 
         cleanup:
         daemon?.close()
+    }
+
+    def 'AI confirmation refuses #fault after restart without a successor or provider write'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-ai-refusal-').toFile()
+        def now = new AtomicReference<>(initial)
+        def source = new InMemoryTodoistGateway([[id: 't1', content: 'Target', labels: ['schedule'],
+            priority: 2, duration: [amount: 30, unit: 'minute']]])
+        def provider = validatedOverrides(now)
+        def parts = build(state, now, new InMemoryMessagingSurface(), provider, source, source)
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+        def proposal = daemon.runNow('daily')
+        parts[4].emit(new MessagingEvent(eventId: 'suggest', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2700.1', threadTs: proposal.threadTs, text: 'adjust estimate please'))
+        daemon.close()
+        def store = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
+        def record = store.find('C123', proposal.threadTs)
+        Map pending = new LinkedHashMap(record.pendingConfirmation)
+        switch (fault) {
+            case 'tampered content': pending.canonicalJson = pending.canonicalJson.replace('45', '90'); break
+            case 'unknown suggestion': pending.suggestionIds = ['unknown']; break
+            case 'legacy pending map': pending = [action: 'replan', overrides: [exclude_task_ids: ['t1']]]; break
+            case 'wrong thread binding': pending.threadTs = 'different-thread'; break
+            case 'stale plan': pending.planHash = 'f' * 64; break
+            case 'source duration drift': source.getTask('t1').duration.amount = 60; break
+            case 'source description drift': source.getTask('t1').description = 'changed planning notes'; break
+            case 'calendar event drift':
+                parts[3].seed(CalendarEvent.builder().id('new-event').uid('new-event').title('New meeting')
+                    .calendarName('Planned').start(Instant.parse('2026-08-17T10:00:00Z'))
+                    .end(Instant.parse('2026-08-17T11:00:00Z')).build())
+                break
+            case 'expired confirmation': now.set(initial.plusSeconds(901)); break
+            case 'missing signing key': Files.delete(parts[5].decisionsDir.resolve('.ai-suggestion-signing-key')); break
+            case 'corrupt signing key': Files.write(parts[5].decisionsDir.resolve('.ai-suggestion-signing-key'), new byte[32]); break
+        }
+        store.save(record.withPendingConfirmation(pending, now.get()))
+        parts = build(state, now, new InMemoryMessagingSurface(), provider, source, source,
+            null, null, [:], parts[3])
+        daemon = parts[0]
+        daemon.start()
+
+        when:
+        parts[4].emit(new MessagingEvent(eventId: 'confirm', type: 'thread_reply',
+            actorId: fault == 'unauthorized actor' ? 'U2' : 'U1', channelId: 'C123',
+            messageTs: '2700.2', threadTs: proposal.threadTs, text: 'try again'))
+
+        then:
+        store.find('C123', proposal.threadTs).iteration == 1
+        parts[1].planStore.listPlanIds().size() == 1
+        parts[4].replies.last().text =~ /(?i)(failed safely|not authorized)/
+        source.dueUpdates.empty
+        source.deadlineUpdates.empty
+        parts[3].upserts.empty
+        !Files.exists(parts[5].decisionsDir.resolve('ai-suggestion-decisions.json'))
+
+        cleanup:
+        daemon?.close()
+
+        where:
+        fault << ['tampered content', 'unknown suggestion', 'legacy pending map', 'wrong thread binding',
+            'stale plan', 'source duration drift', 'source description drift', 'expired confirmation',
+            'missing signing key', 'corrupt signing key', 'unauthorized actor', 'calendar event drift']
+    }
+
+    def 'AI #result overrides never become an actionable pending confirmation'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-ai-empty-').toFile()
+        def now = new AtomicReference<>(initial)
+        def provider = validatedOverrides(now, [], { List rows ->
+            result == 'empty' ? [] : rows.collect { row -> row + [rangeEnd:
+                Instant.parse(row.rangeEnd).minusSeconds(3600).toString()] }
+        })
+        def parts = build(state, now, new InMemoryMessagingSurface(), provider)
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+        def proposal = daemon.runNow('daily')
+
+        when:
+        parts[4].emit(new MessagingEvent(eventId: 'suggest', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2800.1', threadTs: proposal.threadTs, text: 'adjust the estimate'))
+
+        then:
+        new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
+            .find('C123', proposal.threadTs).pendingConfirmation.isEmpty()
+        parts[1].planStore.listPlanIds().size() == 1
+        parts[4].replies.last().text =~ /(?i)(no validated task override|exact reviewed planning range)/
+        parts[2].dueUpdates.empty
+        parts[3].upserts.empty
+
+        cleanup:
+        daemon?.close()
+
+        where:
+        result << ['empty', 'narrower-range']
     }
 
     def 'AI authentication failure becomes daemon state and clears after a fresh successful result'() {
@@ -568,7 +888,7 @@ class SmartPlannerDaemonSpec extends Specification {
         try { daemon?.close() } catch(Exception ignored) {}
     }
 
-    def 'temporary overrides reject unknown task ids and conversation pending confirmations survive restart'() {
+    def 'legacy untyped AI pending overrides are retained for inspection but confer no authority'() {
         given:
         File state = Files.createTempDirectory('smartplanner-overrides-').toFile()
         def now = new AtomicReference<>(initial)
@@ -590,9 +910,9 @@ class SmartPlannerDaemonSpec extends Specification {
             .find('C123', proposal.threadTs)
 
         then:
-        reloaded.pendingConfirmation.isEmpty()
+        reloaded.pendingConfirmation == pending.pendingConfirmation
         reloaded.iteration == 1
-        surface.replies.last().text.contains('unknown task')
+        surface.replies.last().text.contains('pending AI authority is invalid')
         parts[2].dueUpdates.empty
         parts[3].upserts.empty
 
@@ -796,7 +1116,7 @@ class SmartPlannerDaemonSpec extends Specification {
             .claimEvent('Ev-restart', 'C123', '1.1', initial.plusSeconds(3))
     }
 
-    def 'failed revised-conversation persistence leaves the old plan blocked from approval'() {
+    def 'failed revised-conversation persistence leaves the old plan blocked from approval (AI: #aiMode)'() {
         given:
         File state = Files.createTempDirectory('smartplanner-revision-barrier-').toFile()
         def now = new AtomicReference<>(initial)
@@ -806,11 +1126,14 @@ class SmartPlannerDaemonSpec extends Specification {
                 root.conversations.values().any { it instanceof Map && it.iteration == 2 && it.status == 'ACTIVE' }
             if (finalRevision) throw new IOException('injected final conversation persistence failure')
         }, 'daemon-process')
-        def parts = build(state, now, new InMemoryMessagingSurface(), null, null, null, null, failingStore)
+        def provider = aiMode ? validatedOverrides(now) : null
+        def parts = build(state, now, new InMemoryMessagingSurface(), provider, null, null, null, failingStore)
         SmartPlannerDaemon daemon = parts[0]
         InMemoryMessagingSurface surface = parts[4]
         daemon.start()
         def original = daemon.runNow('daily')
+        if (aiMode) surface.emit(new MessagingEvent(eventId: 'suggest-barrier', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '10.1', threadTs: original.threadTs, text: 'adjust estimate'))
 
         when: 'the revised Slack message succeeds but the new identity cannot be persisted'
         Throwable failure = null
@@ -830,8 +1153,22 @@ class SmartPlannerDaemonSpec extends Specification {
         parts[2].dueUpdates.empty
         parts[3].upserts.empty
 
+        when: 'restart must not blindly republish an uncertain revision'
+        daemon.close()
+        def restarted = build(state, now, new InMemoryMessagingSurface(), provider)
+        daemon = restarted[0]
+        daemon.start()
+
+        then:
+        restarted[4].replies.empty
+        restarted[1].planStore.listPlanIds().size() == 2
+        new ConversationStore(conversationDir).find('C123', original.threadTs).status == 'PUBLISHING_REVISION'
+
         cleanup:
         daemon?.close()
+
+        where:
+        aiMode << [false, true]
     }
 
     def 'bounded Slack callback admission rejects overload and connection status follows the live client'() {

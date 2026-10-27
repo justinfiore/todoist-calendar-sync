@@ -390,7 +390,8 @@ final class PlannerConfig {
             Duration.ofSeconds(30), 'planner.ai.request_timeout', errors)
         int maxRequestBytes = parsePositiveInt(normalized.maxrequestbytes, 65536,
             'planner.ai.max_request_bytes', errors)
-        int maxResponseBytes = parsePositiveInt(normalized.maxresponsebytes, 65536,
+        // xAI Responses includes SSE framing and encrypted reasoning, not just structured text.
+        int maxResponseBytes = parsePositiveInt(normalized.maxresponsebytes, provider == 'grok_build_subscription' ? 262144 : 65536,
             'planner.ai.max_response_bytes', errors)
         int maxItems = parsePositiveInt(normalized.maxitems, 100,
             'planner.ai.max_items', errors)

@@ -244,6 +244,46 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
         calls.last()[1].keySet()==['token','token_type_hint','client_id'] as Set
     }
 
+    def "xAI remote status validates the public data catalog without exposing credentials"() {
+        given:
+        def store = new SubscriptionCredentialStore(root.toPath(), 'grok')
+        store.save(new SubscriptionCredential(provider: 'grok', adapterRevision: XaiDeviceOAuthAdapter.REVISION,
+            issuer: 'https://auth.x.ai', clientId: XaiDeviceOAuthAdapter.CLIENT_ID,
+            accessToken: 'private-xai-access', refreshToken: 'private-xai-refresh',
+            expiresAt: now.plusSeconds(600), scopes: XaiDeviceOAuthAdapter.SCOPES))
+        SubscriptionOAuthTransport transport = [
+            postForm: { a, b, c -> throw new AssertionError('unexpected refresh') },
+            get: { uri, headers, timeout ->
+                assert uri.toString() == 'https://api.x.ai/v1/models'
+                assert headers.Authorization == 'Bearer private-xai-access'
+                new OAuthHttpResponse(httpStatus, JsonOutput.toJson(catalog).bytes)
+            }
+        ] as SubscriptionOAuthTransport
+        def service = new SubscriptionCredentialService(store, new XaiDeviceOAuthAdapter(), transport, { now })
+
+        when:
+        Map result
+        String error
+        try { result = service.status(true) }
+        catch (SubscriptionAuthException e) { error = e.code }
+
+        then:
+        error == expectedError
+        if (expectedError == null) {
+            assert result.state == 'ready' && result.remoteEntitlement == 'available'
+            assert !JsonOutput.toJson(result).contains('private-xai')
+            assert !JsonOutput.toJson(result).contains('grok-fixture-model')
+        }
+        store.load().get().refreshToken == 'private-xai-refresh'
+
+        where:
+        httpStatus | catalog                                                   | expectedError
+        200        | [object: 'list', data: [[id: 'grok-fixture-model']]]        | null
+        200        | [data: [id: 'not-a-list']]                                 | 'remote_status_invalid'
+        200        | [models: []]                                              | 'remote_status_invalid'
+        403        | [error: 'not entitled']                                    | 'entitlement_unavailable'
+    }
+
     def "xAI adapter is bounded to the source-visible registration and exact requested scopes"() {
         given: def adapter=new XaiDeviceOAuthAdapter()
         expect:
@@ -253,7 +293,7 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
             expiresAt:now.plusSeconds(60),scopes:XaiDeviceOAuthAdapter.SCOPES)).keySet()==['grant_type','client_id','refresh_token'] as Set
     }
 
-    def "xAI RFC 8628 flow handles pending and slow-down then stores a normalized rotating credential"() {
+    def "xAI RFC 8628 flow handles pending and slow-down with verification host #verificationHost"() {
         given:
         def store=new SubscriptionCredentialStore(root.toPath(),'grok');def sleeps=[];def polls=new AtomicInteger();Map deviceForm
         SubscriptionOAuthTransport transport=[
@@ -262,7 +302,7 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
                 if(uri.path=='/oauth2/device/code') {
                     deviceForm=new LinkedHashMap(form)
                     return new OAuthHttpResponse(200,JsonOutput.toJson([
-                        device_code:'device-secret',user_code:'ABCD-EFGH',verification_uri:'https://auth.x.ai/device',
+                        device_code:'device-secret',user_code:'ABCD-EFGH',verification_uri:"https://${verificationHost}/device",
                         interval:1,expires_in:600]).bytes)
                 }
                 int call=polls.incrementAndGet()
@@ -278,19 +318,22 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
 
         then:
         sleeps==[1000L,1000L,6000L]
-        out.toString().contains('https://auth.x.ai/device') && out.toString().contains('ABCD-EFGH')
+        out.toString().contains("https://${verificationHost}/device") && out.toString().contains('ABCD-EFGH')
         deviceForm.keySet()==['client_id','scope'] as Set
         deviceForm.client_id==XaiDeviceOAuthAdapter.CLIENT_ID
         deviceForm.scope==XaiDeviceOAuthAdapter.SCOPES.join(' ')
         store.load().get().accessToken=='x-access'
         store.load().get().adapterRevision==XaiDeviceOAuthAdapter.REVISION
+
+        where:
+        verificationHost << ['auth.x.ai', 'accounts.x.ai']
     }
 
-    def "xAI device flow pins discovered hosts and classifies denial without persisting"() {
+    def "xAI device flow rejects token host #tokenHost and unsafe verification without persisting"() {
         given:
         def store=new SubscriptionCredentialStore(root.toPath(),'grok')
         SubscriptionOAuthTransport hostile=[get:{a,b,c->new OAuthHttpResponse(200,
-            '{"token_endpoint":"https://attacker.example/token"}'.bytes)},postForm:{a,b,c->throw new AssertionError()}] as SubscriptionOAuthTransport
+            JsonOutput.toJson([token_endpoint:"https://${tokenHost}/token"]).bytes)},postForm:{a,b,c->throw new AssertionError()}] as SubscriptionOAuthTransport
 
         when: new XaiDeviceLogin(store,hostile,{},{now}).login(new StringBuilder())
         then:
@@ -309,6 +352,9 @@ class SubscriptionCredentialAndOAuthSpec extends Specification {
         def verificationError=thrown(SubscriptionAuthException)
         verificationError.code=='provider_endpoint_unsafe'
         store.load().empty
+
+        where:
+        tokenHost << ['attacker.example', 'accounts.x.ai']
     }
 
     def "xAI device cancellation is classified and preserves the existing credential"() {

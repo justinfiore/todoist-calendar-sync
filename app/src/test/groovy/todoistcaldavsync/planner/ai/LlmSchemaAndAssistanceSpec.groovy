@@ -95,17 +95,46 @@ class LlmSchemaAndAssistanceSpec extends Specification {
             overrideType:'duration_minutes',value:45,rangeStart:now.toString(),rangeEnd:now.plusSeconds(7200).toString(),
             expiresAt:now.plusSeconds(7200).toString(),confidence:0.7,rationale:'Temporary estimate']
 
-        List<Map> changes=[
-            [expiresAt:Instant.parse('2026-08-07T11:59:59Z').toString()],
-            [overrideType:'config_write',value:'fully_automated'],
-            [planHash:'0'*64],
-            [taskIds:['other']],
-            [rangeStart:now.minusSeconds(1).toString()],
-            [rangeEnd:now.plusSeconds(40L*86400L).toString(),expiresAt:now.plusSeconds(3600).toString()]
+        List cases=[
+            [[expiresAt:Instant.parse('2026-08-07T11:59:59Z').toString()], 'expired_override'],
+            [[overrideType:'config_write',value:'fully_automated'], 'schema_violation'],
+            [[planHash:'0'*64], 'plan_mismatch'],
+            [[taskIds:['other']], 'unknown_task'],
+            [[rangeStart:now.minusSeconds(1).toString()], 'range_outside_context'],
+            [[rangeEnd:now.plusSeconds(40L*86400L).toString(),expiresAt:now.plusSeconds(3600).toString()], 'invalid_range']
         ]
 
         expect:
-        changes.every { !new LlmSchemaValidator().validate(req,JsonOutput.toJson(root('temporary_planning_overrides',[base+it])),now).accepted }
+        cases.every { patch, reason ->
+            def result=new LlmSchemaValidator().validate(req,JsonOutput.toJson(root('temporary_planning_overrides',[base+patch])),now)
+            !result.accepted && result.bundle==null && result.error.reasonCode==reason
+        }
+    }
+
+    def "semantic diagnostics distinguish invalid targets without disclosing their values"() {
+        given:
+        def good=[suggestionId:'s1',taskId:'task-1',kind:'duration',proposedValue:30,
+            confidence:0.5,rationale:'Based on supplied duration',evidenceIds:['task-1']]
+        def rows=[good, good + patch]
+
+        when:
+        def result=new LlmSchemaValidator().validate(request('task_suggestions'),JsonOutput.toJson(root('task_suggestions',rows)),now)
+        String diagnostic=JsonOutput.toJson([code:result.error.reasonCode,detail:result.error.detail])
+
+        then:
+        !result.accepted
+        result.bundle==null
+        result.error.reasonCode==reason
+        !diagnostic.contains('private-identity-canary')
+        !diagnostic.contains('private-secret-canary')
+
+        where:
+        patch                                                                                         | reason
+        [suggestionId:'s2',taskId:'private-identity-canary',rationale:'private-secret-canary']              | 'unknown_task'
+        [suggestionId:'s2']                                                                            | 'duplicate_target'
+        [rationale:'Another estimate']                                                                 | 'duplicate_suggestion'
+        [suggestionId:'s2',kind:'context',proposedValue:'invalid label']                                  | 'schema_violation'
+        [suggestionId:'s2',kind:'schedule_rationale',proposedValue:'Contains / symbol']                    | 'schema_violation'
     }
 
     def "context builder allowlists fields redacts sensitive strings and truncates deterministically"() {
@@ -227,7 +256,41 @@ class LlmSchemaAndAssistanceSpec extends Specification {
         !result.accepted
         result.bundle == null
         result.error.errorClass == LlmErrorClass.MALFORMED_JSON
+        result.audit.reasonCode == 'malformed_json'
+        result.audit.responseBytes == unsafe.getBytes('UTF-8').length
+        result.audit.structuredTextBytes == unsafe.getBytes('UTF-8').length
         !result.error.detail.contains('bob@example.com')
         !result.error.detail.contains('sk-')
+    }
+
+    def "failed gateway audits preserve known measurements and leave unavailable measurements absent"() {
+        given:
+        def cfg=PlannerConfig.fromMap(planner:[availability:[working_windows:[weekday:['09:00-12:00']]],ai:[enabled:true,provider:'fixture',model:'fixture-v1']])
+        LlmError error=new LlmError(kind,'safe failure',status,null,false,
+            [reasonCode:reason,responseBytes:bytes,structuredTextBytes:textBytes,responseTruncated:truncated])
+        LlmGateway fake={req->LlmGatewayResult.failure(error)} as LlmGateway
+
+        when:
+        def result=new AiAssistanceService(cfg.ai,fake,null,new LlmSchemaValidator(),{now}).suggest('task_suggestions','corr-1',plan())
+        Map audit=result.audit.toMap()
+        def legacy=new LlmAuditReceipt([outcome:'REJECTED',errorClass:'TRANSPORT',responseBytes:0])
+
+        then:
+        !result.accepted && result.bundle==null
+        audit.reasonCode==reason
+        audit.statusCode==status
+        audit.responseBytes==bytes
+        audit.structuredTextBytes==textBytes
+        audit.responseTruncated==truncated
+        legacy.responseBytes==0
+        legacy.reasonCode==null && legacy.statusCode==null && legacy.structuredTextBytes==null
+        !legacy.responseTruncated
+        new LlmError(kind,'safe',null,null,false,[reasonCode:'private-secret-canary']).reasonCode==kind.name().toLowerCase(Locale.ROOT)
+
+        where:
+        kind                            | reason               | status | bytes | textBytes | truncated
+        LlmErrorClass.SCHEMA_REJECTED    | 'unknown_task'       | 200    | 1024  | 400       | false
+        LlmErrorClass.RESPONSE_TOO_LARGE | 'response_too_large' | 200    | 65537 | null      | true
+        LlmErrorClass.TRANSPORT          | 'transport'          | null   | null  | null      | false
     }
 }

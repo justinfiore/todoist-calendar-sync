@@ -226,18 +226,41 @@ final class SmartPlannerDaemon implements AutoCloseable {
             if (match?.overrides) overrides.putAll(match.overrides)
             String structuredCommand = null
 
+            if (conversation.pendingConfirmation.confirmedAt && action != 'replan') {
+                safeReply(event.channelId, event.threadTs,
+                    'An exact AI confirmation is already in progress. Resolve that intent before requesting another action.',
+                    "feedback-confirm-in-progress:${event.eventId}")
+                return
+            }
             if (action != null && conversation.pendingConfirmation) {
                 Map pending = conversation.pendingConfirmation
+                if (action == 'replan' && pending.action == 'replan') {
+                    synchronized (mutationLock) {
+                        ConversationRecord current = conversations.find(event.channelId, event.threadTs)
+                        if (current?.status != 'ACTIVE' || current.planId != conversation.planId ||
+                            current.pendingConfirmation.contentHash != pending.contentHash) {
+                            safeReply(event.channelId, event.threadTs,
+                                'That confirmation has already resolved or its proposal changed; no additional revision was created.',
+                                "feedback-confirm-resolved:${event.eventId}")
+                            return
+                        }
+                        conversation = current
+                        conversation = conversation.withPendingConfirmation(
+                            orchestrator.confirmAiIntent(conversation, event.actorId), clock.get())
+                        conversations.save(conversation)
+                        Plan revised = orchestrator.previewConfirmedAi(conversation, event.actorId)
+                        replanInThread(event, conversation, conversation.overrides, revised)
+                    }
+                    return
+                }
                 Instant expiresAt = Instant.parse(pending.expiresAt.toString())
                 if (clock.get().isAfter(expiresAt) || pending.planId != conversation.planId ||
                     pending.planHash != conversation.planHash || pending.action != action) {
-                    conversations.save(conversation.withPendingConfirmation([:], clock.get()))
                     safeReply(event.channelId, event.threadTs,
                         'The pending AI suggestion is stale, expired, or does not match this confirmation; no action was taken.',
                         "feedback-confirm-stale:${event.eventId}")
                     return
                 }
-                if (pending.overrides instanceof Map) overrides.putAll(pending.overrides as Map)
                 conversation = conversation.withPendingConfirmation([:], clock.get())
                 conversations.save(conversation)
             }
@@ -256,19 +279,44 @@ final class SmartPlannerDaemon implements AutoCloseable {
                     runtimeStatus.remove('ai')
                     def suggestion = interpreted.bundle.suggestions[0]
                     String proposedAction = normalizeAiAction(suggestion.action?.toString())
-                    Map proposedOverrides = [:]
                     if (proposedAction == 'replan') {
                         def suggested = aiSuggestion(conversation.planId,
                             'temporary_planning_overrides', "override-${event.messageTs?.replace('.', '-')}", event.text)
-                        if (suggested?.accepted) mergeAiOverrides(proposedOverrides, suggested.bundle?.suggestions ?: [])
+                        if (!suggested?.accepted || !suggested.bundle?.suggestions) {
+                            safeReply(event.channelId, event.threadTs,
+                                'No validated task override is ready (empty or rejected result). Request a fresh suggestion; no changes were made.',
+                                "feedback-ai-empty:${event.eventId}")
+                            return
+                        }
+                        Map pending = orchestrator.prepareAiPending(suggested.bundle, conversation, event.eventId)
+                        synchronized (mutationLock) {
+                            ConversationRecord current = conversations.find(event.channelId, event.threadTs)
+                            if (current?.status != 'ACTIVE' || current.planId != conversation.planId ||
+                                current.pendingConfirmation.confirmedAt)
+                                throw new IllegalArgumentException('proposal changed during inference; request fresh review')
+                            conversations.save(current.withPendingConfirmation(pending, clock.get()))
+                        }
+                        Plan bound = orchestrator.planStore.load(conversation.planId)
+                        String summary = suggested.bundle.suggestions.collect { s ->
+                            s.taskIds.collect { id ->
+                                Task task = bound.tasks.find { it.id == id }
+                                s.overrideType == 'duration_minutes'
+                                    ? "${task.content}: ${task.effectiveDuration.toMinutes()} → ${s.value} minutes"
+                                    : "${task.content}: add planning-only context ${s.value}"
+                            }.join('; ')
+                        }.join('; ')
+                        safeReply(event.channelId, event.threadTs,
+                            "AI suggests `replan` with temporary changes: ${summary}. Reviewed range: ${pending.rangeStart} to ${pending.rangeEnd}. Confirm with a configured `replan` phrase before ${pending.expiresAt}. No plan or provider changes have occurred.",
+                            "feedback-ai-confirm:${event.eventId}")
+                        return
                     }
                     if (proposedAction != null) {
-                        Map pending = [action: proposedAction, overrides: proposedOverrides,
+                        Map pending = [action: proposedAction,
                             sourceEventId: event.eventId, planId: conversation.planId, planHash: conversation.planHash,
                             expiresAt: clock.get().plus(Duration.ofMinutes(15)).toString()]
                         conversations.save(conversation.withPendingConfirmation(pending, clock.get()))
                         safeReply(event.channelId, event.threadTs,
-                            "AI suggests `${proposedAction}`${proposedOverrides ? " with temporary overrides `${proposedOverrides}`" : ''}. Confirm with a configured `${proposedAction}` phrase within 15 minutes. No plan or provider changes have occurred.",
+                            "AI suggests `${proposedAction}`. Confirm with a configured `${proposedAction}` phrase within 15 minutes. No plan or provider changes have occurred.",
                             "feedback-ai-confirm:${event.eventId}")
                         return
                     }
@@ -352,11 +400,11 @@ final class SmartPlannerDaemon implements AutoCloseable {
         }
     }
 
-    private void replanInThread(MessagingEvent event, ConversationRecord prior, Map overrides) {
+    private void replanInThread(MessagingEvent event, ConversationRecord prior, Map overrides, Plan confirmedPlan = null) {
         Map run = findRun(prior.runName)
         Instant now = clock.get()
         Duration horizon = overrideHorizon(run.horizon as Duration, overrides)
-        Plan plan = orchestrator.preview(now, now.plus(horizon), prior.planId, overrides)
+        Plan plan = confirmedPlan ?: orchestrator.preview(now, now.plus(horizon), prior.planId, overrides)
         Proposal proposal = Proposal.fromPlan(plan)
         Message message = renderer().renderProposal(plan, now)
         // Fail closed before exposing a new human-visible identity. If delivery or
@@ -530,22 +578,6 @@ final class SmartPlannerDaemon implements AutoCloseable {
         Duration value = raw instanceof Duration ? raw as Duration : Duration.parse(raw.toString())
         if (value < Duration.ofMinutes(5) || value > Duration.ofDays(90)) throw new IllegalArgumentException('feedback horizon override must be PT5M..P90D')
         value
-    }
-
-    private static void mergeAiOverrides(Map target, Collection suggestions) {
-        suggestions.each { s ->
-            String type = s.overrideType?.toString()?.toLowerCase(Locale.ROOT)
-            List<String> ids = (s.taskIds ?: []).collect { it.toString() }
-            if (type in ['priority', 'priority_override']) {
-                Map priorities = target.priority_overrides instanceof Map ? new LinkedHashMap(target.priority_overrides as Map) : [:]
-                ids.each { priorities[it] = Integer.parseInt(s.value.toString()) }
-                target.priority_overrides = priorities
-            } else if (type in ['exclude', 'excluded'] && s.value.toString().equalsIgnoreCase('true')) {
-                target.exclude_task_ids = (((target.exclude_task_ids ?: []) as Collection) + ids).toSet() as List
-            } else if (type == 'freeze' && s.value.toString().equalsIgnoreCase('true')) {
-                target.freeze_task_ids = (((target.freeze_task_ids ?: []) as Collection) + ids).toSet() as List
-            }
-        }
     }
 
     private static String normalizeAiAction(String action) {

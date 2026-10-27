@@ -89,6 +89,7 @@ final class PlanningInputHash {
         if (t == null) return null
         [
             id: t.id, content: t.content, projectId: t.projectId, projectName: t.projectName,
+            description: t.description, createdAt: instant(t.createdAt), updatedAt: instant(t.updatedAt),
             labels: (t.labels ?: []).toSorted(), priority: t.priority,
             deadline: instant(t.deadline), dueTime: instant(t.dueTime),
             deadlineDate: t.deadlineDate?.toString(), completedCount: t.completedCount,
@@ -96,6 +97,7 @@ final class PlanningInputHash {
             lifecycleMode: t.lifecycleMarker?.deadlineMode,
             lifecycleSource: t.lifecycleMarker?.deadlineSource,
             markerGeneration: t.lifecycleMarker?.markerGeneration,
+            lifecycleMarker: t.lifecycleMarker?.canonicalMap(),
             nativeDuration: duration(t.nativeDuration), effectiveDuration: duration(t.effectiveDuration),
             durationSource: t.durationSource, manual: t.manual, allDayDue: t.allDayDue
         ]
