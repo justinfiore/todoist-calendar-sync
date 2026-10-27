@@ -343,6 +343,30 @@ feedback in the active thread. Expect a deterministic summary and exact configur
 unknown task, out-of-range and duplicate confirmations must produce no applicable action. Use fixture
 clocks/events for deterministic expiry/replay rather than misrepresenting manual observation as proof.
 
+**Confirmed-override acceptance gate:** use a fresh disposable 30-minute target and a distinct
+30-minute control with sufficient capacity. Request a 45-minute target and a configured context label.
+Record the actual accepted types/values privately, not just a successful inference or iteration count.
+Before confirmation, require iteration 1, an honest target/value/fixed-range summary and unchanged
+provider inventories. Restart with the pending signed state intact; confirm in that exact thread.
+Require an actual **45-minute target interval**, unchanged 30-minute control, context-sensitive placement,
+temporary-change explanations and unchanged source duration/labels/Deadline/Due before separate apply.
+Recheck full inventories, reviewed-range containment, successor linkage and duplicate-envelope behavior.
+A revised proposal that still schedules 30 minutes fails this gate even if the LLM accepted its schema.
+Hermetic daemon/applier tests cover composition, restart, altered/legacy state and refusal boundaries;
+they do not pass this real Slack/xAI/Open-Meteo case. Preserve the signing key with the decision state;
+never regenerate missing retained provenance to make a replay pass.
+
+For the fresh campaign, use the owner's existing **signed-in Firefox Todoist** session; do not replace
+its profile or copy credentials. Cross-check the intended QA account privately before fixtures. Observe
+owned task Due values, protected fields and navigation from the Google event's task link. For recurrence,
+complete each approved disposable variant twice using native Todoist controls, with API snapshots of
+occurrence identity, recurrence/Deadline tuple and historical Google events before/after each action and
+after restart. API completion is a separate case, not a substitute for native Todoist completion.
+Inspect captured UI state and the full interaction recording, cropping/redacting account chrome,
+emails, resource/member IDs and unrelated tasks before publication. Never publish raw prompts, model
+responses or pending envelopes. Verify owned-only cleanup and unrelated inventories after these cases;
+retain every earlier campaign's evidence and label remaining blocked cases explicitly.
+
 ### E. Separately approved mutations, writeback, and recurrence
 
 **Preview is not a global no-write switch.** Explicit `apply-safe`, enabled recurrence lifecycle and
@@ -413,7 +437,7 @@ contracts to replay obligations, not a claim that tests cover every live conditi
 | AI-4: all four strict schemas and redaction | `planner/ai/LlmSchemaAndAssistanceSpec.groovy`: “fixture trial validates all four versioned schema/model contracts”; “strict validator rejects malformed unsafe and cross-context output without partial results”; “context builder allowlists fields redacts sensitive strings and truncates deterministically” | §3C four separate inference rows; invalid IDs/hash/extra JSON/expired range fail closed, no raw payload evidence. |
 | AI-STREAM: no tools/direct writes, errors safe | `planner/ai/SubscriptionResponsesGatewaySpec.groovy`: “gateway emits official store-false streaming history contract with no tools and accepts only completed strict output”; “SSE parser rejects tool activity explicit failures incomplete and interrupted streams” | §3C metadata-only audits, unchanged plan/config/provider state; synthetic tool/error/interrupt cases. |
 | SLACK: denied context, duplicates, restart | `planner/SmartPlannerDaemonSpec.groovy`: “ignores bots unrelated channels root feedback and duplicate or unauthorized events”; “publishes configured horizons, replans in the same thread, and applies exact approval after restart” | §3D manual UI and separate synthetic duplicate replay; no scheduling writes in initial phase. |
-| CONFIRM: exact actor/identity/expiry, no direct AI apply | `planner/ai/AiConfirmationAndOverrideSpec.groovy`: “stale wrong expired unauthorized replay and conflict never produce another applicable override”; `planner/SmartPlannerDaemonSpec.groovy`: “LLM feedback requires deterministic confirmation before a replan and never writes providers”; “temporary overrides reject unknown task ids and conversation pending confirmations survive restart” | §3D authorized confirmation plus denied actor/root/other-channel/duplicate/stale cases; fixture clock for deterministic expiry. |
+| CONFIRM: exact actor/identity/expiry, no direct AI apply | `planner/ai/AiConfirmationAndOverrideSpec.groovy`: “stale wrong expired unauthorized replay and conflict never produce another applicable override”; `planner/SmartPlannerDaemonSpec.groovy`: “LLM feedback requires deterministic confirmation before a replan and never writes providers”; “legacy untyped AI pending overrides are retained for inspection but confer no authority” | §3D authorized confirmation plus denied actor/root/other-channel/duplicate/stale cases; fixture clock for deterministic expiry. |
 | APPLY: exact approval, safe/protected separation | `planner/apply/PlanApplierSpec.groovy`: “missing approval causes zero writes”; “tampered plan hash approval is rejected”; “applySafeChanges on approval_required plan applies safe only; receipt effective mode; plan not mutated” | §3E unapproved/wrong-hash refusals, one exact approved apply and separate safe-only mixed plan. |
 | OWNERSHIP: managed Google only, no ordinary Deadline | `planner/apply/PlanApplierGoogleCalendarApiGatewaySpec.groovy`: “approved apply writes only the managed Google calendar and never mutates Todoist deadlines”; `planner/adapters/GoogleCalendarApiGatewayWireMockSpec.groovy`: “upsert refuses cross-calendar, missing ownership, and mismatched live block before mutation” | §3E inspect allowed output, invariants and global collision controls; never create collisions in unrelated data. |
 | RECOVERY: ambiguous writes, no blind retry | `planner/apply/PlanApplierSpec.groovy`: “ambiguous Todoist write is durably reconciled from live state without resend”; “ambiguous calendar PUT is reconciled from live owned event without resend”; `planner/messaging/MessagingServiceSpec.groovy`: “provider success then final ledger failure yields UNKNOWN and retry does not resend” | Stop, preserve all stores and receipts, inspect live postcondition before reconciliation; synthetic injection unless separately authorized. |

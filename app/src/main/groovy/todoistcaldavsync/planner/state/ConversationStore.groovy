@@ -189,6 +189,7 @@ final class ConversationRecord {
     final String status
     final Map overrides
     final Map pendingConfirmation
+    final Map resolvedAiConfirmation
 
     ConversationRecord(Map values) {
         this.channelId = values.channelId?.toString()
@@ -207,6 +208,8 @@ final class ConversationRecord {
         this.overrides = Collections.unmodifiableMap(new LinkedHashMap(values.overrides instanceof Map ? values.overrides as Map : [:]))
         this.pendingConfirmation = Collections.unmodifiableMap(new LinkedHashMap(
             values.pendingConfirmation instanceof Map ? values.pendingConfirmation as Map : [:]))
+        this.resolvedAiConfirmation = Collections.unmodifiableMap(new LinkedHashMap(
+            values.resolvedAiConfirmation instanceof Map ? values.resolvedAiConfirmation as Map : [:]))
         if (!channelId || !threadTs || !runName || !planId || planVersion < 1 || !planHash || !proposalId) {
             throw new IllegalArgumentException('conversation requires channel/thread/run and exact plan/proposal identity')
         }
@@ -219,7 +222,9 @@ final class ConversationRecord {
             proposalId: values.proposalId, iteration: iteration + 1,
             previousPlanId: planId, previousProposalId: proposalId,
             createdAt: createdAt, updatedAt: values.updatedAt ?: Instant.now(),
-            status: values.status ?: 'ACTIVE', overrides: values.overrides ?: [:], pendingConfirmation: [:]
+            status: values.status ?: 'ACTIVE', overrides: values.overrides ?: [:], pendingConfirmation: [:],
+            resolvedAiConfirmation: pendingConfirmation.successorPlanId == values.planId
+                ? pendingConfirmation : [:]
         ])
     }
 
@@ -236,7 +241,7 @@ final class ConversationRecord {
          planId: planId, planVersion: planVersion, planHash: planHash, proposalId: proposalId,
          iteration: iteration, previousPlanId: previousPlanId, previousProposalId: previousProposalId,
          createdAt: createdAt.toString(), updatedAt: updatedAt.toString(), status: status,
-         overrides: overrides, pendingConfirmation: pendingConfirmation]
+         overrides: overrides, pendingConfirmation: pendingConfirmation, resolvedAiConfirmation: resolvedAiConfirmation]
     }
 
     static ConversationRecord fromMap(Map map) { new ConversationRecord(map) }

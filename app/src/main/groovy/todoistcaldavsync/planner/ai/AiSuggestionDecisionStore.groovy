@@ -52,6 +52,52 @@ final class AiSuggestionDecisionStore {
     private Path identityPath(){contained(directory.resolve('.ai-suggestion-store-id'))}
     private Path lockPath(){contained(directory.resolve('.ai-suggestion-decisions.lock'))}
 
+    /** The key and retained decisions are one private service-owned state unit. */
+    static synchronized AiSuggestionDecisionStore serviceOwned(Path directory) {
+        Files.createDirectories(directory)
+        Path key = directory.resolve('.ai-suggestion-signing-key')
+        FileChannel.open(directory.resolve('.ai-signing-key.lock'), StandardOpenOption.CREATE,
+            StandardOpenOption.WRITE).withCloseable { channel ->
+            channel.lock().withCloseable {
+                if (!Files.exists(key)) {
+                    if (Files.exists(directory.resolve('.ai-suggestion-store-id')) ||
+                        Files.exists(directory.resolve('ai-suggestion-decisions.json')))
+                        throw new IllegalArgumentException('retained AI state requires its original signing key')
+                    byte[] material = new byte[32]
+                    new java.security.SecureRandom().nextBytes(material)
+                    Files.createFile(key, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                        java.nio.file.attribute.PosixFilePermissions.fromString('rw-------')))
+                    FileChannel.open(key, StandardOpenOption.WRITE).withCloseable { file ->
+                        file.write(java.nio.ByteBuffer.wrap(material)); file.force(true)
+                    }
+                }
+                if (Files.size(key) != 32) throw new IllegalArgumentException('invalid AI signing key state')
+                new AiSuggestionDecisionStore(directory, Files.readAllBytes(key))
+            }
+        }
+    }
+
+    Map sealPending(Map values) {
+        provenanceId()
+        Map unsigned = new TreeMap(values)
+        unsigned.remove('signature')
+        unsigned + [signature: hex(pendingMac(unsigned))]
+    }
+
+    boolean authenticPending(Map values) {
+        try {
+            Map unsigned = new TreeMap(values)
+            String signature = unsigned.remove('signature')?.toString()
+            signature ==~ /^[0-9a-f]{64}$/ && MessageDigest.isEqual(pendingMac(unsigned), decodeHex(signature))
+        } catch (Exception ignored) { false }
+    }
+
+    private byte[] pendingMac(Map values) {
+        Mac mac = Mac.getInstance('HmacSHA256')
+        mac.init(new SecretKeySpec(signingKey, 'HmacSHA256'))
+        mac.doFinal(('ai-pending-v1|' + JsonOutput.toJson(values)).getBytes(StandardCharsets.UTF_8))
+    }
+
     @PackageScope DecisionAppendOutcome appendClassified(AiSuggestionDecisionRecord candidate) {
         if(candidate==null)throw new IllegalArgumentException('candidate is required')
         withLock {

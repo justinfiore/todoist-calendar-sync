@@ -110,6 +110,31 @@ class LlmSchemaValidator {
         JsonSchemaContract.validate(type, json).valid
     }
 
+    /** Bounded structured output only; re-issue canonical identity before durable confirmation. */
+    ValidationResult canonicalize(AiSuggestionBundle bundle, Instant now) {
+        if (!isAuthentic(bundle)) return ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'validator-issued bundle required')
+        validate(bundle.originalRequest, bundle.originalJson, now)
+    }
+
+    String exportCanonical(AiSuggestionBundle bundle) {
+        if (!isAuthentic(bundle)) throw new IllegalArgumentException('validator-issued bundle required')
+        if (bundle.originalJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 262144)
+            throw new IllegalArgumentException('pending output exceeds limit')
+        bundle.originalJson
+    }
+
+    ValidationResult restore(String json, String correlation, todoistcaldavsync.planner.domain.Plan plan,
+                             Collection<todoistcaldavsync.planner.domain.CalendarEvent> events, Instant now) {
+        if (json == null || json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 262144 || !plan?.slots)
+            return ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'bounded pending output and range required')
+        def request = new LlmRequest(correlationId: correlation, suggestionType: 'temporary_planning_overrides',
+            planId: plan.id, planVersion: plan.version, planHash: todoistcaldavsync.planner.domain.PlanHash.compute(plan),
+            planningInputHash: PlanningInputHash.compute(plan, events), allowedTaskIds: plan.tasks*.id,
+            allowedEventIds: events*.id, planningRangeStart: plan.slots*.start.min(),
+            planningRangeEnd: plan.slots*.end.max(), requestedAt: now)
+        validate(request, json, now)
+    }
+
     private static TaskSuggestion parseTask(Map m, LlmRequest r) {
         String id = identifier(m.suggestionId, 'suggestionId', 128)
         String taskId = identifier(m.taskId, 'taskId', 256)

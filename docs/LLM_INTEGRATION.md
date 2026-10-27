@@ -66,6 +66,45 @@ configuration, or decision. Test against a mock/approved test
 endpoint first and verify redaction, schema rejection, token/body bounds, and unchanged remote/local
 write surfaces.
 
+## Confirmed temporary planning overrides
+
+The daemon carries the schema-supported `duration_minutes` and `context_label` suggestions separately
+from deterministic regex priority/exclusion/freeze maps. A nonempty validated set displays its actual
+targets, values and **fixed reviewed range** (the original plan's available-slot envelope). Every
+suggestion must cover that complete range; a narrower suggestion is refused, not stretched. Empty
+or rejected output is not an actionable pending confirmation. Confirmation does not roll the horizon
+forward with the clock.
+
+Before saving pending state, the validator revalidates its canonical structured output. The private,
+versioned envelope binds that canonical identity, selected suggestions, plan/version/hash, task/event
+input hash, source event, conversation and expiry. The original inference audit/wire hash is unchanged.
+Restart revalidates structured output at the current authoritative time; it never casts a restored map
+into a trusted suggestion. Legacy untyped AI pending maps must be retried. Altered content, changed
+tasks/events, wrong conversation/actor, missing provenance and expired confirmation fail closed without
+a revised proposal or provider writes. The confirmation deadline is the earlier of 15 minutes and
+the selected suggestions' expiry.
+
+The existing signed decision ledger uses a service-owned 256-bit random key in
+`decisions_dir/.ai-suggestion-signing-key`, created owner-readable/writable only. Preserve this key,
+the store identity/decision records, plans, conversations and delivery ledger together across restart
+and backup. Missing or corrupt retained signing state is an error, not permission to generate new
+authority. This is local private service state, not another provider credential. Do not publish it or
+the actionable pending structured output.
+
+Exact allowlisted confirmation rereads source tasks and events and validates the entire selected set
+against one original baseline. Duration and context changes compose on temporary task copies while
+preserving native Due/recurrence, Deadline, lifecycle metadata and manual controls. The new proposal
+records temporary-change explanations; source duration/labels, prior plans and permanent configuration
+do not change. The ordinary availability, weather and deterministic scheduling pipeline still decides
+placement. A separate exact apply approval is required for scheduling-provider writes.
+
+Confirmation intent, its actor/time and stable successor identity are saved before generation. A
+restart can reconcile already-recorded decisions and reuse the retained successor rather than create
+another. Pending authority is retained through the publishing barrier; the resolved conversation
+retains its signed successor link. An uncertain publication/final persistence outcome leaves the
+conversation blocked for delivery-ledger reconciliation, not automatic republishing or approval of the
+old plan. Do not delete these records to force a retry.
+
 Subscription profiles are documented separately in
 [`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md). OpenAI SIWC provides an authorized direct,
 tool-free public `/v1/responses` route. The xAI profile uses the distinct Hermes-style RFC 8628 route and
