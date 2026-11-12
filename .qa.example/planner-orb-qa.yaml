@@ -104,7 +104,7 @@ planner:
     slack_mode: socket_mode
     destination: REQUIRED_SLACK_CHANNEL
     app_name: SmartPlanner QA
-    command: /smartplanner
+    command: /smartplanner-qa
     bot_token_env: SLACK_BOT_TOKEN
     app_token_env: SLACK_APP_TOKEN
     enabled_kinds: [proposal]

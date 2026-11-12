@@ -330,8 +330,10 @@ Use space-free absolute paths for this command or quote them for the service she
 `nohup`, `&`, or tmux for daemon survival. Service logs are private until sanitized; do not paste them.
 Restart with the same start command and all four state directories intact, never with a blank state.
 
-**Manual Slack UI:** `/smartplanner help`, `/smartplanner status`, `/smartplanner plan daily`, mention
-`@SmartPlanner plan daily`, then `replan prefer mornings` in its proposal thread. Observe prompt
+**Manual Slack UI:** `/smartplanner-qa help`, `/smartplanner-qa status`, `/smartplanner-qa plan daily`, mention
+the QA bot with `plan daily`, then `replan prefer mornings` in its proposal thread. The QA manifest
+must use `--slack-command /smartplanner-qa`, matching the QA runtime template; production retains
+`/smartplanner`. Observe prompt
 acknowledgment, root proposal, working-status clear, same-thread linked iteration and zero scheduling
 writes. Try denied actor, channel-root feedback, another channel, unknown/stale thread, and bot input.
 Duplicate provider-event identity is a synthetic replay check, not two manually typed messages.

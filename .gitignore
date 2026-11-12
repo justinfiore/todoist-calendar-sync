@@ -6,6 +6,15 @@ conf/StoredCredential
 conf/client_secret.json
 SERVICE_SETUP.md
 
+# Machine-local launcher, IDE settings, and calendar scratch output.
+/start-todoist-calendar-sync.sh
+/.idea/
+/tmp.ical
+
+# Legacy calendar writeback runtime state and interrupted atomic-write files.
+/conf/calendar-writeback.json
+/conf/.calendar-writeback-*.tmp
+
 # Ignore Gradle project-specific cache directory
 .gradle
 
@@ -18,6 +27,9 @@ creds.txt
 
 # Private provider material referenced by the tracked planner example.
 conf/planner-private/
+
+# Local SmartPlanner configuration, manifests, and service environment secrets.
+conf/smartplanner/
 
 # Orb runtime portal metadata.
 .amp/portals/

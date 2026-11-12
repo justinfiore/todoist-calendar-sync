@@ -148,7 +148,7 @@ class SmartPlannerDaemonSpec extends Specification {
                 ]],
             messaging: [enabled: true, provider: 'slack', slack_mode: 'socket_mode', destination: 'C123',
                 bot_token_env: 'SLACK_BOT_TOKEN', app_token_env: 'SLACK_APP_TOKEN', app_name: 'SmartPlanner',
-                command: '/smartplanner', loading_messages: ['is planning…']],
+                command: '/smartplanner-qa', loading_messages: ['is planning…']],
             ai: [enabled: false],
             integration: [
                 todoist: [base_url: 'https://api.todoist.com/api/v1', token_env: 'TEST_TOKEN'],

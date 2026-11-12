@@ -276,25 +276,26 @@ and authorization text are in [`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.m
 
 ### Create the Slack app
 
-1. In the Slack API app dashboard, create an app **from an app manifest** and import
-   `conf/smartplanner-slack-app-manifest.example.yaml`.
+1. Generate a QA manifest with `--operation slack-app-manifest --slack-app-name 'SmartPlanner QA'
+   --slack-channel-types both --slack-command /smartplanner-qa`. In the Slack API app dashboard,
+   create an app **from an app manifest** and import that output, not the production-default template.
 2. Keep Socket Mode and interactivity enabled. Do not configure a public Request URL.
 3. Under **Basic Information > App-Level Tokens**, create a token with `connections:write`; store its
    `xapp-*` value as `SLACK_APP_TOKEN`.
 4. Under **OAuth & Permissions**, install the app to the test workspace; store the bot's `xoxb-*`
    token as `SLACK_BOT_TOKEN`.
-5. Invite `@SmartPlanner` to a private test channel and copy that channel's ID.
+5. Invite the QA bot to a private test channel and copy that channel's ID.
 6. Copy the member IDs of the people authorized to issue commands/feedback.
 
-The supplied manifest requests:
+The generated both-channel manifest requests:
 
-- bot scopes: `app_mentions:read`, `assistant:write`, `channels:history`, `chat:write`, `commands`;
-- events: `app_mention`, `message.channels`;
-- slash command: `/smartplanner`;
+- bot scopes: `app_mentions:read`, `assistant:write`, `channels:history`, `groups:history`, `chat:write`, `commands`;
+- events: `app_mention`, `message.channels`, `message.groups`;
+- slash command: `/smartplanner-qa` (production retains `/smartplanner`);
 - Socket Mode and interactivity.
 
-For a private test channel, add `groups:history` to the bot scopes and `message.groups` to event
-subscriptions, then reinstall the app if Slack requires it. Do not add broader scopes.
+If testing only private channels, select `--slack-channel-types private` instead. Reinstall the app
+if changing scopes and Slack requires it. Do not add broader scopes.
 
 ### Configure a non-applying first pass
 
@@ -325,8 +326,8 @@ planner:
     provider: slack
     slack_mode: socket_mode
     destination: C0123456789
-    app_name: SmartPlanner
-    command: /smartplanner
+    app_name: SmartPlanner QA
+    command: /smartplanner-qa
     bot_token_env: SLACK_BOT_TOKEN
     app_token_env: SLACK_APP_TOKEN
     enabled_kinds: [proposal]
@@ -363,8 +364,8 @@ todoist-caldav-sync -f /private/path/planner-qa.yaml -l conf/log4j.groovy \
 
 Exercise both slash commands and mentions:
 
-- `/smartplanner help` and `/smartplanner status`;
-- `/smartplanner plan daily` and `@SmartPlanner plan daily`;
+- `/smartplanner-qa help` and `/smartplanner-qa status`;
+- `/smartplanner-qa plan daily` and a mention of the QA bot with `plan daily`;
 - reply `replan prefer mornings` in the resulting proposal thread;
 - send the same reply at channel root, from an unauthorized user, and in another channel;
 - restart the daemon, then continue in the existing proposal thread;

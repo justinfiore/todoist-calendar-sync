@@ -49,7 +49,7 @@ class SlackAppManifestCliSpec extends Specification {
         File cwd = new File(dir, 'empty'); assert cwd.mkdir()
         String name = 'Planner: QA "team" #1'
         def builder = new ProcessBuilder([launcher.path, '--operation', 'slack-app-manifest',
-            '--slack-app-name', name, '--slack-channel-types', 'private', '--slack-command', '/planner-qa'])
+            '--slack-app-name', name, '--slack-channel-types', 'private', '--slack-command', '/smartplanner-qa'])
         builder.directory(cwd)
         builder.environment().clear()
         builder.environment().putAll([HOME: home.path, PATH: '/usr/local/bin:/usr/bin:/bin'])
@@ -68,7 +68,7 @@ class SlackAppManifestCliSpec extends Specification {
         err.empty
         manifest.display_information.name == name
         manifest.features.bot_user.display_name == 'planner_qa_team_1'
-        manifest.features.slash_commands[0].command == '/planner-qa'
+        manifest.features.slash_commands[0].command == '/smartplanner-qa'
         manifest.oauth_config.scopes.bot.contains('groups:history')
         !manifest.oauth_config.scopes.bot.contains('channels:history')
         manifest.settings.event_subscriptions.bot_events == ['app_mention', 'message.groups']

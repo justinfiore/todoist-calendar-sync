@@ -144,7 +144,10 @@ not undo calendar mutations, so provider export restoration remains required.
 
 ## 5. Isolated Slack daemon gate
 
-Import `conf/smartplanner-slack-app-manifest.example.yaml` as a test Slack App (default name **SmartPlanner**), create
+Generate the test Slack App manifest with `--operation slack-app-manifest --slack-app-name 'SmartPlanner QA'
+--slack-channel-types private --slack-command /smartplanner-qa`, then set
+`planner.messaging.command: /smartplanner-qa` in the QA runtime configuration. Production retains
+`/smartplanner`; the two apps must not compete for that command in the same workspace. Create
 an app-level `connections:write` token, install/invite the bot to a private test channel, and configure
 that channel ID plus exact test user IDs. Keep the Todoist project and selected-provider calendar isolated.
 
@@ -152,7 +155,7 @@ Start `--operation planner-daemon` and verify:
 
 1. No inbound listener/port is opened; Socket Mode connects outbound and startup completes only after
    successful read-only Todoist/calendar-provider probes.
-2. `/smartplanner plan daily`, `/smartplanner plan weekly`, `status`, and `help` acknowledge promptly.
+2. `/smartplanner-qa plan daily`, `/smartplanner-qa plan weekly`, `status`, and `help` acknowledge promptly.
 3. Each initial proposal is a channel-root message with the configured horizon; thread feedback creates
    revised iterations in that same thread.
 4. `assistant.threads.setStatus` appears during Slack-requested work and clears after the reply.

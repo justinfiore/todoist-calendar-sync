@@ -61,6 +61,7 @@ class OrbQaHelperSpec extends Specification {
         config.planner.weather.longitude == -80.0984618
         config.planner.ai.enabled == false
         config.planner.mode == 'preview'
+        config.planner.messaging.command == '/smartplanner-qa'
         config.planner.integration.calendar.provider == 'google_calendar_api'
         !config.planner.integration.containsKey('caldav')
         Files.getPosixFilePermissions(run) == PosixFilePermissions.fromString('rwx------')

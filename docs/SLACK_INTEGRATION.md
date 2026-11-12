@@ -29,6 +29,7 @@ With `todoist-caldav-sync` installed on PATH, the private-channel QA setup is:
 ```bash
 todoist-caldav-sync --operation slack-app-manifest \
   --slack-app-name 'SmartPlanner QA' --slack-channel-types private \
+  --slack-command /smartplanner-qa \
   > smartplanner-slack-app.yaml
 ```
 
@@ -44,7 +45,7 @@ planner/auth/provisioning flags.
 - `--slack-channel-types public|private|both` defaults to `public`. Public selects
   `channels:history` / `message.channels`; private selects `groups:history` / `message.groups`
   **instead**. Choose `both` only when both channel types are needed.
-- `--slack-command /planner-qa` optionally changes the default `/smartplanner` slash command.
+- `--slack-command /smartplanner-qa` optionally changes the default `/smartplanner` slash command.
   Commands must contain 1–31 lowercase letters, digits, underscores, or hyphens after `/`.
 
 Then the workspace owner performs the Slack-side steps:
