@@ -9,6 +9,6 @@ log4j {
     appender."file.MaxBackupIndex"="2"
     appender."file.MaxFileSize"="100MB"
     appender."file.Append"="true"
-    rootLogger="debug,file,stdout"
+    rootLogger="info,file,stdout"
     logger.org.apache.xerces.parsers="error,file,stdout"
 }
