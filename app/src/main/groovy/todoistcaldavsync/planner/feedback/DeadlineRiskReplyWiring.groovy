@@ -29,7 +29,7 @@ final class DeadlineRiskReplyWiring {
         new DeadlineRiskReplyHandler(interpreter, feedback, zone, post,
             { List ids -> ids.collectEntries { [(it): gateway.fetchTask(it)] } },
             { String op, String id, List outcomes = null ->
-                op == 'load' ? [] as Set : outcomes
+                DeadlineRiskReceipts.handle(config.applicationsDir.resolve('deadline-risk'), op, id, outcomes)
             })
     }
 

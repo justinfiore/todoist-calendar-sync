@@ -39,6 +39,9 @@ final class DeadlineRiskReplyHandler {
             zone: zone, inventory: inventory))
         if (!interpreted.complete()) {
             reply.accept(event.threadTs, interpreted.clarification)
+            receipts.call('save', "clarify:${event.eventId}", [[
+                clarification: interpreted.clarification, reply: event.text, proposalId: conversation.proposalId
+            ]])
             return
         }
         List bound = interpreted.actions.collect { action ->
@@ -57,6 +60,6 @@ final class DeadlineRiskReplyHandler {
         receipts.call('save', event.eventId, execution.outcomes.collect { it.toMap() })
         String summary = execution.outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
         reply.accept(event.threadTs,
-            "Deadline reply applied without Calendar changes. ${summary}. A fresh proposal is required before any calendar apply.")
+            "Deadline reply applied without Calendar changes. ${summary}. Re-read the tasks and post a fresh proposal before any calendar apply; this reply is not calendar approval.")
     }
 }
