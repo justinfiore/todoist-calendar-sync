@@ -180,11 +180,13 @@ The scheduler:
 
 The current scheduler is greedy and deterministic, not an optimization solver. Given the same normalized inputs, configuration, prior plan, and fixed clock, it produces the same result.
 
-When native recurrence lifecycle support is enabled, an ordinary Todoist Deadline is a soft target:
-the scheduler may place work after it with an increasing lateness penalty. The configured `hard`
-label makes the date a finish-by boundary; urgency escalates only within
-`hard_deadline_soon_days`. With recurrence support disabled, the legacy planner policy treats every
-Deadline as hard. Operators must therefore inspect a new preview when toggling the feature.
+Deadline hardness does not follow the recurrence gate. `default_deadline_mode` defaults to hard
+whether recurrence is enabled or a task recurs. Optional hard and soft labels override that default
+and are disabled until configured. Hard capacity is protected, but a soft task may take an earlier
+slot when every feasible hard commitment can still finish on time. Plan identity includes the
+effective policy, so a changed mode, label, or window cannot reuse an old approval. Proposal warnings
+and numbered Deadline replies are a separate write path from Calendar apply and from temporary AI
+overrides.
 
 ### 6.3 Calendar providers
 

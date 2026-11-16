@@ -58,17 +58,12 @@ class PlanScorerSpec extends Specification {
             .build()
     }
 
-    private PlanScorer recurrenceScorer(int soonDays = 5) {
+    private PlanScorer policyScorer(Map tasks = [:]) {
         new PlanScorer(PlannerConfig.fromMap(planner: [
             mode        : 'preview',
             timezone    : 'America/New_York',
             availability: [working_windows: [weekday: ['09:00-17:00']]],
-            tasks       : [
-                default_duration_minutes: 30,
-                recurrence: [enabled: true, rollout_cutoff: '2026-01-01T00:00:00Z',
-                    seen_label: 'smartplanner-seen', onboard_label: 'smartplanner-onboard',
-                    hard_label: 'hard', hard_deadline_soon_days: soonDays]
-            ]
+            tasks       : [default_duration_minutes: 30] + tasks
         ]))
     }
 
@@ -106,62 +101,93 @@ class PlanScorerSpec extends Specification {
         scorer.scorePlacement(p1, start, end, null, [], now, rangeEnd, null, null, false, false) == PlanScorer.INFEASIBLE
     }
 
-    def "recurrence-enabled soft Deadline permits lateness with a monotonic penalty"() {
+    def "default-soft and label-soft share lateness treatment and keep overdue urgency"() {
         given:
-        def enabled = recurrenceScorer()
+        def byDefault = policyScorer(default_deadline_mode: 'soft')
+        def byLabel = policyScorer(default_deadline_mode: 'hard', soft_label: 'flexible')
         def deadline = now + Duration.ofHours(2)
-        def soft = task(deadline: deadline, priority: 2)
+        def unlabeled = task(deadline: deadline, priority: 2)
+        def labeled = task(labels: ['schedule', 'flexible'], deadline: deadline, priority: 2)
+        def overdue = task(deadline: now - Duration.ofHours(2), priority: 2)
 
         expect:
-        enabled.deadlineUrgency(soft, deadline + Duration.ofMinutes(15), now, rangeEnd) >
-            enabled.deadlineUrgency(soft, deadline + Duration.ofHours(3), now, rangeEnd)
-        enabled.deadlineUrgency(soft, deadline + Duration.ofHours(3), now, rangeEnd) != PlanScorer.INFEASIBLE
+        byDefault.deadlinePolicy.classify(unlabeled).mode == 'soft'
+        byLabel.deadlinePolicy.classify(labeled).mode == 'soft'
+        byDefault.deadlineUrgency(unlabeled, deadline + Duration.ofHours(3), now, rangeEnd) ==
+            byLabel.deadlineUrgency(labeled, deadline + Duration.ofHours(3), now, rangeEnd)
+        byDefault.deadlineUrgency(unlabeled, deadline + Duration.ofHours(3), now, rangeEnd) != PlanScorer.INFEASIBLE
+        byDefault.deadlineUrgency(overdue, now + Duration.ofHours(1), now, rangeEnd) >=
+            DeadlinePolicy.SOFT_WINDOW_FLOOR + DeadlinePolicy.TIME_URGENCY_SPAN
     }
 
-    def "hard Deadline urgency starts strictly inside configured soon window"() {
+    def "configured labels override either default and both labels resolve hard"() {
         given:
-        def enabled = recurrenceScorer(5)
+        def softDefault = policyScorer(default_deadline_mode: 'soft', hard_label: 'firm', soft_label: 'flexible')
+        def hardDefault = policyScorer(default_deadline_mode: 'hard', hard_label: 'firm', soft_label: 'flexible')
+        def firm = task(labels: ['firm'], deadline: rangeEnd)
+        def both = task(labels: ['firm', 'flexible'], deadline: rangeEnd)
+        def dueOnly = task(labels: ['firm'], dueTime: rangeEnd)
 
         expect:
-        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: now + Duration.ofDays(6)),
-            now + Duration.ofMinutes(30), now, rangeEnd) == 0L
-        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: now + Duration.ofDays(5)),
-            now + Duration.ofMinutes(30), now, rangeEnd) == 0L
-        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: now + Duration.ofDays(5) - Duration.ofMinutes(1)),
-            now + Duration.ofMinutes(30), now, rangeEnd) >= 600L
+        softDefault.isHard(firm)
+        hardDefault.deadlinePolicy.classify(task(labels: ['flexible'], deadline: rangeEnd)).mode == 'soft'
+        softDefault.deadlinePolicy.classify(both).hard
+        softDefault.deadlinePolicy.classify(both).conflict.contains('hard treatment wins')
+        !softDefault.deadlinePolicy.classify(dueOnly).classified
     }
 
-    def "hard soon boundary advances by local days across DST rather than fixed hours"() {
+    def "hard urgency uses local days and does not start outside its own window"() {
         given:
-        def enabled = recurrenceScorer(2)
+        def enabled = policyScorer(hard_deadline_soon_days: 2)
         def beforeSpringForward = LocalDate.of(2026, 3, 7).atTime(8, 0).atZone(zone).toInstant()
         def localBoundary = beforeSpringForward.atZone(zone).plusDays(2).toInstant()
+        def outside = task(deadline: now + Duration.ofDays(8))
 
         expect:
         Duration.between(beforeSpringForward, localBoundary).toHours() == 47L
-        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: localBoundary),
-            beforeSpringForward + Duration.ofMinutes(30), beforeSpringForward,
-            beforeSpringForward + Duration.ofDays(7)) == 0L
-        enabled.deadlineUrgency(task(labels: ['schedule', 'hard'], deadline: localBoundary - Duration.ofMinutes(1)),
-            beforeSpringForward + Duration.ofMinutes(30), beforeSpringForward,
-            beforeSpringForward + Duration.ofDays(7)) >= 600L
+        enabled.deadlinePolicy.inUrgencyWindow(task(deadline: localBoundary), beforeSpringForward)
+        // Exclusive next-local-midnight of March 9 is the Deadline for civil date March 9, which is
+        // today+2. March 10's exclusive midnight is outside a two-day window.
+        !enabled.deadlinePolicy.inUrgencyWindow(
+            task(deadline: localBoundary.atZone(zone).toLocalDate().plusDays(2)
+                .atTime(8, 0).atZone(zone).toInstant()), beforeSpringForward)
+        enabled.deadlineUrgency(outside, now + Duration.ofMinutes(30), now, rangeEnd) < DeadlinePolicy.HARD_WINDOW_FLOOR
+        enabled.deadlineUrgency(task(deadline: now + Duration.ofDays(1)),
+            now + Duration.ofMinutes(30), now, rangeEnd) >= DeadlinePolicy.HARD_WINDOW_FLOOR
     }
 
-    def "approaching hard P4 outranks ordinary P1 while late hard placement is infeasible"() {
+    def "less remaining feasible capacity raises soft pressure without changing native priority"() {
         given:
-        def enabled = recurrenceScorer(5)
-        def start = now + Duration.ofHours(1)
-        def end = start + Duration.ofMinutes(30)
-        def hardP4 = task(id: 'hard-p4', labels: ['schedule', 'hard'], priority: 1,
-            deadline: now + Duration.ofDays(1))
-        def softP1 = task(id: 'soft-p1', priority: 4, deadline: now + Duration.ofDays(10))
+        def enabled = policyScorer(default_deadline_mode: 'soft')
+        def deadline = now + Duration.ofDays(2)
+        def constrained = task(id: 'tight', minutes: 90, priority: 1, deadline: deadline)
+        def roomy = task(id: 'roomy', minutes: 30, priority: 1, deadline: deadline)
+        long tight = enabled.deadlinePolicy.scarcity(constrained, 100L, 0L).value
+        long loose = enabled.deadlinePolicy.scarcity(roomy, 180L, 0L).value
 
         expect:
-        enabled.scorePlacement(hardP4, start, end, null, [], now, now + Duration.ofDays(14),
+        tight > loose
+        enabled.deadlineUrgency(constrained, now + Duration.ofMinutes(30), now, rangeEnd, tight) >
+            enabled.deadlineUrgency(roomy, now + Duration.ofMinutes(30), now, rangeEnd, loose)
+        constrained.priority == 1
+        enabled.deadlinePolicy.scarcity(constrained, null, 0L).present == false
+    }
+
+    def "approaching soft P4 urgency outranks a no-deadline P1 score and late hard is infeasible"() {
+        given:
+        def enabled = policyScorer(default_deadline_mode: 'soft')
+        def start = now + Duration.ofHours(1)
+        def end = start + Duration.ofMinutes(30)
+        def softP4 = task(id: 'soft-p4', priority: 1, deadline: now + Duration.ofDays(1))
+        def noDeadlineP1 = task(id: 'plain-p1', priority: 4)
+
+        expect:
+        enabled.scorePlacement(softP4, start, end, null, [], now, now + Duration.ofDays(14),
             null, null, false, false) >
-            enabled.scorePlacement(softP1, start, end, null, [], now, now + Duration.ofDays(14),
+            enabled.scorePlacement(noDeadlineP1, start, end, null, [], now, now + Duration.ofDays(14),
                 null, null, false, false)
-        enabled.scorePlacement(hardP4, hardP4.deadline, hardP4.deadline + Duration.ofMinutes(30),
+        def hard = policyScorer()
+        hard.scorePlacement(task(deadline: start), start, start + Duration.ofMinutes(30),
             null, [], now, now + Duration.ofDays(14), null, null, false, false) == PlanScorer.INFEASIBLE
     }
 
@@ -240,8 +266,9 @@ class PlanScorerSpec extends Specification {
         then:
         // usableSlotMinutes clips full slot at deadline → same 40m usable as pre-clipped slot
         withFull == withClipped
-        // leftover 10m (<15) applies exact fragmented penalty of 10 vs null placeable (no leftover)
-        withFull == withNull - 10L
+        // Window urgency differs between a null slot and a clipped slot; the penalty itself is exact.
+        scorer.fragmentedSlotPenalty(
+            PlanScorer.usableSlotMinutes(fullSlot, start, end, deadline), 30) == 10L
         scorer.fragmentedSlotPenalty(40, 30) == 10L
         scorer.fragmentedSlotPenalty(180, 30) == 0L
         PlanScorer.usableSlotMinutes(fullSlot, start, end, deadline) == 40L

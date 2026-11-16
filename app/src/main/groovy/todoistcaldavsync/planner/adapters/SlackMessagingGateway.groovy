@@ -221,6 +221,49 @@ class SlackMessagingGateway implements MessagingWriteGateway {
         return JsonOutput.toJson(payload)
     }
 
+    /**
+     * Native table blocks for proposal Deadline risk. Chunked at 20 rows so a provider
+     * limit cannot drop a warning. Text fallback in the message body carries the same numbers.
+     */
+    private List deadlineRiskTables(Message message) {
+        def rows = message.metadata?.deadlineRisks
+        if (!(rows instanceof List) || rows.isEmpty()) return []
+        List tables = []
+        rows.collate(20).eachWithIndex { List chunk, int page ->
+            List tableRows = [[
+                [type: 'raw_text', text: '#'],
+                [type: 'raw_text', text: 'Task'],
+                [type: 'raw_text', text: 'Project'],
+                [type: 'raw_text', text: 'Deadline'],
+                [type: 'raw_text', text: 'Policy'],
+                [type: 'raw_text', text: 'Priority']
+            ]]
+            chunk.each { Map row ->
+                String title = (row.content ?: row.taskId ?: '').toString()
+                if (title.length() > 120) title = title.substring(0, 117) + '...'
+                String url = row.url?.toString()
+                Map taskCell = url
+                    ? [type: 'rich_text', elements: [[type: 'rich_text_section', elements: [[
+                        type: 'link', url: url, text: title]]]]]
+                    : [type: 'raw_text', text: title]
+                tableRows << [
+                    [type: 'raw_text', text: row.number?.toString() ?: ''],
+                    taskCell,
+                    [type: 'raw_text', text: (row.projectName ?: row.projectId ?: '').toString()],
+                    [type: 'raw_text', text: (row.deadlineDate ?: '').toString()],
+                    [type: 'raw_text', text: (row.mode ?: '').toString()],
+                    [type: 'raw_text', text: (row.priority ?: '').toString()]
+                ]
+            }
+            tables << [
+                type: 'table',
+                block_id: "deadline-risk-${message.proposalId ?: 'proposal'}-${page}",
+                rows: tableRows
+            ]
+        }
+        return tables
+    }
+
     private List buildBlocks(Message message, String text) {
         List blocks = []
         if (message.subject) {
@@ -230,6 +273,7 @@ class SlackMessagingGateway implements MessagingWriteGateway {
                 text: [type: 'plain_text', text: header, emoji: true]
             ]
         }
+        blocks.addAll(deadlineRiskTables(message))
         String remaining = text
         int parts = 0
         while (remaining != null && remaining.length() > 0 && parts < 40) {

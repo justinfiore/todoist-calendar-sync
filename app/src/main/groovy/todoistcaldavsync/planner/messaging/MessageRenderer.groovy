@@ -8,6 +8,7 @@ import todoistcaldavsync.planner.domain.Proposal
 import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.domain.UnscheduledTask
+import todoistcaldavsync.planner.scheduling.DeadlinePolicy
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -40,11 +41,17 @@ class MessageRenderer {
     private final ZoneId zone
     private final String destination
     private final int riskDeadlineDays
+    private final DeadlinePolicy deadlinePolicy
 
     MessageRenderer(ZoneId zone, String destination = '#planner', int riskDeadlineDays = 5) {
+        this(zone, destination, riskDeadlineDays, null)
+    }
+
+    MessageRenderer(ZoneId zone, String destination, int riskDeadlineDays, DeadlinePolicy deadlinePolicy) {
         this.zone = zone ?: ZoneId.of('UTC')
         this.destination = destination ?: '#planner'
         this.riskDeadlineDays = riskDeadlineDays >= 0 ? riskDeadlineDays : 5
+        this.deadlinePolicy = deadlinePolicy
     }
 
     ZoneId getZone() { zone }
@@ -250,6 +257,10 @@ class MessageRenderer {
             appendAggregation(sb, plan, today, horizonEnd)
         }
 
+        DeadlineRiskInventory risks = deadlineRisks(plan, now)
+        if (kind == KIND_PROPOSAL && risks != null) {
+            appendDeadlineRisks(sb, risks)
+        }
         appendProposalFooter(sb, plan, proposal, hash, now)
 
         String subject
@@ -288,9 +299,34 @@ class MessageRenderer {
                 planCreatedAt: plan.createdAt?.toString(),
                 contentKey   : contentKey,
                 scheduleId   : delivery?.scheduleId ?: ScheduleOccurrence.MANUAL_SCHEDULE_ID,
-                occurrenceKey: delivery?.occurrenceKey ?: ScheduleOccurrence.MANUAL_OCCURRENCE
+                occurrenceKey: delivery?.occurrenceKey ?: ScheduleOccurrence.MANUAL_OCCURRENCE,
+                deadlineRisks: risks?.rows?.collect { it.toMap(zone) } ?: [],
+                deadlinePolicyIdentity: risks?.policyIdentity
             ])
             .build()
+    }
+
+    private DeadlineRiskInventory deadlineRisks(Plan plan, Instant now) {
+        if (deadlinePolicy == null || plan == null) return null
+        Instant horizonEnd = plan.slots ? plan.slots.collect { it.end }.max() : null
+        DeadlineRiskInventory.derive(plan, deadlinePolicy, now, horizonEnd)
+    }
+
+    private void appendDeadlineRisks(StringBuilder sb, DeadlineRiskInventory risks) {
+        sb << "\nDeadline risk:\n"
+        if (!risks.rows) {
+            sb << "- No in-window Deadline is unscheduled or finishing late in this proposal.\n"
+            return
+        }
+        sb << "A warning describes this proposal. It is not proof that no feasible plan exists.\n"
+        risks.rows.each { DeadlineRiskInventory.Row row ->
+            String project = row.task.projectName ?: row.task.projectId ?: 'no project'
+            String conflict = row.classification.conflict ? " (${row.classification.conflict})" : ''
+            sb << "${row.number}. ${row.task.content} <${row.taskUrl()}> | ${project} | "
+            sb << "${row.deadlineDate} | ${row.classification.modeLabel()} | ${row.displayPriority()} | ${row.reason}${conflict}\n"
+        }
+        sb << "Reply in this thread to change a Deadline or raise priority, for example:\n"
+        sb << "1 elevate to P2\nchange deadline to Dec 5 for 2\n3 push back two weeks\n"
     }
 
     private void appendChangesSection(StringBuilder sb, Plan plan) {

@@ -1,5 +1,7 @@
 package todoistcaldavsync.planner.adapters
 
+import todoistcaldavsync.planner.feedback.DeadlineRiskFeedback
+
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -7,10 +9,11 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Captures update request shapes so deadline preservation can be asserted.
  * Never contacts remote systems.
  */
-class InMemoryTodoistGateway implements TodoistReadGateway, TodoistWriteGateway {
+class InMemoryTodoistGateway implements TodoistReadGateway, TodoistWriteGateway, DeadlineRiskFeedback.PriorityWriter {
     private final List<Map> tasks
     final List<Map> dueUpdates = new CopyOnWriteArrayList<>()
     final List<Map> deadlineUpdates = new CopyOnWriteArrayList<>()
+    final List<Map> priorityUpdates = new CopyOnWriteArrayList<>()
 
     /** Optional: throw on Nth due update (1-based). */
     Integer failDueOnCall
@@ -101,6 +104,20 @@ class InMemoryTodoistGateway implements TodoistReadGateway, TodoistWriteGateway 
             tasks << t
         }
         t.deadline = [date: deadlineIso]
+    }
+
+    @Override
+    void updateTaskPriority(String taskId, int apiPriority) {
+        if (apiPriority < 1 || apiPriority > 4) {
+            throw new IllegalArgumentException("priority must be Todoist API 1..4, got ${apiPriority}")
+        }
+        priorityUpdates << [taskId: taskId, priority: apiPriority]
+        def t = tasks.find { it.id?.toString() == taskId }
+        if (t == null) {
+            t = [id: taskId]
+            tasks << t
+        }
+        t.priority = apiPriority
     }
 
     void resetCounters() {

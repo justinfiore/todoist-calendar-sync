@@ -2,6 +2,7 @@ package todoistcaldavsync.planner
 
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.ai.LlmErrorClass
+import todoistcaldavsync.planner.feedback.DeadlineRiskReplyHandler
 import todoistcaldavsync.planner.feedback.RegexFeedbackEngine
 import todoistcaldavsync.planner.messaging.*
 import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
@@ -36,6 +37,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
     private volatile Throwable fatalFailure
     private final Object mutationLock = new Object()
     private final Set<String> allowedActors
+    private DeadlineRiskReplyHandler deadlineRiskHandler
 
     SmartPlannerDaemon(ProductionPlannerOrchestrator orchestrator,
                        MessagingSurface surface,
@@ -56,6 +58,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
         this.conversations = conversationStore ?: new ConversationStore(config.deliveriesDir.resolve('conversations'))
         this.regexFeedback = new RegexFeedbackEngine(config.feedbackRules())
         this.allowedActors = Collections.unmodifiableSet(config.feedbackActors().collect { it.toString() } as Set)
+        this.deadlineRiskHandler = null
         config.planningRuns().each {
             running[it.name.toString()] = new AtomicBoolean(false)
             pending[it.name.toString()] = new AtomicBoolean(false)
@@ -322,6 +325,9 @@ final class SmartPlannerDaemon implements AutoCloseable {
                     }
                 }
             }
+            if (action == null && handleDeadlineRiskReply(event, conversation)) {
+                return
+            }
             if (action == null) {
                 safeReply(event.channelId, event.threadTs,
                     'I could not classify that feedback. Use a configured confirmation/rejection/replan phrase, or enable LLM feedback interpretation.',
@@ -381,6 +387,18 @@ final class SmartPlannerDaemon implements AutoCloseable {
         } finally {
             safeClearStatus(event.channelId, event.threadTs)
         }
+    }
+
+    /**
+     * Numbered Deadline replies are a separate contract from temporary AI overrides.
+     * A clarification writes nothing. A complete authorized result is itself the write authority.
+     */
+    private boolean handleDeadlineRiskReply(MessagingEvent event, ConversationRecord conversation) {
+        def risks = conversation.overrides?.deadlineRisks
+        if (!(risks instanceof List) || risks.isEmpty() || deadlineRiskHandler == null) return false
+        if (!(event.text =~ /\d/)) return false
+        deadlineRiskHandler.handle(event, conversation, risks as List)
+        return true
     }
 
     private def aiSuggestion(String planId,String type,String correlationId,String feedback) {

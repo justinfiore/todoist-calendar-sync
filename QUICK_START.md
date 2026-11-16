@@ -137,13 +137,16 @@ it, set an ISO-8601 `rollout_cutoff` to the deployment instant and keep the defa
 ```yaml
 planner:
   tasks:
+    default_deadline_mode: soft   # omit, or set hard, for the new default
+    hard_label: firm              # blank or omitted means no label match
+    soft_label: flexible
+    hard_deadline_soon_days: 7
+    soft_deadline_soon_days: 7
     recurrence:
       enabled: true
       rollout_cutoff: '2026-10-02T00:00:00Z'
       seen_label: smartplanner-seen
       onboard_label: smartplanner-onboard
-      hard_label: hard
-      hard_deadline_soon_days: 5
 ```
 
 The cutoff compares Todoist task creation time. A post-cutoff recurring task with a user Due can copy
@@ -152,12 +155,15 @@ as legacy. Pre-cutoff Due-only tasks remain recurrence-safe and are logged for r
 `smartplanner-onboard` to convert one, after which verified initialization adds
 `smartplanner-seen` and removes the request label. An existing Deadline is preserved.
 
-Due time is always a scheduling preference. Deadline is soft unless `hard` is present; `hard` makes
-the local date a finish-by boundary and adds urgency only inside the configured soon window. The
-long-running daemon detects native completions on a fixed five-minute Todoist items poll. Its separate
-cursor/inbox lives at `applications_dir/recurrence/todoist-items-sync.json`, so back up and restore it
-with the applications store. Disabling recurrence stops this lifecycle but also returns scheduling to
-the legacy all-Deadlines-hard policy; generate and inspect a fresh preview before and after toggling it.
+Due time is always a scheduling preference. Deadline hardness comes from
+`planner.tasks.default_deadline_mode` and optional `hard_label` / `soft_label`, not from whether
+recurrence is enabled. Omitted mode is hard for recurring and ordinary tasks. A label literally named
+`hard` does nothing until configured. Nested `recurrence.hard_label` and
+`recurrence.hard_deadline_soon_days` are rejected with migration guidance. Select `soft` to keep the
+previous unlabeled soft treatment. The long-running daemon detects native completions on a fixed
+five-minute Todoist items poll. Its separate cursor/inbox lives at
+`applications_dir/recurrence/todoist-items-sync.json`, so back up and restore it with the applications
+store. Disabling recurrence stops this lifecycle and does not change Deadline classification.
 
 ### Optional: SmartPlanner Google Calendar API bootstrap
 

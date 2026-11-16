@@ -48,6 +48,7 @@ import java.util.TreeSet
 class DeterministicScheduler {
     private final PlannerConfig config
     private final PlanScorer scorer
+    private final DeadlinePolicy deadlinePolicy
     private final ProjectBatcher batcher
     private final WeatherEvaluator weatherEvaluator
 
@@ -72,6 +73,7 @@ class DeterministicScheduler {
         }
         this.config = config
         this.scorer = new PlanScorer(config)
+        this.deadlinePolicy = DeadlinePolicy.from(config)
         this.batcher = new ProjectBatcher(config)
         this.weatherEvaluator = weatherEvaluator
     }
@@ -344,10 +346,11 @@ class DeterministicScheduler {
                     : SchedulingUnit.focus(pendingTasks, pendingTasks.sum { it.effectiveDuration.toMinutes() } as long)
             }
 
+            List<SchedulingUnit> hardWaiting = new ArrayList<>(queue).findAll { hardUnit(it, scheduledTaskIds) }
             Placement best = findBestPlacement(
                 unit, remaining, occupied, reportingSlots ?: [], clock, rangeStart, rangeEnd,
                 lastProjectId, previousByTask, manualIds, bufferMinutes, forecast,
-                weatherRejectedSlots
+                weatherRejectedSlots, hardWaiting
             )
             if (best == null && unit.focusBlock && unit.tasks.size() > 1) {
                 def singles = unit.tasks.toSorted { a, b -> PlanScorer.compareTaskOrder(a, b) }
@@ -504,7 +507,7 @@ class DeterministicScheduler {
         }
         assertNoHardConflicts(blocks, bufferMinutes)
 
-        String planId = deterministicPlanId(candidates, reportingSlots ?: [], rangeStart, rangeEnd, clock)
+        String planId = planIdentity(candidates, reportingSlots ?: [], rangeStart, rangeEnd, clock)
         Plan plan = Plan.builder()
             .id(planId)
             .version(1)
@@ -540,7 +543,8 @@ class DeterministicScheduler {
                                         Map<String, PreviousPlacement> previousByTask,
                                         Set<String> manualIds, int bufferMinutes,
                                         WeatherForecast forecast,
-                                        Map<String, List<WeatherRejectedSlot>> weatherRejectedSlots = null) {
+                                        Map<String, List<WeatherRejectedSlot>> weatherRejectedSlots = null,
+                                        List<SchedulingUnit> hardWaiting = null) {
         long need = unit.totalMinutes
         if (need <= 0) {
             return null
@@ -695,6 +699,17 @@ class DeterministicScheduler {
                     start, end, score, reason, "block-${unit.primaryId()}-${start.toEpochMilli()}",
                     orderedStarts, orderedEnds, orderedMembers*.id, weatherByTask
                 )
+                Instant ownDeadline = unit.tasks.collect { constraintDeadline(it) }.findAll { it != null }.min()
+                List<SchedulingUnit> others = hardWaiting?.findAll { waiting ->
+                    if (waiting.tasks.any { t -> unit.tasks.any { it.id == t.id } }) return false
+                    Instant waitingDeadline = waiting.tasks.collect { constraintDeadline(it) }.findAll { it != null }.min()
+                    // A peer with the same or later hard Deadline is not capacity this unit must protect.
+                    waitingDeadline != null && (ownDeadline == null || waitingDeadline.isBefore(ownDeadline))
+                }
+                if (!hardCommitmentsStillFit(others, remaining, occupied, start, end,
+                    bufferMinutes, rangeStart, rangeEnd, now)) {
+                    continue
+                }
                 if (best == null || candidate.score > best.score ||
                     (candidate.score == best.score && candidate.start.isBefore(best.start)) ||
                     (candidate.score == best.score && candidate.start == best.start && candidate.blockId < best.blockId)) {
@@ -855,14 +870,12 @@ class DeterministicScheduler {
                     return
                 }
                 Task indoor = taskById[indoorChg.taskId]
-                // Outdoor must rank earlier so it would have taken the slot without weather
                 if (PlanScorer.compareTaskOrder(outdoor, indoor) > 0) {
                     return
                 }
                 // Outdoor must not still occupy an equal-or-earlier start (kept its slot)
                 if (!outdoorUnscheduled && outdoorFinalStart != null &&
                     !outdoorFinalStart.isAfter(indoorChg.newStart)) {
-                    // Outdoor stayed at or before indoor — indoor did not fill released capacity
                     return
                 }
                 WeatherRejectedSlot match = rejected.find { slot ->
@@ -1308,18 +1321,65 @@ class DeterministicScheduler {
     }
 
     private Instant constraintDeadline(Task task) {
-        if (task?.deadline == null) return null
-        if (config.recurrence?.enabled != true) return task.deadline
-        String hardLabel = config.recurrence?.hardLabel ?: 'hard'
-        task.labels.any { it.equalsIgnoreCase(hardLabel) } ? task.deadline : null
+        deadlinePolicy.constraintDeadline(task)
     }
 
-    private static String deterministicPlanId(List<Task> tasks, List<TimeSlot> slots,
+    private boolean hardUnit(SchedulingUnit unit, Set<String> scheduledTaskIds) {
+        unit?.tasks?.any { !scheduledTaskIds.contains(it.id) && deadlinePolicy.isHard(it) } == true
+    }
+
+    /**
+     * A candidate may take earlier capacity only when every not-yet-placed hard commitment
+     * can still finish on time afterward. Manual and frozen blocks are already occupied.
+     * If a hard commitment is already infeasible, this does not invent a guarantee: the
+     * candidate is allowed and the hard task is reported when its own placement fails.
+     */
+    private boolean hardCommitmentsStillFit(List<SchedulingUnit> hardWaiting, List<MutableSlot> remaining,
+                                            List<OccupiedInterval> occupied, Instant start, Instant end,
+                                            int bufferMinutes, Instant rangeStart, Instant rangeEnd,
+                                            Instant now) {
+        if (!hardWaiting) return true
+        List<MutableSlot> trialRemaining = remaining.collect { new MutableSlot(it.start, it.end) }
+        List<OccupiedInterval> trialOccupied = new ArrayList<>(occupied)
+        if (!canOccupy(trialRemaining, trialOccupied, start, end, bufferMinutes, rangeStart, rangeEnd)) {
+            return false
+        }
+        occupy(trialRemaining, trialOccupied, start, end, bufferMinutes, rangeStart, rangeEnd)
+        for (SchedulingUnit hard : hardWaiting) {
+            List<Task> members = hard.tasks.findAll { deadlinePolicy.isHard(it) }
+            if (!members) continue
+            if (members.any { it.deadline != null && !it.deadline.isAfter(now) && constraintDeadline(it) != null }) {
+                // Already overdue hard work cannot be made feasible by rejecting this candidate.
+                continue
+            }
+            Placement reserved = findBestPlacement(hard, trialRemaining, trialOccupied, [], now,
+                rangeStart, rangeEnd, null, [:], [] as Set, bufferMinutes, null, null, [])
+            if (reserved == null) {
+                boolean alreadyImpossible = findBestPlacement(hard, remaining, occupied, [], now,
+                    rangeStart, rangeEnd, null, [:], [] as Set, bufferMinutes, null, null, []) == null
+                if (!alreadyImpossible) return false
+            } else {
+                // Reserve the placement plus the bilateral buffer the real occupy will consume.
+                Instant reservedStart = reserved.start.minus(Duration.ofMinutes(bufferMinutes))
+                Instant reservedEnd = reserved.end.plus(Duration.ofMinutes(bufferMinutes))
+                if (reservedStart.isBefore(rangeStart)) reservedStart = rangeStart
+                if (reservedEnd.isAfter(rangeEnd)) reservedEnd = rangeEnd
+                occupy(trialRemaining, trialOccupied, reservedStart, reservedEnd,
+                    0, rangeStart, rangeEnd)
+            }
+        }
+        return true
+    }
+
+    private String planIdentity(List<Task> tasks, List<TimeSlot> slots,
                                               Instant rangeStart, Instant rangeEnd, Instant now) {
         def sb = new StringBuilder()
         sb << rangeStart << '|' << rangeEnd << '|' << now << '|'
+        sb << deadlinePolicy.identity() << '|'
         tasks.toSorted { a, b -> a.id <=> b.id }.each { t ->
-            sb << t.id << ':' << t.priority << ':' << t.effectiveDuration.toMinutes() << ':' << t.deadline << ';'
+            DeadlinePolicy.Classification c = deadlinePolicy.classify(t)
+            sb << t.id << ':' << t.priority << ':' << t.effectiveDuration.toMinutes() << ':' << t.deadline
+            sb << ':' << (c.mode ?: 'none') << ':' << (t.labels ?: []).join(',') << ';'
         }
         slots.toSorted { a, b -> a.start <=> b.start ?: a.end <=> b.end }.each { s ->
             sb << s.start << '-' << s.end << ','
