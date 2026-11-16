@@ -194,6 +194,58 @@ class SmartPlannerDaemonSpec extends Specification {
         [daemon, orchestrator, writeGateway, calendar, surface, integration]
     }
 
+    def 'numbered deadline reply uses the configured AI callback, sync write, and replan publisher'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-deadline-route-').toFile()
+        def now = new AtomicReference<>(initial)
+        def surface = new InMemoryMessagingSurface()
+        def syncPosts = []
+        Closure ai = { plan, String type, String correlation, String feedback ->
+            assert type == 'deadline_risk_mitigation' || type == 'conversational_feedback_interpretation'
+            if (type != 'deadline_risk_mitigation') return [accepted: false]
+            assert feedback.contains('1')
+            [accepted: true, bundle: [rootOutcome: 'actions', suggestions: [[number: 1, priority: 'P2']]]]
+        }
+        def parts = build(state, now, surface, ai)
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+        daemon.deadlineRiskHandler = new todoistcaldavsync.planner.feedback.DeadlineRiskReplyHandler(
+            new todoistcaldavsync.planner.feedback.DeadlineRiskInterpreter(
+                new todoistcaldavsync.planner.feedback.DeadlineRiskInterpreter.LlmGateway({ request ->
+                    assert request.reply.contains('1')
+                    [accepted: true, bundle: [suggestions: [[number: 1, priority: 'P2']]]]
+                })),
+            new todoistcaldavsync.planner.feedback.DeadlineRiskFeedback(parts[2], ZoneId.of('UTC')),
+            ZoneId.of('UTC'),
+            { thread, text -> surface.reply('C123', thread, text, 'deadline-risk') },
+            { ids -> ids.collectEntries { [(it): [id: it, deadline: [date: '2026-08-07'], priority: 1]] } },
+            { op, id, outcomes = null ->
+                todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
+                    state.toPath().resolve('applications/deadline-risk'), op, id, outcomes)
+            })
+        def conversation = daemon.runNow('daily')
+        conversation = todoistcaldavsync.planner.state.ConversationRecord.fromMap(conversation.toMap() + [overrides: (conversation.overrides ?: [:]) + [
+            deadlinePolicyIdentity: null,
+            deadlineRisks: [[number: 1, taskId: 't1', content: 'Write report', projectName: 'Inbox',
+                deadlineDate: '2026-08-07', mode: 'hard', apiPriority: 1, policyIdentity: null]]
+        ]])
+        parts[1].class // keep orchestrator referenced
+        new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).save(conversation)
+
+        when:
+        daemon.handleEvent(new MessagingEvent([eventId: 'e-deadline', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2.2', threadTs: conversation.threadTs, text: '1 elevate to P2']))
+        def stored = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
+            .find('C123', conversation.threadTs)
+
+        then:
+        stored != null
+        stored.iteration >= 1
+        surface.replies.any { it.text?.contains('Revised proposal') || it.text?.contains('not calendar approval') }
+        cleanup:
+        state.deleteDir()
+    }
+
     def 'daemon adopts a newer owned move before planning and never previews the old slot back'() {
         given:
         File state = Files.createTempDirectory('smartplanner-writeback-').toFile()
