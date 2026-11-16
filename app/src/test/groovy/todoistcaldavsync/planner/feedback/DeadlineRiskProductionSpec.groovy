@@ -234,7 +234,12 @@ class DeadlineRiskProductionSpec extends Specification {
             this.server = server
         }
         @Override void updateTaskDeadline(String taskId, String deadlineIso) {
-            server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(okJson('{"ok":true}')))
+            server.addStubMapping(post(urlEqualTo('/api/v1/sync')).willReturn(okJson('{"ok":true}')).build())
+            def client = java.net.http.HttpClient.newHttpClient()
+            def request = java.net.http.HttpRequest.newBuilder(URI.create(server.baseUrl() + '/api/v1/sync'))
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString("deadline=${deadlineIso}"))
+                .build()
+            client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
             super.updateTaskDeadline(taskId, deadlineIso)
         }
     }

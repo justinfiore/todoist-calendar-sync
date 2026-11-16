@@ -49,11 +49,11 @@ final class DeadlineRiskReplyHandler {
             zone: zone, inventory: inventory))
         if (!interpreted.complete()) {
             reply.accept(event.threadTs, interpreted.clarification)
-            receipts.call('save', "clarify:${conversation.proposalId}:${event.threadTs}", [[
+            receipts.call('save', pendingKey, [[
                 clarification: interpreted.clarification,
-                originalReply: event.text,
+                originalReply: replyText,
                 proposalId: conversation.proposalId,
-                replyTime: java.time.Instant.now().toString(),
+                replyTime: replyTime,
                 pending: true
             ]])
             return
@@ -72,11 +72,14 @@ final class DeadlineRiskReplyHandler {
         Set<String> applied = receipts.call('load', event.eventId) as Set ?: [] as Set
         def execution = feedback.execute(preflight, applied)
         receipts.call('save', event.eventId, execution.outcomes.collect { it.toMap() })
+        receipts.call('save', pendingKey, [[pending: false, originalReply: replyText, replyTime: replyTime]])
         String summary = execution.outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
-        String successorId = successor == null ? null : successor.call(conversation, event)?.toString()
+        def successorResult = successor == null ? null : successor.call(conversation, event)
+        boolean posted = successorResult?.posted == true
+        String successorNote = posted ? "Fresh proposal ${successorResult.proposalId} posted. "
+            : (successorResult ? "Fresh proposal was not posted (${successorResult.status ?: 'undelivered'}). " : "")
         reply.accept(event.threadTs,
-            "Deadline reply applied without Calendar changes. ${summary}. " +
-            (successorId ? "Fresh proposal ${successorId} posted. " : "") +
+            "Deadline reply applied without Calendar changes. ${summary}. ${successorNote}" +
             "This reply is not calendar approval.")
     }
 }
