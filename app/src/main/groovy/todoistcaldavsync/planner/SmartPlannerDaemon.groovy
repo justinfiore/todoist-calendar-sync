@@ -401,7 +401,22 @@ final class SmartPlannerDaemon implements AutoCloseable {
         if (!(risks instanceof List) || risks.isEmpty() || deadlineRiskHandler == null) return false
         if (!(event.text =~ /\d/)) return false
         deadlineRiskHandler.handle(event, conversation, risks as List)
+        if (deadlineRiskHandler.lastVerified) {
+            publishDeadlineSuccessor(event, conversation)
+        }
         return true
+    }
+
+    private void publishDeadlineSuccessor(MessagingEvent event, ConversationRecord conversation) {
+        try {
+            synchronized (mutationLock) {
+                replanInThread(event, conversation, conversation.overrides ?: [:])
+            }
+        } catch (RuntimeException ignored) {
+            safeReply(event.channelId, event.threadTs,
+                'Deadline edits were reported separately. The fresh proposal was not posted.',
+                "deadline-successor-failed:${event.eventId}")
+        }
     }
 
     private def aiSuggestion(String planId,String type,String correlationId,String feedback) {

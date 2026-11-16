@@ -31,17 +31,7 @@ final class DeadlineRiskReplyWiring {
             { String op, String id, List outcomes = null ->
                 DeadlineRiskReceipts.handle(config.applicationsDir.resolve('deadline-risk'), op, id, outcomes)
             },
-            { conversation, event ->
-                try {
-                    def plan = orchestrator.preview(java.time.Instant.now(),
-                        java.time.Instant.now().plus(java.time.Duration.ofDays(7)))
-                    if (plan == null) return [posted: false, status: 'no-plan']
-                    reply.call(event.threadTs, "Fresh proposal ${plan.id}", "successor:${event.eventId}:${plan.id}")
-                    [posted: true, proposalId: plan.id, status: 'posted']
-                } catch (RuntimeException e) {
-                    [posted: false, status: 'undelivered']
-                }
-            })
+            null)
     }
 
     /** Adapts authorized Sync writes onto the existing feedback executor. */

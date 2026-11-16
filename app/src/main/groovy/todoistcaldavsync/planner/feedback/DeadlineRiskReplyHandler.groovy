@@ -81,5 +81,8 @@ final class DeadlineRiskReplyHandler {
         reply.accept(event.threadTs,
             "Deadline reply applied without Calendar changes. ${summary}. ${successorNote}" +
             "This reply is not calendar approval.")
+        lastVerified = execution.anyVerified()
     }
+
+    boolean lastVerified = false
 }
