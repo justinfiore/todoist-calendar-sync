@@ -150,6 +150,25 @@ final class DeadlineRiskInterpreter {
      * Test double that resolves the three approved instruction shapes without granting
      * writes. Production uses the configured LLM gateway behind {@link Gateway}.
      */
+    /**
+     * Production gateway: the configured application LLM, validated by {@code LlmSchemaValidator}.
+     * A rejected or unavailable result is a clarification, not a write.
+     */
+    static final class LlmGateway implements Gateway {
+        private final Closure suggestions
+        LlmGateway(Closure suggestions) { this.suggestions = suggestions }
+
+        Map complete(Request request) {
+            def interpreted = suggestions.call(request)
+            if (!interpreted?.accepted) return null
+            def rows = interpreted.bundle?.suggestions ?: []
+            if (interpreted.bundle?.rootOutcome == 'clarification' || rows.any { it.clarification }) {
+                return [clarification: rows.find { it.clarification }?.clarification ?: 'Please clarify the outstanding instruction.']
+            }
+            [actions: rows.collect { [number: it.number, deadlineDate: it.deadlineDate, priority: it.priority] }]
+        }
+    }
+
     static final class FixtureGateway implements Gateway {
         Map complete(Request request) {
             List<String> lines = (request.reply ?: '').readLines().collect { it.trim() }.findAll { it }

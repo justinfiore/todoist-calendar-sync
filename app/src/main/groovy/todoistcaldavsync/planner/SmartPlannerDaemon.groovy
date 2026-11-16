@@ -3,6 +3,7 @@ package todoistcaldavsync.planner
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.ai.LlmErrorClass
 import todoistcaldavsync.planner.feedback.DeadlineRiskReplyHandler
+import todoistcaldavsync.planner.feedback.DeadlineRiskReplyWiring
 import todoistcaldavsync.planner.feedback.RegexFeedbackEngine
 import todoistcaldavsync.planner.messaging.*
 import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
@@ -58,7 +59,9 @@ final class SmartPlannerDaemon implements AutoCloseable {
         this.conversations = conversationStore ?: new ConversationStore(config.deliveriesDir.resolve('conversations'))
         this.regexFeedback = new RegexFeedbackEngine(config.feedbackRules())
         this.allowedActors = Collections.unmodifiableSet(config.feedbackActors().collect { it.toString() } as Set)
-        this.deadlineRiskHandler = null
+        this.deadlineRiskHandler = DeadlineRiskReplyWiring.wire(orchestrator, config, { String thread, String text, String key ->
+            safeReply(config.slack.channel, thread, text, key)
+        })
         config.planningRuns().each {
             running[it.name.toString()] = new AtomicBoolean(false)
             pending[it.name.toString()] = new AtomicBoolean(false)

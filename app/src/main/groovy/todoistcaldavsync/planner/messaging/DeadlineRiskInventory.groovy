@@ -139,7 +139,8 @@ final class DeadlineRiskInventory {
                 late: late,
                 unscheduled: unscheduled,
                 finish: finish?.toString(),
-                recurring: task.lifecycleMarker != null
+                recurring: task.lifecycleMarker != null,
+                policyIdentity: null
             ]
         }
     }

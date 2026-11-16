@@ -300,7 +300,7 @@ class MessageRenderer {
                 contentKey   : contentKey,
                 scheduleId   : delivery?.scheduleId ?: ScheduleOccurrence.MANUAL_SCHEDULE_ID,
                 occurrenceKey: delivery?.occurrenceKey ?: ScheduleOccurrence.MANUAL_OCCURRENCE,
-                deadlineRisks: risks?.rows?.collect { it.toMap(zone) } ?: [],
+                deadlineRisks: risks?.rows?.collect { it.toMap(zone) + [policyIdentity: risks.policyIdentity] } ?: [],
                 deadlinePolicyIdentity: risks?.policyIdentity
             ])
             .build()

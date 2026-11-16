@@ -29,6 +29,6 @@ final class StoredDeadlineRiskInventory {
                 task.deadlineDate, null, raw.reason?.toString(), raw.beyondHorizon == true,
                 raw.late == true, raw.unscheduled == true)
         }
-        new DeadlineRiskInventory(restored, null)
+        new DeadlineRiskInventory(restored, rows ? rows[0]?.policyIdentity?.toString() : null)
     }
 }

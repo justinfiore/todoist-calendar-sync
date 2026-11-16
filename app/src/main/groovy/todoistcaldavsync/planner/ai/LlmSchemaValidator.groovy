@@ -20,7 +20,8 @@ class LlmSchemaValidator {
     static final Duration MAX_OVERRIDE_LIFETIME = Duration.ofDays(31)
     static final Set<String> TYPES = Collections.unmodifiableSet([
         'task_suggestions', 'event_classification_suggestions',
-        'temporary_planning_overrides', 'conversational_feedback_interpretation'
+        'temporary_planning_overrides', 'conversational_feedback_interpretation',
+        'deadline_risk_mitigation'
     ] as Set)
     static final Set<String> FEEDBACK_ACTIONS = Collections.unmodifiableSet(
         ['APPROVE','APPLY_SAFE','REJECT','REQUEST_CHANGES'] as Set)
@@ -70,6 +71,7 @@ class LlmSchemaValidator {
                     case 'event_classification_suggestions' -> parseEvent(row as Map, request)
                     case 'temporary_planning_overrides' -> parseOverride(row as Map, request, now)
                     case 'conversational_feedback_interpretation' -> parseFeedback(row as Map, request)
+                    case 'deadline_risk_mitigation' -> parseDeadlineRisk(row as Map, request)
                     default -> throw new Rejected('unknown suggestion type')
                 }
                 if (!ids.add(suggestion.suggestionId)) fail('duplicate_suggestion')
@@ -90,7 +92,8 @@ class LlmSchemaValidator {
         } catch (UnsafeRejected ignored) {
             ValidationResult.reject(LlmErrorClass.UNSAFE_OUTPUT, 'response contains unsafe action material')
         } catch (Rejected rejected) {
-            ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'response failed semantic validation', rejected.reasonCode)
+            ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED,
+                "response failed semantic validation: ${rejected.reasonCode ?: rejected.message}", rejected.reasonCode)
         } catch (Exception ignored) {
             ValidationResult.reject(LlmErrorClass.SCHEMA_REJECTED, 'response validation failed')
         }
@@ -208,6 +211,19 @@ class LlmSchemaValidator {
             action, command, reason)
     }
 
+    private static DeadlineRiskMitigation parseDeadlineRisk(Map m, LlmRequest r) {
+        int number = integer(m.number)
+        if (number < 1 || !r.allowedRiskNumbers?.contains(number)) fail('task number outside proposal')
+        String date = m.deadlineDate ? m.deadlineDate.toString() : null
+        if (date != null && !(date ==~ /\d{4}-\d{2}-\d{2}/)) fail('deadline date is not exact')
+        String priority = m.priority ? m.priority.toString() : null
+        if (priority != null && !(priority in ['P1', 'P2', 'P3', 'P4'])) fail('priority is not P1-P4')
+        if (date == null && priority == null && m.outcome != 'clarification') fail('action has no field')
+        String clarification = m.clarification == null ? null : narrative(m.clarification, MAX_TEXT)
+        new DeadlineRiskMitigation(identifier(m.suggestionId ?: "risk-${number}", 'suggestionId', 128),
+            number, date, priority, clarification)
+    }
+
     private static String canonicalCommand(String action, String proposal, String hash, String reason) {
         String verb = action.toLowerCase(Locale.ROOT).replace('_','-')
         String base = "${verb} ${proposal} ${hash}"
@@ -227,6 +243,7 @@ class LlmSchemaValidator {
             return s.taskIds.collect { "override|${it}|${s.overrideType}" }
         }
         if (suggestion instanceof ProposedStructuredFeedback) return ['conversation']
+        if (suggestion instanceof DeadlineRiskMitigation) return ["deadline|${(suggestion as DeadlineRiskMitigation).number}"]
         Collections.emptyList()
     }
 
@@ -296,6 +313,8 @@ class LlmSchemaValidator {
                 rangeEnd:s.rangeEnd.toString(),expiresAt:s.expiresAt.toString(),confidence:s.confidence,rationale:s.rationale]
             if(s instanceof ProposedStructuredFeedback)return [suggestionId:s.suggestionId,proposalId:s.proposalId,planId:s.planId,
                 planVersion:s.planVersion,planHash:s.planHash,action:s.action,reason:s.reason]
+            if(s instanceof DeadlineRiskMitigation)return [suggestionId:s.suggestionId,number:s.number,
+                deadlineDate:s.deadlineDate,priority:s.priority]
             throw new Rejected()
         }
         JsonOutput.toJson([schemaVersion:SCHEMA_VERSION,suggestionType:request.suggestionType,
@@ -376,6 +395,20 @@ final class TemporaryPlanningOverride implements AiSuggestion {
         Instant start,Instant end,Instant expires,double confidence,String rationale) {
         suggestionId=id;this.planId=planId;planVersion=version;planHash=hash;planningInputHash=inputHash;this.taskIds=Collections.unmodifiableList(new ArrayList<>(taskIds))
         overrideType=type;this.value=value;rangeStart=start;rangeEnd=end;expiresAt=expires;this.confidence=confidence;this.rationale=rationale
+    }
+}
+final class DeadlineRiskMitigation implements AiSuggestion {
+    final String suggestionId
+    final int number
+    final String deadlineDate
+    final String priority
+    final String clarification
+    @PackageScope DeadlineRiskMitigation(String id, int number, String deadlineDate, String priority, String clarification) {
+        suggestionId = id
+        this.number = number
+        this.deadlineDate = deadlineDate
+        this.priority = priority
+        this.clarification = clarification
     }
 }
 final class ProposedStructuredFeedback implements AiSuggestion {

@@ -445,7 +445,8 @@ final class PlannerConfig {
 
     static final Set<String> AI_SUGGESTION_TYPES = [
         'task_suggestions', 'event_classification_suggestions',
-        'temporary_planning_overrides', 'conversational_feedback_interpretation'
+        'temporary_planning_overrides', 'conversational_feedback_interpretation',
+        'deadline_risk_mitigation'
     ] as Set
 
     private static AiConfig parseAi(Map raw, List errors) {

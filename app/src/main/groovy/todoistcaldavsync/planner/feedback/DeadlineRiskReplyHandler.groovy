@@ -35,14 +35,18 @@ final class DeadlineRiskReplyHandler {
         DeadlineRiskInventory inventory = StoredDeadlineRiskInventory.restore(storedRows, zone)
         def interpreted = interpreter.interpret(new DeadlineRiskInterpreter.Request(
             proposalId: conversation.proposalId, threadTs: event.threadTs, actorId: event.actorId,
-            authorized: true, reply: event.text, replyTime: event.occurredAt ?: java.time.Instant.now(),
+            authorized: true, reply: event.text, replyTime: java.time.Instant.now(),
             zone: zone, inventory: inventory))
         if (!interpreted.complete()) {
             reply.accept(event.threadTs, interpreted.clarification)
             return
         }
-        Map<String, Map> live = liveTasks.call(interpreted.actions*.taskId) as Map
-        def preflight = feedback.preflight(inventory, interpreted.actions, live,
+        List bound = interpreted.actions.collect { action ->
+            def row = inventory.byNumber(action.number)
+            row ? action.bound(row.task.id, row.deadlineDate?.toString()) : action
+        }
+        Map<String, Map> live = liveTasks.call(bound*.taskId) as Map
+        def preflight = feedback.preflight(inventory, bound, live,
             conversation.proposalId, conversation.overrides?.deadlinePolicyIdentity?.toString())
         if (!preflight.accepted) {
             reply.accept(event.threadTs, "No task was changed. ${preflight.problems.join('; ')}")
