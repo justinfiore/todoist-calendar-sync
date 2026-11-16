@@ -19,28 +19,42 @@ final class DeadlineRiskReplyHandler {
     private final BiConsumer<String, String> reply
     private final Closure liveTasks
     private final Closure receipts
+    private final Closure successor
 
     DeadlineRiskReplyHandler(DeadlineRiskInterpreter interpreter, DeadlineRiskFeedback feedback,
                              ZoneId zone, BiConsumer<String, String> reply,
-                             Closure liveTasks, Closure receipts) {
+                             Closure liveTasks, Closure receipts, Closure successor = null) {
         this.interpreter = interpreter
         this.feedback = feedback
         this.zone = zone
         this.reply = reply
         this.liveTasks = liveTasks
         this.receipts = receipts
+        this.successor = successor
     }
 
     void handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
         DeadlineRiskInventory inventory = StoredDeadlineRiskInventory.restore(storedRows, zone)
+        String pendingKey = "clarify:${conversation.proposalId}:${event.threadTs}"
+        def pending = receipts.call('load-record', pendingKey)
+        String replyText = event.text
+        String replyTime = java.time.Instant.now().toString()
+        if (pending instanceof Map && pending.pending == true && pending.originalReply) {
+            replyText = "${pending.originalReply}\n${event.text}"
+            replyTime = pending.replyTime?.toString() ?: replyTime
+        }
         def interpreted = interpreter.interpret(new DeadlineRiskInterpreter.Request(
             proposalId: conversation.proposalId, threadTs: event.threadTs, actorId: event.actorId,
-            authorized: true, reply: event.text, replyTime: java.time.Instant.now(),
+            authorized: true, reply: replyText, replyTime: java.time.Instant.parse(replyTime),
             zone: zone, inventory: inventory))
         if (!interpreted.complete()) {
             reply.accept(event.threadTs, interpreted.clarification)
-            receipts.call('save', "clarify:${event.eventId}", [[
-                clarification: interpreted.clarification, reply: event.text, proposalId: conversation.proposalId
+            receipts.call('save', "clarify:${conversation.proposalId}:${event.threadTs}", [[
+                clarification: interpreted.clarification,
+                originalReply: event.text,
+                proposalId: conversation.proposalId,
+                replyTime: java.time.Instant.now().toString(),
+                pending: true
             ]])
             return
         }
@@ -59,7 +73,10 @@ final class DeadlineRiskReplyHandler {
         def execution = feedback.execute(preflight, applied)
         receipts.call('save', event.eventId, execution.outcomes.collect { it.toMap() })
         String summary = execution.outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
+        String successorId = successor == null ? null : successor.call(conversation, event)?.toString()
         reply.accept(event.threadTs,
-            "Deadline reply applied without Calendar changes. ${summary}. Re-read the tasks and post a fresh proposal before any calendar apply; this reply is not calendar approval.")
+            "Deadline reply applied without Calendar changes. ${summary}. " +
+            (successorId ? "Fresh proposal ${successorId} posted. " : "") +
+            "This reply is not calendar approval.")
     }
 }

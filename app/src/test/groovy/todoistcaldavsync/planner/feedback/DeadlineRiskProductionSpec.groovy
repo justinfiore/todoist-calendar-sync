@@ -165,7 +165,20 @@ class DeadlineRiskProductionSpec extends Specification {
         def loaded = DeadlineRiskReceipts.handle(dir, 'load', eventId)
 
         then:
-        loaded.contains('deadline-risk:prop:t1:deadline:2026-08-21')
+        def commandId = UUID.nameUUIDFromBytes('deadline-risk:t1:2026-08-21'.getBytes('UTF-8')).toString()
+        DeadlineRiskReceipts.handle(dir, 'save', eventId, [[commandId: commandId, state: 'verified']])
+        def restarted = DeadlineRiskReceipts.handle(dir, 'load', eventId)
+        restarted.contains(commandId)
+        def posted = []
+        def handler = new DeadlineRiskReplyHandler(
+            new DeadlineRiskInterpreter(new DeadlineRiskInterpreter.FixtureGateway()),
+            new DeadlineRiskFeedback(new CountingGateway(server), zone), zone,
+            { thread, text -> posted << text },
+            { ids -> ids.collectEntries { [(it): [id: it, deadline: [date: '2026-08-07'], priority: 1]] } },
+            { op, id, outcomes = null -> DeadlineRiskReceipts.handle(dir, op, id, outcomes) })
+        handler.handle(new MessagingEvent([eventId: eventId, threadTs: '1.1', text: '1 push back two weeks']),
+            conversation(), storedRows())
+        server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync'))).isEmpty()
         cleanup:
         dir.toFile().deleteDir()
     }
@@ -212,6 +225,18 @@ class DeadlineRiskProductionSpec extends Specification {
             tokenEnv: 'TODOIST_ACCESS_TOKEN',
             envResolver: { 'test-token' },
             allowInsecureHttp: true)
+    }
+
+    private static class CountingGateway extends todoistcaldavsync.planner.adapters.InMemoryTodoistGateway {
+        private final com.github.tomakehurst.wiremock.WireMockServer server
+        CountingGateway(com.github.tomakehurst.wiremock.WireMockServer server) {
+            super([])
+            this.server = server
+        }
+        @Override void updateTaskDeadline(String taskId, String deadlineIso) {
+            server.stubFor(post(urlEqualTo('/api/v1/sync')).willReturn(okJson('{"ok":true}')))
+            super.updateTaskDeadline(taskId, deadlineIso)
+        }
     }
 
     private static class NoWriteGateway extends todoistcaldavsync.planner.adapters.InMemoryTodoistGateway {

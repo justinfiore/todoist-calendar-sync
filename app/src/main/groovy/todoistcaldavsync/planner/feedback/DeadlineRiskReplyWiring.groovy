@@ -30,6 +30,10 @@ final class DeadlineRiskReplyWiring {
             { List ids -> ids.collectEntries { [(it): gateway.fetchTask(it)] } },
             { String op, String id, List outcomes = null ->
                 DeadlineRiskReceipts.handle(config.applicationsDir.resolve('deadline-risk'), op, id, outcomes)
+            },
+            { conversation, event ->
+                orchestrator.preview(java.time.Instant.now(),
+                    java.time.Instant.now().plus(java.time.Duration.ofDays(7)))?.id
             })
     }
 
@@ -44,14 +48,16 @@ final class DeadlineRiskReplyWiring {
         }
 
         void updateTaskDeadline(String taskId, String deadlineIso) {
-            def result = gateway.updateAuthorizedDeadline(taskId, deadlineIso, UUID.randomUUID().toString())
+            String commandId = UUID.nameUUIDFromBytes("deadline-risk:${taskId}:${deadlineIso}".getBytes('UTF-8')).toString()
+            def result = gateway.updateAuthorizedDeadline(taskId, deadlineIso, commandId)
             if (result.state != todoistcaldavsync.planner.adapters.TodoistCommandState.COMMITTED) {
                 throw new IllegalStateException("deadline write ${result.state}")
             }
         }
 
         void updateTaskPriority(String taskId, int apiPriority) {
-            def result = gateway.updateAuthorizedPriority(taskId, apiPriority, UUID.randomUUID().toString())
+            String commandId = UUID.nameUUIDFromBytes("deadline-risk:${taskId}:priority:${apiPriority}".getBytes('UTF-8')).toString()
+            def result = gateway.updateAuthorizedPriority(taskId, apiPriority, commandId)
             if (result.state != todoistcaldavsync.planner.adapters.TodoistCommandState.COMMITTED) {
                 throw new IllegalStateException("priority write ${result.state}")
             }

@@ -105,7 +105,8 @@ final class DeadlineRiskFeedback {
     }
 
     private Outcome applyDeadline(Action action, Set<String> alreadyApplied, List<String> notes) {
-        String commandId = "deadline-risk:${action.proposalId}:${action.taskId}:deadline:${action.deadlineDate}"
+        String commandId = UUID.nameUUIDFromBytes(
+            "deadline-risk:${action.taskId}:${action.deadlineDate}".getBytes('UTF-8')).toString()
         if (alreadyApplied.contains(commandId)) {
             return new Outcome(action.taskId, 'deadline', 'verified', commandId, 'already applied')
         }
@@ -140,7 +141,8 @@ final class DeadlineRiskFeedback {
     }
 
     private Outcome applyPriority(Action action, Set<String> alreadyApplied, List<String> notes) {
-        String commandId = "deadline-risk:${action.proposalId}:${action.taskId}:priority:${action.priority}"
+        String commandId = UUID.nameUUIDFromBytes(
+            "deadline-risk:${action.taskId}:priority:${action.priority}".getBytes('UTF-8')).toString()
         if (alreadyApplied.contains(commandId)) {
             return new Outcome(action.taskId, 'priority', 'verified', commandId, 'already applied')
         }
