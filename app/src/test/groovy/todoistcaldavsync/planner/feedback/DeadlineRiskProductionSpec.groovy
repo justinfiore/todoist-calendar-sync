@@ -89,9 +89,10 @@ class DeadlineRiskProductionSpec extends Specification {
         def conversation = conversation()
 
         when:
-        replyHandler.handle(event, conversation, storedRows())
+        def verified = replyHandler.handle(event, conversation, storedRows())
 
         then:
+        !verified
         posted.size() == 1
         posted[0].contains('could not interpret') || posted[0].contains('clarify') || posted[0]
         server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync'))).isEmpty()
@@ -193,7 +194,7 @@ class DeadlineRiskProductionSpec extends Specification {
             { thread, text -> posted << text },
             { ids -> ids.collectEntries { [(it): [id: it, deadline: [date: '2026-08-07'], priority: 1]] } },
             { op, id, outcomes = null -> DeadlineRiskReceipts.handle(dir, op, id, outcomes) })
-        handler.handle(new MessagingEvent([eventId: eventId, threadTs: '1.1', text: '1 push back two weeks']),
+        def handled = handler.handle(new MessagingEvent([eventId: eventId, threadTs: '1.1', text: '1 push back two weeks']),
             conversation(), storedRows())
         server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync'))).isEmpty()
         cleanup:

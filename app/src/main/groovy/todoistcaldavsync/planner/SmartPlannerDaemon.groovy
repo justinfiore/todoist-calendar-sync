@@ -401,8 +401,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
         if (!(risks instanceof List) || risks.isEmpty() || deadlineRiskHandler == null) return false
         boolean pendingClarification = pendingDeadlineClarification(conversation, event)
         if (!(event.text =~ /\d/) && !pendingClarification) return false
-        deadlineRiskHandler.handle(event, conversation, risks as List)
-        if (deadlineRiskHandler.lastVerified) {
+        if (deadlineRiskHandler.handle(event, conversation, risks as List)) {
             publishDeadlineSuccessor(event, conversation)
         }
         return true

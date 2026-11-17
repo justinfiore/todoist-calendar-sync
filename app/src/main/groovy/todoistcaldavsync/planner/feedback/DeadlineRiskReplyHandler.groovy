@@ -33,7 +33,7 @@ final class DeadlineRiskReplyHandler {
         this.successor = successor
     }
 
-    void handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
+    boolean handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
         DeadlineRiskInventory inventory = StoredDeadlineRiskInventory.restore(storedRows, zone)
         String pendingKey = "clarify:${conversation.proposalId}:${event.threadTs}"
         def pending = receipts.call('load-record', pendingKey)
@@ -56,7 +56,7 @@ final class DeadlineRiskReplyHandler {
                 replyTime: replyTime,
                 pending: true
             ]])
-            return
+            return false
         }
         List bound = interpreted.actions.collect { action ->
             def row = inventory.byNumber(action.number)
@@ -67,7 +67,7 @@ final class DeadlineRiskReplyHandler {
             conversation.proposalId, conversation.overrides?.deadlinePolicyIdentity?.toString())
         if (!preflight.accepted) {
             reply.accept(event.threadTs, "No task was changed. ${preflight.problems.join('; ')}")
-            return
+            return false
         }
         Set<String> applied = receipts.call('load', event.eventId) as Set ?: [] as Set
         def execution = feedback.execute(preflight, applied)
@@ -81,8 +81,6 @@ final class DeadlineRiskReplyHandler {
         reply.accept(event.threadTs,
             "Deadline reply applied without Calendar changes. ${summary}. ${successorNote}" +
             "This reply is not calendar approval.")
-        lastVerified = execution.anyVerified()
+        return execution.anyVerified()
     }
-
-    boolean lastVerified = false
 }
