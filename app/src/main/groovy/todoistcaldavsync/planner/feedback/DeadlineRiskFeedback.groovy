@@ -81,7 +81,7 @@ final class DeadlineRiskFeedback {
             if (action.deadlineDate == null && action.priority == null) {
                 problems << "row ${action.number} requests neither a Deadline nor a priority"
             }
-            accepted << action.bound(row.task.id, liveDeadline)
+            accepted << action.bound(row.task.id, liveDeadline, live.priority as Integer)
         }
         new Preflight(problems.isEmpty(), problems, problems.isEmpty() ? accepted : [])
     }
@@ -90,37 +90,58 @@ final class DeadlineRiskFeedback {
      * Execute a preflighted batch. Caller must persist the returned receipt before retrying.
      * Already-recorded command ids are not sent again.
      */
-    Execution execute(Preflight preflight, Set<String> alreadyAppliedCommandIds = [] as Set, Closure checkpoint = null) {
+    Execution execute(Preflight preflight, Set<String> alreadyAppliedCommandIds = [] as Set, Closure checkpoint = null,
+                      String eventId = UUID.randomUUID().toString(), Closure readTask = null) {
         if (preflight == null || !preflight.accepted) {
             return new Execution([], ['preflight rejected the batch'])
         }
         List<Outcome> outcomes = []
         List<String> notes = []
         preflight.actions.each { Action action ->
+            boolean deadlineVerified = false
             if (action.deadlineDate != null) {
-                String id = UUID.nameUUIDFromBytes("deadline-risk:${action.taskId}:${action.deadlineDate}".getBytes('UTF-8')).toString()
+                String id = commandId(eventId, action, 'deadline')
                 if (checkpoint != null && !alreadyAppliedCommandIds.contains(id)) checkpoint.call(outcomes + [new Outcome(action.taskId, 'deadline', 'unknown', id, 'write may have started')])
-                outcomes << applyDeadline(action, alreadyAppliedCommandIds, notes)
+                outcomes << (alreadyAppliedCommandIds.contains(id) || matchesPrecondition(action, readTask, action.currentDeadline)
+                    ? applyDeadline(action, id, alreadyAppliedCommandIds, readTask)
+                    : new Outcome(action.taskId, 'deadline', 'rejected', id, 'live state changed or unavailable; request fresh review'))
+                deadlineVerified = outcomes.last().state == 'verified'
                 if (checkpoint != null) checkpoint.call(outcomes)
             }
             if (action.priority != null) {
-                String id = UUID.nameUUIDFromBytes("deadline-risk:${action.taskId}:priority:${action.priority}".getBytes('UTF-8')).toString()
+                String id = commandId(eventId, action, 'priority')
                 if (checkpoint != null && !alreadyAppliedCommandIds.contains(id)) checkpoint.call(outcomes + [new Outcome(action.taskId, 'priority', 'unknown', id, 'write may have started')])
-                outcomes << applyPriority(action, alreadyAppliedCommandIds, notes)
+                String expectedDeadline = deadlineVerified ? action.deadlineDate.toString() : action.currentDeadline
+                outcomes << (alreadyAppliedCommandIds.contains(id) || matchesPrecondition(action, readTask, expectedDeadline)
+                    ? applyPriority(action, id, alreadyAppliedCommandIds, readTask)
+                    : new Outcome(action.taskId, 'priority', 'rejected', id, 'live state changed or unavailable; request fresh review'))
                 if (checkpoint != null) checkpoint.call(outcomes)
             }
         }
         new Execution(outcomes, notes)
     }
 
-    private Outcome applyDeadline(Action action, Set<String> alreadyApplied, List<String> notes) {
-        String commandId = UUID.nameUUIDFromBytes(
-            "deadline-risk:${action.taskId}:${action.deadlineDate}".getBytes('UTF-8')).toString()
+    private static String commandId(String eventId, Action action, String field) {
+        UUID.nameUUIDFromBytes(groovy.json.JsonOutput.toJson(['deadline-risk', eventId, action.taskId, field]).getBytes('UTF-8')).toString()
+    }
+
+    private static boolean matchesPrecondition(Action action, Closure readTask, String expectedDeadline) {
+        try {
+            Map live = readTask?.call(action.taskId) as Map
+            return live != null && live.checked != true && live.is_completed != true &&
+                liveDeadline(live) == expectedDeadline && live.priority?.toString() == action.currentPriority?.toString()
+        } catch (RuntimeException ignored) {
+            return false
+        }
+    }
+
+    private Outcome applyDeadline(Action action, String commandId, Set<String> alreadyApplied, Closure readTask) {
         if (alreadyApplied.contains(commandId)) {
             return new Outcome(action.taskId, 'deadline', 'verified', commandId, 'already applied')
         }
         try {
-            writer.updateTaskDeadline(action.taskId, action.deadlineDate.toString())
+            if (writer instanceof CommandWriter) ((CommandWriter) writer).updateDeadline(action.taskId, action.deadlineDate.toString(), commandId)
+            else writer.updateTaskDeadline(action.taskId, action.deadlineDate.toString())
         } catch (AmbiguousWrite e) {
             return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'ambiguous')
         } catch (RejectedWrite e) {
@@ -128,9 +149,18 @@ final class DeadlineRiskFeedback {
         } catch (RuntimeException e) {
             return new Outcome(action.taskId, 'deadline', 'unknown', commandId, e.message)
         }
+        try {
+            Map verified = readTask?.call(action.taskId) as Map
+            if (verified == null || liveDeadline(verified) != action.deadlineDate.toString())
+                return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'live Deadline did not verify')
+        } catch (RuntimeException e) {
+            return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'live verification failed')
+        }
         if (lifecycle != null) {
             try {
                 Map live = lifecycle.fetchTask(action.taskId)
+                if (live == null || liveDeadline(live) != action.deadlineDate.toString())
+                    return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'Deadline changed before marker update')
                 def read = new LifecycleMarkerCodec().read(live?.description?.toString())
                 if (read?.status?.name() == 'VALID' && read.marker != null) {
                     LifecycleMarker marker = read.marker
@@ -148,6 +178,13 @@ final class DeadlineRiskFeedback {
                     if (markerWrite?.state != TodoistCommandState.COMMITTED) {
                         return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'marker update not committed')
                     }
+                    Map afterMarker = lifecycle.fetchTask(action.taskId)
+                    def verifiedMarker = new LifecycleMarkerCodec().read(afterMarker?.description?.toString())
+                    if (afterMarker == null || liveDeadline(afterMarker) != action.deadlineDate.toString() ||
+                            verifiedMarker?.status?.name() != 'VALID' ||
+                            verifiedMarker.marker?.lastCommandId != "deadline-risk:${commandId}") {
+                        return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'marker or Deadline did not verify')
+                    }
                 }
                 if (writer instanceof LifecycleInboxWriter) {
                     ((LifecycleInboxWriter) writer).enqueueCurrentTask(action.taskId)
@@ -159,9 +196,7 @@ final class DeadlineRiskFeedback {
         return new Outcome(action.taskId, 'deadline', 'verified', commandId, null)
     }
 
-    private Outcome applyPriority(Action action, Set<String> alreadyApplied, List<String> notes) {
-        String commandId = UUID.nameUUIDFromBytes(
-            "deadline-risk:${action.taskId}:priority:${action.priority}".getBytes('UTF-8')).toString()
+    private Outcome applyPriority(Action action, String commandId, Set<String> alreadyApplied, Closure readTask) {
         if (alreadyApplied.contains(commandId)) {
             return new Outcome(action.taskId, 'priority', 'verified', commandId, 'already applied')
         }
@@ -169,7 +204,11 @@ final class DeadlineRiskFeedback {
             return new Outcome(action.taskId, 'priority', 'rejected', commandId, 'priority writes are not available on this gateway')
         }
         try {
-            ((PriorityWriter) writer).updateTaskPriority(action.taskId, action.priority)
+            if (writer instanceof CommandWriter) ((CommandWriter) writer).updatePriority(action.taskId, action.priority, commandId)
+            else ((PriorityWriter) writer).updateTaskPriority(action.taskId, action.priority)
+            Map verified = readTask?.call(action.taskId) as Map
+            if (verified == null || verified.priority?.toString() != action.priority.toString())
+                return new Outcome(action.taskId, 'priority', 'unknown', commandId, 'live priority did not verify')
             return new Outcome(action.taskId, 'priority', 'verified', commandId, null)
         } catch (AmbiguousWrite e) {
             return new Outcome(action.taskId, 'priority', 'unknown', commandId, 'ambiguous')
@@ -189,6 +228,11 @@ final class DeadlineRiskFeedback {
     /** Gateway extension. Existing due/deadline methods do not carry priority. */
     interface PriorityWriter {
         void updateTaskPriority(String taskId, int apiPriority)
+    }
+
+    interface CommandWriter {
+        void updateDeadline(String taskId, String deadlineIso, String commandId)
+        void updatePriority(String taskId, int apiPriority, String commandId)
     }
 
     interface LifecycleInboxWriter {
@@ -214,19 +258,21 @@ final class DeadlineRiskFeedback {
         final LocalDate deadlineDate
         final Integer priority
         final String currentDeadline
+        final Integer currentPriority
 
         Action(Integer number, String proposalId, LocalDate deadlineDate, Integer priority,
-               String taskId = null, String currentDeadline = null) {
+               String taskId = null, String currentDeadline = null, Integer currentPriority = null) {
             this.number = number
             this.proposalId = proposalId
             this.deadlineDate = deadlineDate
             this.priority = priority
             this.taskId = taskId
             this.currentDeadline = currentDeadline
+            this.currentPriority = currentPriority
         }
 
-        Action bound(String taskId, String currentDeadline) {
-            new Action(number, proposalId, deadlineDate, priority, taskId, currentDeadline)
+        Action bound(String taskId, String currentDeadline, Integer currentPriority = null) {
+            new Action(number, proposalId, deadlineDate, priority, taskId, currentDeadline, currentPriority)
         }
     }
 

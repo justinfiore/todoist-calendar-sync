@@ -34,6 +34,10 @@ final class DeadlineRiskReplyHandler {
     }
 
     boolean handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
+        if (!event?.eventId?.trim()) {
+            reply.accept(event?.threadTs, 'Cannot safely process this reply without an event identity; request a fresh review.')
+            return false
+        }
         def previous = receipts.call('load-record', event.eventId)
         if (previous instanceof Map && !previous.isEmpty()) {
             List outcomes = previous.outcomes instanceof List ? previous.outcomes : []
@@ -78,7 +82,7 @@ final class DeadlineRiskReplyHandler {
         }
         def execution = feedback.execute(preflight, [] as Set, { List outcomes ->
             receipts.call('save', event.eventId, outcomes.collect { it.toMap() })
-        })
+        }, event.eventId, { String id -> (liveTasks.call([id]) as Map)[id] })
         receipts.call('save', event.eventId, execution.outcomes.collect { it.toMap() })
         receipts.call('save', pendingKey, [[pending: false, originalReply: replyText, replyTime: replyTime]])
         String summary = execution.outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')

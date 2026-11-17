@@ -261,6 +261,16 @@ Numbers stay bound to that proposal and thread. A numbered reply may change only
 Deadline or priority after the configured interpreter returns a complete action set. Any unresolved
 instruction asks in the same thread and writes nothing. A fully resolved authorized reply is the write
 authority; it does not approve Calendar apply and does not widen temporary AI planning overrides.
+When a proposal is revised in the same thread, start each Deadline reply (including clarification)
+with the exact `proposal ...` line shown in that revision. This prevents a reply to an older table
+from silently selecting a different task in the newer table.
+
+Before every edit, SmartPlanner rereads the task and rejects changed or unavailable preconditions;
+it rereads the edited field afterward and reports an unverified outcome as unknown. Todoist's
+documented task update does not expose a conditional version check in this integration. An external
+edit between the final read and the unconditional write can therefore still be overwritten, including
+human description edits during a lifecycle marker update. Post-write verification cannot recover such
+an edit. Avoid editing the same task concurrently with an authorized Deadline reply.
 
 The final description suffix beginning `**SmartPlanner metadata — do not edit**` is portable
 lifecycle authority. Human text before it remains owned by the user. A malformed, moved, duplicated,

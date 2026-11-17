@@ -49,7 +49,7 @@ class DeadlineRiskFeedbackSpec extends Specification {
         def ok = feedback.preflight(inventory, [
             new DeadlineRiskFeedback.Action(1, 'prop', null, 3)
         ], live, 'prop', policy.identity())
-        def execution = feedback.execute(ok)
+        def execution = feedback.execute(ok, [] as Set, null, 'event-1', { gateway.getTask(it) })
 
         then:
         ok.accepted
@@ -80,8 +80,8 @@ class DeadlineRiskFeedbackSpec extends Specification {
         def preflight = feedback.preflight(inventory, [action], ['t1': gateway.getTask('t1')], 'prop', policy.identity())
 
         when:
-        def first = feedback.execute(preflight)
-        def second = feedback.execute(preflight, [first.outcomes[0].commandId] as Set)
+        def first = feedback.execute(preflight, [] as Set, null, 'event-1', { gateway.getTask(it) })
+        def second = feedback.execute(preflight, [first.outcomes[0].commandId] as Set, null, 'event-1', { gateway.getTask(it) })
 
         then:
         gateway.deadlineUpdates.size() == 1
@@ -109,7 +109,7 @@ class DeadlineRiskFeedbackSpec extends Specification {
         when:
         gateway.metaClass = null
         def throwing = new DeadlineRiskFeedback(new PriorityFailingGateway(gateway, 't2'), zone)
-        def execution = throwing.execute(preflight)
+        def execution = throwing.execute(preflight, [] as Set, null, 'event-1', { gateway.getTask(it) })
 
         then:
         execution.outcomes*.state == ['verified', 'rejected']
@@ -141,11 +141,64 @@ class DeadlineRiskFeedbackSpec extends Specification {
         def checkpoints = []
 
         when:
-        def execution = feedback.execute(preflight, [] as Set, { outcomes -> checkpoints << outcomes.collect { it.toMap() } })
+        def execution = feedback.execute(preflight, [] as Set, { outcomes -> checkpoints << outcomes.collect { it.toMap() } },
+            'event-1', { gateway.getTask(it) })
 
         then:
         checkpoints*.first()*.state == ['unknown', 'verified']
         execution.allVerified()
+    }
+
+    def "live drift after batch preflight prevents the affected write"() {
+        given:
+        def gateway = new InMemoryTodoistGateway([[id: 't1', priority: 1, deadline: [date: '2026-08-07']]])
+        def feedback = new DeadlineRiskFeedback(gateway, zone)
+        def preflight = feedback.preflight(inventory(), [new DeadlineRiskFeedback.Action(1, 'prop', null, 3)],
+            ['t1': gateway.getTask('t1')], 'prop', policy.identity())
+        gateway.getTask('t1').priority = 2
+
+        when:
+        def result = feedback.execute(preflight, [] as Set, null, 'event-drift', { gateway.getTask(it) })
+
+        then:
+        result.outcomes*.state == ['rejected']
+        gateway.priorityUpdates.empty
+        gateway.getTask('t1').priority == 2
+    }
+
+    def "independent events have distinct command ids for the same requested value"() {
+        given:
+        def gateway = new InMemoryTodoistGateway([[id: 't1', priority: 1, deadline: [date: '2026-08-07']]])
+        def feedback = new DeadlineRiskFeedback(gateway, zone)
+        def action = new DeadlineRiskFeedback.Action(1, 'prop', null, 3)
+        def preflight = feedback.preflight(inventory(), [action], ['t1': gateway.getTask('t1')], 'prop', policy.identity())
+
+        when:
+        def first = feedback.execute(preflight, [] as Set, null, 'event-1', { gateway.getTask(it) })
+        gateway.getTask('t1').priority = 1
+        def second = feedback.execute(preflight, [] as Set, null, 'event-2', { gateway.getTask(it) })
+
+        then:
+        first.allVerified() && second.allVerified()
+        first.outcomes[0].commandId != second.outcomes[0].commandId
+        gateway.priorityUpdates.size() == 2
+    }
+
+    def "success response without matching live field is unknown"() {
+        given:
+        def gateway = new InMemoryTodoistGateway([[id: 't1', priority: 1, deadline: [date: '2026-08-07']]])
+        def feedback = new DeadlineRiskFeedback(gateway, zone)
+        def preflight = feedback.preflight(inventory(), [new DeadlineRiskFeedback.Action(1, 'prop', null, 3)],
+            ['t1': gateway.getTask('t1')], 'prop', policy.identity())
+        int reads = 0
+
+        when:
+        def result = feedback.execute(preflight, [] as Set, null, 'event-1', { id ->
+            ++reads == 1 ? gateway.getTask(id) : [priority: 1, deadline: [date: '2026-08-07']]
+        })
+
+        then:
+        result.outcomes[0].state == 'unknown'
     }
 
     def "receipt load never promotes rejected or unknown to verified"() {

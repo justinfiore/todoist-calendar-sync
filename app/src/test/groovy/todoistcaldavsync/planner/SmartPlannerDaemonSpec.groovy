@@ -274,7 +274,7 @@ class SmartPlannerDaemonSpec extends Specification {
             com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson(
                 [id: 't1', content: 'Write report', labels: ['schedule'], priority: 4,
                     deadline: [date: '2026-08-07'], project_id: 'inbox']))))
-        String commandId = UUID.nameUUIDFromBytes('deadline-risk:t1:priority:3'.getBytes('UTF-8')).toString()
+        String commandId = UUID.nameUUIDFromBytes(JsonOutput.toJson(['deadline-risk', 'e-deadline', 't1', 'priority']).getBytes('UTF-8')).toString()
         def syncClient = new UpdatingSyncClient(todoist, commandId)
         File state = Files.createTempDirectory('smartplanner-deadline-route-').toFile()
         def now = new AtomicReference<>(initial)

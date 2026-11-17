@@ -41,7 +41,7 @@ final class DeadlineRiskReplyWiring {
 
     /** Adapts authorized Sync writes onto the existing feedback executor. */
     static final class SyncDeadlineWriter implements todoistcaldavsync.planner.adapters.TodoistWriteGateway,
-            DeadlineRiskFeedback.PriorityWriter, DeadlineRiskFeedback.LifecycleInboxWriter {
+            DeadlineRiskFeedback.PriorityWriter, DeadlineRiskFeedback.LifecycleInboxWriter, DeadlineRiskFeedback.CommandWriter {
         private final TodoistRestGateway gateway
         private final java.nio.file.Path applicationsDir
         SyncDeadlineWriter(TodoistRestGateway gateway, java.nio.file.Path applicationsDir = null) {
@@ -54,7 +54,10 @@ final class DeadlineRiskReplyWiring {
         }
 
         void updateTaskDeadline(String taskId, String deadlineIso) {
-            String commandId = UUID.nameUUIDFromBytes("deadline-risk:${taskId}:${deadlineIso}".getBytes('UTF-8')).toString()
+            throw new UnsupportedOperationException('event-scoped command id required')
+        }
+
+        void updateDeadline(String taskId, String deadlineIso, String commandId) {
             def result = gateway.updateAuthorizedDeadline(taskId, deadlineIso, commandId)
             if (result.state == todoistcaldavsync.planner.adapters.TodoistCommandState.AMBIGUOUS) {
                 throw new DeadlineRiskFeedback.AmbiguousWrite(commandId)
@@ -73,7 +76,10 @@ final class DeadlineRiskReplyWiring {
         }
 
         void updateTaskPriority(String taskId, int apiPriority) {
-            String commandId = UUID.nameUUIDFromBytes("deadline-risk:${taskId}:priority:${apiPriority}".getBytes('UTF-8')).toString()
+            throw new UnsupportedOperationException('event-scoped command id required')
+        }
+
+        void updatePriority(String taskId, int apiPriority, String commandId) {
             def result = gateway.updateAuthorizedPriority(taskId, apiPriority, commandId)
             if (result.state == todoistcaldavsync.planner.adapters.TodoistCommandState.AMBIGUOUS) {
                 throw new DeadlineRiskFeedback.AmbiguousWrite(commandId)
