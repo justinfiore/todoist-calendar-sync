@@ -132,6 +132,38 @@ class DeadlineRiskFeedbackSpec extends Specification {
                  [id: 't1', deadline: [date: '2026-08-07']]]
     }
 
+    def "checkpoint records unknown before write and preserves distinct outcomes"() {
+        given:
+        def gateway = new InMemoryTodoistGateway([[id: 't1', priority: 1, deadline: [date: '2026-08-07']]])
+        def feedback = new DeadlineRiskFeedback(gateway, zone)
+        def preflight = feedback.preflight(inventory(), [new DeadlineRiskFeedback.Action(1, 'prop', null, 3)],
+            ['t1': gateway.getTask('t1')], 'prop', policy.identity())
+        def checkpoints = []
+
+        when:
+        def execution = feedback.execute(preflight, [] as Set, { outcomes -> checkpoints << outcomes.collect { it.toMap() } })
+
+        then:
+        checkpoints*.first()*.state == ['unknown', 'verified']
+        execution.allVerified()
+    }
+
+    def "receipt load never promotes rejected or unknown to verified"() {
+        given:
+        def directory = java.nio.file.Files.createTempDirectory('deadline-receipts')
+        def outcomes = [[commandId: 'a', state: 'verified'], [commandId: 'b', state: 'rejected'], [commandId: 'c', state: 'unknown']]
+
+        when:
+        DeadlineRiskReceipts.handle(directory, 'save', 'event', outcomes)
+
+        then:
+        DeadlineRiskReceipts.handle(directory, 'load', 'event') == ['a'] as Set
+        DeadlineRiskReceipts.handle(directory, 'load-record', 'event').outcomes*.state == ['verified', 'rejected', 'unknown']
+
+        cleanup:
+        directory?.toFile()?.deleteDir()
+    }
+
     private static class PriorityFailingGateway extends InMemoryTodoistGateway {
         private final InMemoryTodoistGateway delegate
         private final String failId
@@ -141,7 +173,7 @@ class DeadlineRiskFeedbackSpec extends Specification {
             this.failId = failId
         }
         @Override void updateTaskPriority(String taskId, int apiPriority) {
-            if (taskId == failId) throw new RuntimeException('rejected by provider')
+            if (taskId == failId) throw new DeadlineRiskFeedback.RejectedWrite('rejected by provider')
             delegate.updateTaskPriority(taskId, apiPriority)
         }
         @Override void updateTaskDeadline(String taskId, String deadlineIso) {

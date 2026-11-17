@@ -16,7 +16,7 @@ final class DeadlineRiskReceipts {
         Map stored = Files.exists(file) ? new JsonSlurper().parse(file.toFile()) as Map : [:]
         if (op == 'load') {
             def prior = stored[eventId]
-            return prior instanceof Map ? (prior.commandIds ?: []) as Set : [] as Set
+            return prior instanceof Map ? ((prior.outcomes ?: []).findAll { it instanceof Map && it.state == 'verified' }.collect { it.commandId }.findAll { it }) as Set : [] as Set
         }
         if (op == 'load-record') {
             def prior = stored[eventId]

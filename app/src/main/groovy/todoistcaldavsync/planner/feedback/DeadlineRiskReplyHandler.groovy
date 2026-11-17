@@ -34,6 +34,13 @@ final class DeadlineRiskReplyHandler {
     }
 
     boolean handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
+        def previous = receipts.call('load-record', event.eventId)
+        if (previous instanceof Map && !previous.isEmpty()) {
+            List outcomes = previous.outcomes instanceof List ? previous.outcomes : []
+            String summary = outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
+            reply.accept(event.threadTs, "Previously recorded Deadline reply outcomes: ${summary ?: 'unknown'}. No writes were replayed; request a fresh review for any remaining changes. This reply is not calendar approval.")
+            return false
+        }
         DeadlineRiskInventory inventory = StoredDeadlineRiskInventory.restore(storedRows, zone)
         String pendingKey = "clarify:${conversation.proposalId}:${event.threadTs}"
         def pending = receipts.call('load-record', pendingKey)
@@ -69,8 +76,9 @@ final class DeadlineRiskReplyHandler {
             reply.accept(event.threadTs, "No task was changed. ${preflight.problems.join('; ')}")
             return false
         }
-        Set<String> applied = receipts.call('load', event.eventId) as Set ?: [] as Set
-        def execution = feedback.execute(preflight, applied)
+        def execution = feedback.execute(preflight, [] as Set, { List outcomes ->
+            receipts.call('save', event.eventId, outcomes.collect { it.toMap() })
+        })
         receipts.call('save', event.eventId, execution.outcomes.collect { it.toMap() })
         receipts.call('save', pendingKey, [[pending: false, originalReply: replyText, replyTime: replyTime]])
         String summary = execution.outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
@@ -79,7 +87,7 @@ final class DeadlineRiskReplyHandler {
         String successorNote = posted ? "Fresh proposal ${successorResult.proposalId} posted. "
             : (successorResult ? "Fresh proposal was not posted (${successorResult.status ?: 'undelivered'}). " : "")
         reply.accept(event.threadTs,
-            "Deadline reply applied without Calendar changes. ${summary}. ${successorNote}" +
+            "Deadline reply processed without Calendar changes. ${summary}. ${successorNote}" +
             "This reply is not calendar approval.")
         return execution.anyVerified()
     }

@@ -90,7 +90,7 @@ final class DeadlineRiskFeedback {
      * Execute a preflighted batch. Caller must persist the returned receipt before retrying.
      * Already-recorded command ids are not sent again.
      */
-    Execution execute(Preflight preflight, Set<String> alreadyAppliedCommandIds = [] as Set) {
+    Execution execute(Preflight preflight, Set<String> alreadyAppliedCommandIds = [] as Set, Closure checkpoint = null) {
         if (preflight == null || !preflight.accepted) {
             return new Execution([], ['preflight rejected the batch'])
         }
@@ -98,10 +98,16 @@ final class DeadlineRiskFeedback {
         List<String> notes = []
         preflight.actions.each { Action action ->
             if (action.deadlineDate != null) {
+                String id = UUID.nameUUIDFromBytes("deadline-risk:${action.taskId}:${action.deadlineDate}".getBytes('UTF-8')).toString()
+                if (checkpoint != null && !alreadyAppliedCommandIds.contains(id)) checkpoint.call(outcomes + [new Outcome(action.taskId, 'deadline', 'unknown', id, 'write may have started')])
                 outcomes << applyDeadline(action, alreadyAppliedCommandIds, notes)
+                if (checkpoint != null) checkpoint.call(outcomes)
             }
             if (action.priority != null) {
+                String id = UUID.nameUUIDFromBytes("deadline-risk:${action.taskId}:priority:${action.priority}".getBytes('UTF-8')).toString()
+                if (checkpoint != null && !alreadyAppliedCommandIds.contains(id)) checkpoint.call(outcomes + [new Outcome(action.taskId, 'priority', 'unknown', id, 'write may have started')])
                 outcomes << applyPriority(action, alreadyAppliedCommandIds, notes)
+                if (checkpoint != null) checkpoint.call(outcomes)
             }
         }
         new Execution(outcomes, notes)
@@ -116,9 +122,11 @@ final class DeadlineRiskFeedback {
         try {
             writer.updateTaskDeadline(action.taskId, action.deadlineDate.toString())
         } catch (AmbiguousWrite e) {
-            return new Outcome(action.taskId, 'deadline', 'unknown', e.commandId, 'ambiguous')
-        } catch (RuntimeException e) {
+            return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'ambiguous')
+        } catch (RejectedWrite e) {
             return new Outcome(action.taskId, 'deadline', 'rejected', commandId, e.message)
+        } catch (RuntimeException e) {
+            return new Outcome(action.taskId, 'deadline', 'unknown', commandId, e.message)
         }
         if (lifecycle != null) {
             try {
@@ -141,6 +149,9 @@ final class DeadlineRiskFeedback {
                         return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'marker update not committed')
                     }
                 }
+                if (writer instanceof LifecycleInboxWriter) {
+                    ((LifecycleInboxWriter) writer).enqueueCurrentTask(action.taskId)
+                }
             } catch (RuntimeException e) {
                 return new Outcome(action.taskId, 'deadline', 'unknown', commandId, e.message)
             }
@@ -160,8 +171,12 @@ final class DeadlineRiskFeedback {
         try {
             ((PriorityWriter) writer).updateTaskPriority(action.taskId, action.priority)
             return new Outcome(action.taskId, 'priority', 'verified', commandId, null)
-        } catch (RuntimeException e) {
+        } catch (AmbiguousWrite e) {
+            return new Outcome(action.taskId, 'priority', 'unknown', commandId, 'ambiguous')
+        } catch (RejectedWrite e) {
             return new Outcome(action.taskId, 'priority', 'rejected', commandId, e.message)
+        } catch (RuntimeException e) {
+            return new Outcome(action.taskId, 'priority', 'unknown', commandId, e.message)
         }
     }
 
@@ -174,6 +189,14 @@ final class DeadlineRiskFeedback {
     /** Gateway extension. Existing due/deadline methods do not carry priority. */
     interface PriorityWriter {
         void updateTaskPriority(String taskId, int apiPriority)
+    }
+
+    interface LifecycleInboxWriter {
+        void enqueueCurrentTask(String taskId)
+    }
+
+    static final class RejectedWrite extends RuntimeException {
+        RejectedWrite(String message) { super(message) }
     }
 
     static final class AmbiguousWrite extends RuntimeException {
