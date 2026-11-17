@@ -1089,6 +1089,35 @@ class DeterministicSchedulerSpec extends Specification {
         plan.tasks.every { !it.manual }
     }
 
+    def "hard peers protect constrained capacity while preserving priority when all cannot fit"() {
+        given:
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-17:00']]],
+            tasks: [default_deadline_mode: 'hard', contexts: [
+                morning: [match_labels: ['morning'], preferred_windows: ['weekday 09:00-10:00'],
+                          preferred_bonus: 500, avoid_penalty: 0]
+            ]],
+            batching: [enabled: false],
+            stability: [freeze_within: 'PT0S', minimum_buffer_between_blocks_minutes: 0, churn_penalty: 0]
+        ])
+        def flexible = task(id: 'flexible', labels: ['morning'], priority: 4, minutes: 30, deadline: dayEnd)
+        def constrained = task(id: 'constrained', priority: 1, minutes: 60, deadline: dayEnd)
+        def sched = new DeterministicScheduler(config)
+        def slots = [slot('09:00', '10:00'), slot('11:00', '11:30')]
+
+        when:
+        def plan = sched.propose([flexible, constrained], slots, dayStart, dayEnd, now)
+        def overfull = sched.propose([flexible, constrained], [slots[0]], dayStart, dayEnd, now)
+
+        then:
+        plan.unscheduled.empty
+        plan.scheduledBlocks.find { it.taskIds == ['constrained'] }.start == slots[0].start
+        plan.scheduledBlocks.find { it.taskIds == ['flexible'] }.start == slots[1].start
+        overfull.scheduledBlocks*.taskIds.flatten() == ['flexible']
+        overfull.unscheduled*.task*.id == ['constrained']
+    }
+
     def "soft work cannot take the only interval a hard commitment can still use"() {
         given:
         def slots = [slot('09:00', '10:00')]

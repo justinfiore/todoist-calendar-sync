@@ -699,12 +699,8 @@ class DeterministicScheduler {
                     start, end, score, reason, "block-${unit.primaryId()}-${start.toEpochMilli()}",
                     orderedStarts, orderedEnds, orderedMembers*.id, weatherByTask
                 )
-                Instant ownDeadline = unit.tasks.collect { constraintDeadline(it) }.findAll { it != null }.min()
                 List<SchedulingUnit> others = hardWaiting?.findAll { waiting ->
-                    if (waiting.tasks.any { t -> unit.tasks.any { it.id == t.id } }) return false
-                    Instant waitingDeadline = waiting.tasks.collect { constraintDeadline(it) }.findAll { it != null }.min()
-                    // A peer with the same or later hard Deadline is not capacity this unit must protect.
-                    waitingDeadline != null && (ownDeadline == null || waitingDeadline.isBefore(ownDeadline))
+                    !waiting.tasks.any { t -> unit.tasks.any { it.id == t.id } }
                 }
                 if (!hardCommitmentsStillFit(others, remaining, occupied, start, end,
                     bufferMinutes, rangeStart, rangeEnd, now)) {
@@ -715,6 +711,20 @@ class DeterministicScheduler {
                     (candidate.score == best.score && candidate.start == best.start && candidate.blockId < best.blockId)) {
                     best = candidate
                 }
+            }
+        }
+        // When all hard work cannot fit, retain the original priority/deadline ordering
+        // rather than leaving this hard unit unscheduled to protect a later peer.
+        if (best == null && unit.tasks.any { deadlinePolicy.isHard(it) } && hardWaiting) {
+            Instant ownDeadline = unit.tasks.collect { constraintDeadline(it) }.findAll { it != null }.min()
+            List<SchedulingUnit> earlier = hardWaiting.findAll { waiting ->
+                Instant deadline = waiting.tasks.collect { constraintDeadline(it) }.findAll { it != null }.min()
+                deadline != null && (ownDeadline == null || deadline.isBefore(ownDeadline))
+            }
+            if (earlier.size() < hardWaiting.size()) {
+                return findBestPlacement(unit, remaining, occupied, reportingSlots, now, rangeStart, rangeEnd,
+                    previousProjectId, previousByTask, manualIds, bufferMinutes, forecast,
+                    weatherRejectedSlots, earlier)
             }
         }
         return best
