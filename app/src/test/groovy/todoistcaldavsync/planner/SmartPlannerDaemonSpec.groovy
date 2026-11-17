@@ -332,6 +332,9 @@ class SmartPlannerDaemonSpec extends Specification {
         stored.planId != conversation.planId
         stored.iteration == conversation.iteration + 1
         surface.replies.any { it.text?.contains('Revised proposal — iteration 2') && it.text?.contains('Write report') }
+        def revised = surface.replies.find { it.text?.contains('Revised proposal — iteration 2') }
+        revised.threadTs == conversation.threadTs
+        revised.metadata.deadlineRisks == stored.overrides.deadlineRisks
         !surface.replies.any { it.text?.toLowerCase()?.contains('calendar applied') }
         cleanup:
         llm.stop(); todoist.stop(); state.deleteDir()

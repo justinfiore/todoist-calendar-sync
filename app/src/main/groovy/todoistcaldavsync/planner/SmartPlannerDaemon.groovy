@@ -453,12 +453,16 @@ final class SmartPlannerDaemon implements AutoCloseable {
         // Fail closed before exposing a new human-visible identity. If delivery or
         // final persistence fails, the old plan is no longer approvable.
         conversations.save(prior.withStatus('PUBLISHING_REVISION', now))
-        PublishedMessage reply = safeReply(event.channelId, event.threadTs,
-            "*Revised proposal — iteration ${prior.iteration + 1}*\n${message.body}",
-            "replan:${event.eventId}:${proposal.id}")
+        Map revised = message.toMap()
+        revised.body = "*Revised proposal — iteration ${prior.iteration + 1}*\n${message.body}"
+        revised.destination = event.channelId
+        revised.idempotencyKey = "replan:${event.eventId}:${proposal.id}"
+        revised.metadata = new LinkedHashMap(message.metadata ?: [:])
+        revised.metadata.threadTs = event.threadTs
+        PublishedMessage reply = surface.publishProposal(Message.fromMap(revised))
         if (reply == null || !reply.delivered()) throw new IllegalStateException('revised proposal delivery failed')
         Map nextOverrides = new LinkedHashMap(overrides ?: [:])
-        if (message.metadata?.deadlineRisks) nextOverrides.deadlineRisks = message.metadata.deadlineRisks
+        nextOverrides.deadlineRisks = message.metadata?.deadlineRisks ?: []
         if (message.metadata?.deadlinePolicyIdentity != null) {
             nextOverrides.deadlinePolicyIdentity = message.metadata.deadlinePolicyIdentity
         }

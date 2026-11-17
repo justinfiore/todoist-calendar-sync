@@ -28,9 +28,15 @@ final class InMemoryMessagingSurface implements MessagingSurface {
 
     @Override
     synchronized PublishedMessage publishProposal(Message message) {
-        proposals << message
         String ts = "1000.${String.format('%06d', ++sequence)}"
-        new PublishedMessage(channelId: message.destination, messageTs: ts, threadTs: ts)
+        String thread = message.metadata.threadTs?.toString()
+        if (thread) {
+            replies << [channelId: message.destination, threadTs: thread, text: message.body,
+                        idempotencyKey: message.idempotencyKey, messageTs: ts, metadata: message.metadata]
+        } else {
+            proposals << message
+        }
+        new PublishedMessage(channelId: message.destination, messageTs: ts, threadTs: thread ?: ts)
     }
 
     @Override
