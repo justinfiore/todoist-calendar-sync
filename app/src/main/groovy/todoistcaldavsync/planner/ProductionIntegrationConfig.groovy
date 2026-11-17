@@ -80,6 +80,7 @@ final class ProductionIntegrationConfig {
             baseUrl            : todoistBase,
             allowInsecureHttp  : todoistRaw.allow_insecure_http == true,
             secretResolver     : todoistRaw.secret_resolver,
+            httpClient         : todoistRaw.http_client,
             tokenEnv           : tokenEnv,
             includeProjectNames: todoistRaw.include_project_names != false,
             timeout            : parseDuration(todoistRaw.timeout, Duration.ofSeconds(10), 'planner.integration.todoist.timeout'),

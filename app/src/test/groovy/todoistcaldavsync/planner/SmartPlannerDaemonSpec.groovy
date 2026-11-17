@@ -72,6 +72,58 @@ class SmartPlannerDaemonSpec extends Specification {
         }
     }
 
+    private static final class UpdatingSyncClient extends java.net.http.HttpClient {
+        private final java.net.http.HttpClient delegate = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(5)).build()
+        private final com.github.tomakehurst.wiremock.WireMockServer server
+        private final String commandId
+        UpdatingSyncClient(com.github.tomakehurst.wiremock.WireMockServer server, String commandId) {
+            this.server = server
+            this.commandId = commandId
+        }
+        java.util.Optional<java.net.CookieHandler> cookieHandler() { delegate.cookieHandler() }
+        java.util.Optional<java.time.Duration> connectTimeout() { delegate.connectTimeout() }
+        java.net.http.HttpClient.Redirect followRedirects() { delegate.followRedirects() }
+        java.util.Optional<java.net.ProxySelector> proxy() { delegate.proxy() }
+        javax.net.ssl.SSLContext sslContext() { delegate.sslContext() }
+        javax.net.ssl.SSLParameters sslParameters() { delegate.sslParameters() }
+        java.util.Optional<java.net.Authenticator> authenticator() { delegate.authenticator() }
+        java.net.http.HttpClient.Version version() { delegate.version() }
+        java.util.Optional<java.util.concurrent.Executor> executor() { delegate.executor() }
+        <T> java.net.http.HttpResponse<T> send(java.net.http.HttpRequest request, java.net.http.HttpResponse.BodyHandler<T> handler) {
+            if (request.method() == 'POST' && request.uri().path.endsWith('/sync')) {
+                server.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+                    com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')).willReturn(
+                    com.github.tomakehurst.wiremock.client.WireMock.okJson(
+                        groovy.json.JsonOutput.toJson([sync_status: [(commandId): 'ok'], sync_token: 'next']))))
+            }
+            def response = delegate.send(request, handler)
+            if (request.method() == 'POST' && request.uri().path.endsWith('/sync')) {
+                def posted = server.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                    com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')))
+                def command = new groovy.json.JsonSlurper().parseText(URLDecoder.decode(posted[-1].bodyAsString.split('commands=')[1], 'UTF-8'))[0]
+                if (command.uuid == commandId && command.args.id == 't1' && command.args.priority == 3 &&
+                    command.args.deadline == null && command.args.due == null) {
+                    String updated = groovy.json.JsonOutput.toJson([id: 't1', content: 'Write report', labels: ['schedule'],
+                        priority: 3, deadline: [date: '2026-08-07'], project_id: 'inbox'])
+                    server.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+                        com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/tasks')).willReturn(
+                        com.github.tomakehurst.wiremock.client.WireMock.okJson("{\"results\":[${updated}]}")))
+                    server.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+                        com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/tasks/t1')).willReturn(
+                        com.github.tomakehurst.wiremock.client.WireMock.okJson(updated)))
+                }
+            }
+            response
+        }
+        <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(java.net.http.HttpRequest request, java.net.http.HttpResponse.BodyHandler<T> handler) {
+            delegate.sendAsync(request, handler)
+        }
+        <T> java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<T>> sendAsync(java.net.http.HttpRequest request, java.net.http.HttpResponse.BodyHandler<T> handler, java.net.http.HttpResponse.PushPromiseHandler<T> push) {
+            delegate.sendAsync(request, handler, push)
+        }
+    }
+
     private static final class LifecycleGateway extends InMemoryTodoistGateway implements TodoistLifecycleGateway {
         final List<String> syncTokens = []
 
@@ -223,10 +275,7 @@ class SmartPlannerDaemonSpec extends Specification {
                 [id: 't1', content: 'Write report', labels: ['schedule'], priority: 4,
                     deadline: [date: '2026-08-07'], project_id: 'inbox']))))
         String commandId = UUID.nameUUIDFromBytes('deadline-risk:t1:priority:3'.getBytes('UTF-8')).toString()
-        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
-            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')).willReturn(
-            com.github.tomakehurst.wiremock.client.WireMock.okJson(
-                groovy.json.JsonOutput.toJson([sync_status: [(commandId): 'ok'], sync_token: 'next']))))
+        def syncClient = new UpdatingSyncClient(todoist, commandId)
         File state = Files.createTempDirectory('smartplanner-deadline-route-').toFile()
         def now = new AtomicReference<>(initial)
         def surface = new InMemoryMessagingSurface()
@@ -248,13 +297,14 @@ class SmartPlannerDaemonSpec extends Specification {
             } as todoistcaldavsync.planner.ai.LlmHttpTransport, { 'fixture-key' })
         }
         def read = new todoistcaldavsync.planner.adapters.TodoistRestGateway(
-            baseUrl: "http://127.0.0.1:${todoist.port()}/api/v1", tokenOverride: 'fixture', allowInsecureHttp: true)
+            baseUrl: "http://127.0.0.1:${todoist.port()}/api/v1", tokenOverride: 'fixture', allowInsecureHttp: true,
+            httpClient: syncClient)
         def parts = build(state, now, surface, null, read, null, null, null, [
             ai: [enabled: true, provider: 'openai_compatible', endpoint: 'https://api.openai.com/v1/chat/completions',
                 model: 'gpt-fixture', secret_env: 'LLM_FIXTURE_KEY', allowed_hosts: ['api.openai.com'],
                 allowed_suggestion_types: ['deadline_risk_mitigation']],
             integration: [todoist: [base_url: "http://127.0.0.1:${todoist.port()}/api/v1", token_env: 'TEST_TOKEN',
-                allow_insecure_http: true, secret_resolver: { 'fixture-token' }]]
+                allow_insecure_http: true, secret_resolver: { 'fixture-token' }, http_client: syncClient]]
         ], null, factory)
         SmartPlannerDaemon daemon = parts[0]
         daemon.start()
@@ -267,22 +317,19 @@ class SmartPlannerDaemonSpec extends Specification {
         def posts = todoist.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
             com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')))
         def stored = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', conversation.threadTs)
-        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
-            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/tasks')).willReturn(
-            com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson([
-                results: [[id: 't1', content: 'Write report', labels: ['schedule'], priority: 3,
-                    deadline: [date: '2026-08-07'], project_id: 'inbox']]]))))
-        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
-            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/projects')).willReturn(
-            com.github.tomakehurst.wiremock.client.WireMock.okJson('{"results":[{"id":"inbox","name":"Inbox"}]}')))
-        def reread = read.fetchTasks().find { it.id == 't1' }
+        def successor = parts[1].planStore.load(stored.planId)
 
         then:
         posts.size() == 1
-        posts[0].bodyAsString.contains(commandId)
-        posts[0].bodyAsString.contains('priority')
-        reread.priority == 3
-        reread.deadline.date == '2026-08-07'
+        def command = new groovy.json.JsonSlurper().parseText(URLDecoder.decode(posts[0].bodyAsString.split('commands=')[1], 'UTF-8'))[0]
+        command.uuid == commandId
+        command.args.id == 't1'
+        command.args.priority == 3
+        command.args.deadline == null
+        command.args.due == null
+        successor.tasks.find { it.id == 't1' }.priority == 3
+        successor.tasks.find { it.id == 't1' }.deadlineDate.toString() == '2026-08-07'
+        stored.planId != conversation.planId
         stored.iteration == conversation.iteration + 1
         surface.replies.any { it.text?.contains('Revised proposal — iteration 2') && it.text?.contains('Write report') }
         !surface.replies.any { it.text?.toLowerCase()?.contains('calendar applied') }
