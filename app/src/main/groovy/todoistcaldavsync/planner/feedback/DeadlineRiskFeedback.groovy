@@ -69,8 +69,11 @@ final class DeadlineRiskFeedback {
             }
             String liveDeadline = liveDeadline(live)
             String boundDeadline = row.deadlineDate?.toString()
-            if (boundDeadline && liveDeadline && boundDeadline != liveDeadline) {
+            if (boundDeadline != liveDeadline) {
                 problems << "row ${action.number} Deadline changed from ${boundDeadline} to ${liveDeadline}; request a fresh review"
+            }
+            if (live.priority == null || live.priority.toString() != row.task.priority?.toString()) {
+                problems << "row ${action.number} priority changed or is unavailable; request a fresh review"
             }
             if (action.priority != null && !(action.priority in 1..4)) {
                 problems << "row ${action.number} priority must be P1–P4"

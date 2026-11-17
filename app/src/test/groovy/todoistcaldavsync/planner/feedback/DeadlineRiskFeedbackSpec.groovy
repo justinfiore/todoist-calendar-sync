@@ -118,6 +118,20 @@ class DeadlineRiskFeedbackSpec extends Specification {
         gateway.getTask('t2').priority == 4
     }
 
+    def "preflight rejects removed deadline and changed or missing priority"() {
+        given:
+        def feedback = new DeadlineRiskFeedback(new InMemoryTodoistGateway([]), zone)
+        def action = new DeadlineRiskFeedback.Action(1, 'prop', null, 3)
+
+        expect:
+        !feedback.preflight(inventory(), [action], ['t1': live], 'prop', policy.identity()).accepted
+
+        where:
+        live << [[id: 't1', priority: 1],
+                 [id: 't1', priority: 2, deadline: [date: '2026-08-07']],
+                 [id: 't1', deadline: [date: '2026-08-07']]]
+    }
+
     private static class PriorityFailingGateway extends InMemoryTodoistGateway {
         private final InMemoryTodoistGateway delegate
         private final String failId
