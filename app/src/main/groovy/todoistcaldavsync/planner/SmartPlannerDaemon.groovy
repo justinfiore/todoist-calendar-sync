@@ -411,7 +411,20 @@ final class SmartPlannerDaemon implements AutoCloseable {
         if (!(risks instanceof List) || risks.isEmpty() || deadlineRiskHandler == null) return false
         boolean pendingClarification = pendingDeadlineClarification(conversation, event)
         if (!(event.text =~ /\d/) && !pendingClarification) return false
-        if (deadlineRiskHandler.handle(event, conversation, risks as List)) {
+        MessagingEvent boundEvent = event
+        if (conversation.iteration > 1) {
+            String prefix = "proposal ${conversation.proposalId}\n"
+            if (!event.text.startsWith(prefix)) {
+                safeReply(event.channelId, event.threadTs,
+                    "To identify the revised proposal, begin your reply with `proposal ${conversation.proposalId}` on its own line. No task was changed.",
+                    "deadline-proposal-binding:${event.eventId}")
+                return true
+            }
+            boundEvent = new MessagingEvent(eventId: event.eventId, type: event.type, actorId: event.actorId,
+                channelId: event.channelId, messageTs: event.messageTs, threadTs: event.threadTs,
+                text: event.text.substring(prefix.length()), bot: event.bot)
+        }
+        if (deadlineRiskHandler.handle(boundEvent, conversation, risks as List)) {
             publishDeadlineSuccessor(event, conversation)
         }
         return true
@@ -464,7 +477,8 @@ final class SmartPlannerDaemon implements AutoCloseable {
         // final persistence fails, the old plan is no longer approvable.
         conversations.save(prior.withStatus('PUBLISHING_REVISION', now))
         Map revised = message.toMap()
-        revised.body = "*Revised proposal — iteration ${prior.iteration + 1}*\n${message.body}"
+        revised.body = "*Revised proposal — iteration ${prior.iteration + 1}*\n" +
+            "For Deadline changes, begin your reply with `proposal ${proposal.id}` on its own line, followed by your numbered instructions.\n${message.body}"
         revised.destination = event.channelId
         revised.idempotencyKey = "replan:${event.eventId}:${proposal.id}"
         revised.metadata = new LinkedHashMap(message.metadata ?: [:])

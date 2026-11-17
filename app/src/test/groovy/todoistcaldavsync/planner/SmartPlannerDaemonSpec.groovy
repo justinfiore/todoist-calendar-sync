@@ -336,6 +336,16 @@ class SmartPlannerDaemonSpec extends Specification {
         revised.threadTs == conversation.threadTs
         revised.metadata.deadlineRisks == stored.overrides.deadlineRisks
         !surface.replies.any { it.text?.toLowerCase()?.contains('calendar applied') }
+
+        when: 'an unbound reply meant for the previous table arrives after the revision'
+        daemon.handleEvent(new MessagingEvent([eventId: 'e-stale-row', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '2.3', threadTs: conversation.threadTs, text: '1 elevate to P2']))
+
+        then:
+        todoist.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync'))).size() == 1
+        surface.replies.last().text.contains("proposal ${stored.proposalId}")
+        surface.replies.last().text.contains('No task was changed')
         cleanup:
         llm.stop(); todoist.stop(); state.deleteDir()
     }
