@@ -68,9 +68,18 @@ final class ProductionIntegrationConfig {
             throw new IllegalArgumentException('planner.integration.todoist.base_url and token_env are required')
         }
         rejectInlineSecrets(todoistRaw, 'planner.integration.todoist')
-        validateHttpsUri(todoistBase, 'planner.integration.todoist.base_url')
+        if (todoistRaw.allow_insecure_http == true) {
+            URI uri = URI.create(todoistBase)
+            if (!uri.host || !(uri.scheme in ['http', 'https'])) {
+                throw new IllegalArgumentException('planner.integration.todoist.base_url must be absolute when insecure HTTP is explicitly allowed')
+            }
+        } else {
+            validateHttpsUri(todoistBase, 'planner.integration.todoist.base_url')
+        }
         this.todoist = Collections.unmodifiableMap([
             baseUrl            : todoistBase,
+            allowInsecureHttp  : todoistRaw.allow_insecure_http == true,
+            secretResolver     : todoistRaw.secret_resolver,
             tokenEnv           : tokenEnv,
             includeProjectNames: todoistRaw.include_project_names != false,
             timeout            : parseDuration(todoistRaw.timeout, Duration.ofSeconds(10), 'planner.integration.todoist.timeout'),

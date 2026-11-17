@@ -450,9 +450,14 @@ final class SmartPlannerDaemon implements AutoCloseable {
             "*Revised proposal — iteration ${prior.iteration + 1}*\n${message.body}",
             "replan:${event.eventId}:${proposal.id}")
         if (reply == null || !reply.delivered()) throw new IllegalStateException('revised proposal delivery failed')
+        Map nextOverrides = new LinkedHashMap(overrides ?: [:])
+        if (message.metadata?.deadlineRisks) nextOverrides.deadlineRisks = message.metadata.deadlineRisks
+        if (message.metadata?.deadlinePolicyIdentity != null) {
+            nextOverrides.deadlinePolicyIdentity = message.metadata.deadlinePolicyIdentity
+        }
         ConversationRecord next = prior.next(planId: plan.id, planVersion: plan.version,
             planHash: proposal.planHash, proposalId: proposal.id, updatedAt: now,
-            overrides: overrides, status: 'ACTIVE')
+            overrides: nextOverrides, status: 'ACTIVE')
         conversations.save(next)
     }
 
@@ -470,11 +475,16 @@ final class SmartPlannerDaemon implements AutoCloseable {
             .withDeliveryKey("daemon:${name}:${proposal.id}", [planningRun: name, horizon: horizon.toString()])
         PublishedMessage published = surface.publishProposal(rendered)
         if (!published.delivered()) throw new IllegalStateException(published.error ?: 'proposal delivery failed')
+        Map publishedOverrides = new LinkedHashMap(overrides ?: [:])
+        if (rendered.metadata?.deadlineRisks) publishedOverrides.deadlineRisks = rendered.metadata.deadlineRisks
+        if (rendered.metadata?.deadlinePolicyIdentity != null) {
+            publishedOverrides.deadlinePolicyIdentity = rendered.metadata.deadlinePolicyIdentity
+        }
         ConversationRecord record = new ConversationRecord(channelId: published.channelId,
             threadTs: published.threadTs, runName: name, planId: plan.id, planVersion: plan.version,
             planHash: proposal.planHash, proposalId: proposal.id, iteration: 1,
             previousPlanId: previous?.planId, previousProposalId: previous?.proposalId,
-            createdAt: startedAt, updatedAt: clock.get(), status: 'ACTIVE', overrides: overrides)
+            createdAt: startedAt, updatedAt: clock.get(), status: 'ACTIVE', overrides: publishedOverrides)
         if (previous != null && (previous.channelId != record.channelId || previous.threadTs != record.threadTs)) {
             conversations.save(previous.withStatus('SUPERSEDED', clock.get()))
         }
@@ -605,7 +615,8 @@ final class SmartPlannerDaemon implements AutoCloseable {
 
     private MessageRenderer renderer() {
         new MessageRenderer(orchestrator.plannerConfig.messaging.timezone ?: orchestrator.plannerConfig.timezone,
-            config.slack.channel, orchestrator.plannerConfig.messaging.riskDeadlineDays)
+            config.slack.channel, orchestrator.plannerConfig.messaging.riskDeadlineDays,
+            todoistcaldavsync.planner.scheduling.DeadlinePolicy.from(orchestrator.plannerConfig))
     }
 
     private static Duration overrideHorizon(Duration configured, Map overrides) {

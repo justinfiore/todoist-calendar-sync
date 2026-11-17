@@ -43,7 +43,8 @@ final class AiAssistanceService {
     }
 
     AssistanceResult suggest(String type, String correlationId, Plan plan,
-                             Collection<CalendarEvent> events = [], String feedbackText = null) {
+                             Collection<CalendarEvent> events = [], String feedbackText = null,
+                             Collection<Integer> allowedRiskNumbers = []) {
         Instant started = clock.get()
         if (!config.allowedSuggestionTypes.contains(type)) {
             return AssistanceResult.rejected(new LlmError(LlmErrorClass.CONFIGURATION, 'suggestion type is not allowed'), null)
@@ -75,6 +76,7 @@ final class AiAssistanceService {
                 context: requestContext, allowedTaskIds: context.taskIds,
                 allowedEventIds: context.eventIds, expectedProposalId: proposalId,
                 allowedFeedbackActions: feedbackActions,
+                allowedRiskNumbers: allowedRiskNumbers ?: [],
                 planningRangeStart: plan.slots ? plan.slots.collect { it.start }.min() : null,
                 planningRangeEnd: plan.slots ? plan.slots.collect { it.end }.max() : null,
                 requestedAt: started,

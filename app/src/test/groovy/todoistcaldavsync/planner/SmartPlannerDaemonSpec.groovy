@@ -174,8 +174,15 @@ class SmartPlannerDaemonSpec extends Specification {
                        MessagingSurface surface = new InMemoryMessagingSurface(), Closure aiProvider = null,
                        TodoistReadGateway todoistRead = null, TodoistWriteGateway todoistWrite = null,
                        ScheduledThreadPoolExecutor scheduler = null, ConversationStore conversationStore = null,
-                       Map configExtra = [:], InMemoryCalendarGateway calendarGateway = null) {
-        Map root = config(stateRoot, configExtra)
+                       Map configExtra = [:], InMemoryCalendarGateway calendarGateway = null,
+                       Closure aiGatewayFactory = null) {
+        Map root = config(stateRoot, configExtra.findAll { it.key != 'integration' })
+        if (configExtra.integration instanceof Map) {
+            configExtra.integration.each { key, value ->
+                if (root.planner.integration[key] instanceof Map && value instanceof Map) root.planner.integration[key].putAll(value)
+                else root.planner.integration[key] = value
+            }
+        }
         if (aiProvider != null) {
             root.planner.ai = [enabled: true, provider: 'fixture', model: 'fixture-model',
                 allowed_suggestion_types: ['conversational_feedback_interpretation', 'temporary_planning_overrides']]
@@ -188,62 +195,154 @@ class SmartPlannerDaemonSpec extends Specification {
         TodoistWriteGateway writeGateway = todoistWrite ?: todoist
         def calendar = calendarGateway ?: new InMemoryCalendarGateway('Planned', true, [])
         def orchestrator = new ProductionPlannerOrchestrator(planner, integration, readGateway, writeGateway, calendar, calendar,
-            { now.get() }, null, aiProvider)
+            { now.get() }, null, aiProvider, aiGatewayFactory)
         def daemon = new SmartPlannerDaemon(orchestrator, surface, { now.get() },
             scheduler ?: Executors.newSingleThreadScheduledExecutor(), conversationStore)
         [daemon, orchestrator, writeGateway, calendar, surface, integration]
     }
 
-    def 'numbered deadline reply uses the configured AI callback, sync write, and replan publisher'() {
+    def 'numbered deadline reply uses the daemon handler, local model HTTP, one sync write, and the revised proposal'() {
         given:
+        def llm = new com.github.tomakehurst.wiremock.WireMockServer(com.github.tomakehurst.wiremock.core.WireMockConfiguration.options().dynamicPort())
+        def todoist = new com.github.tomakehurst.wiremock.WireMockServer(com.github.tomakehurst.wiremock.core.WireMockConfiguration.options().dynamicPort())
+        llm.start(); todoist.start()
+        llm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/v1/chat/completions')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson('{"choices":[{"message":{"role":"assistant","content":"pending"}}]}')))
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/tasks')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson([
+                results: [[id: 't1', content: 'Write report', labels: ['schedule'], priority: 4,
+                    deadline: [date: '2026-08-07'], project_id: 'inbox']]]))))
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/projects')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson('{"results":[{"id":"inbox","name":"Inbox"}]}')))
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/tasks/t1')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson(
+                [id: 't1', content: 'Write report', labels: ['schedule'], priority: 4,
+                    deadline: [date: '2026-08-07'], project_id: 'inbox']))))
+        String commandId = UUID.nameUUIDFromBytes('deadline-risk:t1:priority:3'.getBytes('UTF-8')).toString()
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson(
+                groovy.json.JsonOutput.toJson([sync_status: [(commandId): 'ok'], sync_token: 'next']))))
         File state = Files.createTempDirectory('smartplanner-deadline-route-').toFile()
         def now = new AtomicReference<>(initial)
         def surface = new InMemoryMessagingSurface()
-        def syncPosts = []
-        Closure ai = { plan, String type, String correlation, String feedback ->
-            assert type == 'deadline_risk_mitigation' || type == 'conversational_feedback_interpretation'
-            if (type != 'deadline_risk_mitigation') return [accepted: false]
-            assert feedback.contains('1')
-            [accepted: true, bundle: [rootOutcome: 'actions', suggestions: [[number: 1, priority: 'P2']]]]
+        def factory = { cfg ->
+            new todoistcaldavsync.planner.ai.OpenAiCompatibleLlmGateway(cfg, { req ->
+                def sent = new groovy.json.JsonSlurper().parse(req.body)
+                String correlation = new groovy.json.JsonSlurper().parseText(sent.messages[1].content).correlationId
+                String answer = groovy.json.JsonOutput.toJson([schemaVersion: 1, suggestionType: 'deadline_risk_mitigation',
+                    correlationId: correlation, outcome: 'actions', suggestions: [[suggestionId: 's1', number: 1, priority: 'P2']]])
+                llm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+                    com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/v1/chat/completions')).willReturn(
+                    com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson([
+                        choices: [[message: [role: 'assistant', content: answer]]]]))))
+                def response = java.net.http.HttpClient.newHttpClient().send(
+                    java.net.http.HttpRequest.newBuilder(URI.create("http://127.0.0.1:${llm.port()}/v1/chat/completions"))
+                        .POST(java.net.http.HttpRequest.BodyPublishers.ofByteArray(req.body)).build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofByteArray())
+                new todoistcaldavsync.planner.ai.LlmTransportResponse(response.statusCode(), response.headers().map(), response.body())
+            } as todoistcaldavsync.planner.ai.LlmHttpTransport, { 'fixture-key' })
         }
-        def parts = build(state, now, surface, ai)
+        def read = new todoistcaldavsync.planner.adapters.TodoistRestGateway(
+            baseUrl: "http://127.0.0.1:${todoist.port()}/api/v1", tokenOverride: 'fixture', allowInsecureHttp: true)
+        def parts = build(state, now, surface, null, read, null, null, null, [
+            ai: [enabled: true, provider: 'openai_compatible', endpoint: 'https://api.openai.com/v1/chat/completions',
+                model: 'gpt-fixture', secret_env: 'LLM_FIXTURE_KEY', allowed_hosts: ['api.openai.com'],
+                allowed_suggestion_types: ['deadline_risk_mitigation']],
+            integration: [todoist: [base_url: "http://127.0.0.1:${todoist.port()}/api/v1", token_env: 'TEST_TOKEN',
+                allow_insecure_http: true, secret_resolver: { 'fixture-token' }]]
+        ], null, factory)
         SmartPlannerDaemon daemon = parts[0]
         daemon.start()
-        daemon.deadlineRiskHandler = new todoistcaldavsync.planner.feedback.DeadlineRiskReplyHandler(
-            new todoistcaldavsync.planner.feedback.DeadlineRiskInterpreter(
-                new todoistcaldavsync.planner.feedback.DeadlineRiskInterpreter.LlmGateway({ request ->
-                    assert request.reply.contains('1')
-                    [accepted: true, bundle: [suggestions: [[number: 1, priority: 'P2']]]]
-                })),
-            new todoistcaldavsync.planner.feedback.DeadlineRiskFeedback(parts[2], ZoneId.of('UTC')),
-            ZoneId.of('UTC'),
-            { thread, text -> surface.reply('C123', thread, text, 'deadline-risk') },
-            { ids -> ids.collectEntries { [(it): [id: it, deadline: [date: '2026-08-07'], priority: 1]] } },
-            { op, id, outcomes = null ->
-                todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
-                    state.toPath().resolve('applications/deadline-risk'), op, id, outcomes)
-            })
         def conversation = daemon.runNow('daily')
-        conversation = todoistcaldavsync.planner.state.ConversationRecord.fromMap(conversation.toMap() + [overrides: (conversation.overrides ?: [:]) + [
-            deadlinePolicyIdentity: null,
-            deadlineRisks: [[number: 1, taskId: 't1', content: 'Write report', projectName: 'Inbox',
-                deadlineDate: '2026-08-07', mode: 'hard', apiPriority: 1, policyIdentity: null]]
-        ]])
-        parts[1].class // keep orchestrator referenced
-        new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).save(conversation)
+        assert conversation.overrides.deadlineRisks*.taskId == ['t1']
 
         when:
         daemon.handleEvent(new MessagingEvent([eventId: 'e-deadline', type: 'thread_reply', actorId: 'U1',
             channelId: 'C123', messageTs: '2.2', threadTs: conversation.threadTs, text: '1 elevate to P2']))
-        def stored = new ConversationStore(parts[5].deliveriesDir.resolve('conversations'))
-            .find('C123', conversation.threadTs)
+        def posts = todoist.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')))
+        def stored = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', conversation.threadTs)
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/tasks')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson([
+                results: [[id: 't1', content: 'Write report', labels: ['schedule'], priority: 3,
+                    deadline: [date: '2026-08-07'], project_id: 'inbox']]]))))
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/projects')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson('{"results":[{"id":"inbox","name":"Inbox"}]}')))
+        def reread = read.fetchTasks().find { it.id == 't1' }
 
         then:
-        stored != null
-        stored.iteration >= 1
-        surface.replies.any { it.text?.contains('Revised proposal') || it.text?.contains('not calendar approval') }
+        posts.size() == 1
+        posts[0].bodyAsString.contains(commandId)
+        posts[0].bodyAsString.contains('priority')
+        reread.priority == 3
+        reread.deadline.date == '2026-08-07'
+        stored.iteration == conversation.iteration + 1
+        surface.replies.any { it.text?.contains('Revised proposal — iteration 2') && it.text?.contains('Write report') }
+        !surface.replies.any { it.text?.toLowerCase()?.contains('calendar applied') }
         cleanup:
-        state.deleteDir()
+        llm.stop(); todoist.stop(); state.deleteDir()
+    }
+
+    def 'malformed model output writes no sync command and posts no successor'() {
+        given:
+        def llm = new com.github.tomakehurst.wiremock.WireMockServer(com.github.tomakehurst.wiremock.core.WireMockConfiguration.options().dynamicPort())
+        def todoist = new com.github.tomakehurst.wiremock.WireMockServer(com.github.tomakehurst.wiremock.core.WireMockConfiguration.options().dynamicPort())
+        llm.start(); todoist.start()
+        llm.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/v1/chat/completions')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson('{"choices":[{"message":{"role":"assistant","content":"not-json"}}]}')))
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/tasks')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson(groovy.json.JsonOutput.toJson([
+                results: [[id: 't1', content: 'Write report', labels: ['schedule'], priority: 4,
+                    deadline: [date: '2026-08-07'], project_id: 'inbox']]]))))
+        todoist.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(
+            com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo('/api/v1/projects')).willReturn(
+            com.github.tomakehurst.wiremock.client.WireMock.okJson('{"results":[{"id":"inbox","name":"Inbox"}]}')))
+        File state = Files.createTempDirectory('smartplanner-deadline-malformed-').toFile()
+        def surface = new InMemoryMessagingSurface()
+        def factory = { cfg ->
+            new todoistcaldavsync.planner.ai.OpenAiCompatibleLlmGateway(cfg, { req ->
+                def response = java.net.http.HttpClient.newHttpClient().send(
+                    java.net.http.HttpRequest.newBuilder(URI.create("http://127.0.0.1:${llm.port()}/v1/chat/completions"))
+                        .POST(java.net.http.HttpRequest.BodyPublishers.ofByteArray(req.body)).build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofByteArray())
+                new todoistcaldavsync.planner.ai.LlmTransportResponse(response.statusCode(), response.headers().map(), response.body())
+            } as todoistcaldavsync.planner.ai.LlmHttpTransport, { 'fixture-key' })
+        }
+        def read = new todoistcaldavsync.planner.adapters.TodoistRestGateway(
+            baseUrl: "http://127.0.0.1:${todoist.port()}/api/v1", tokenOverride: 'fixture', allowInsecureHttp: true)
+        def parts = build(state, new AtomicReference<>(initial), surface, null, read, null, null, null, [
+            ai: [enabled: true, provider: 'openai_compatible', endpoint: 'https://api.openai.com/v1/chat/completions',
+                model: 'gpt-fixture', secret_env: 'LLM_FIXTURE_KEY', allowed_hosts: ['api.openai.com'],
+                allowed_suggestion_types: ['deadline_risk_mitigation']],
+            integration: [todoist: [base_url: "http://127.0.0.1:${todoist.port()}/api/v1", token_env: 'TEST_TOKEN',
+                allow_insecure_http: true, secret_resolver: { 'fixture-token' }]]
+        ], null, factory)
+        SmartPlannerDaemon daemon = parts[0]
+        daemon.start()
+        def conversation = daemon.runNow('daily')
+
+        when:
+        daemon.handleEvent(new MessagingEvent([eventId: 'e-bad', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '3.3', threadTs: conversation.threadTs, text: '1 elevate to P2']))
+        def stored = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', conversation.threadTs)
+
+        then:
+        todoist.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+            com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync'))).isEmpty()
+        stored.proposalId == conversation.proposalId
+        !surface.replies.any { it.text?.contains('Revised proposal') }
+        surface.replies.any { it.text?.toLowerCase()?.contains('not strict json') }
+        cleanup:
+        llm.stop(); todoist.stop(); state.deleteDir()
     }
 
     def 'daemon adopts a newer owned move before planning and never previews the old slot back'() {

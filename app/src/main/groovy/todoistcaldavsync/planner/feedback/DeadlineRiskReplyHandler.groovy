@@ -44,7 +44,7 @@ final class DeadlineRiskReplyHandler {
             replyTime = pending.replyTime?.toString() ?: replyTime
         }
         def interpreted = interpreter.interpret(new DeadlineRiskInterpreter.Request(
-            proposalId: conversation.proposalId, threadTs: event.threadTs, actorId: event.actorId,
+            proposalId: conversation.proposalId, planId: conversation.planId, threadTs: event.threadTs, actorId: event.actorId,
             authorized: true, reply: replyText, replyTime: java.time.Instant.parse(replyTime),
             zone: zone, inventory: inventory))
         if (!interpreted.complete()) {

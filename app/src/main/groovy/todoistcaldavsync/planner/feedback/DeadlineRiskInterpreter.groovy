@@ -35,7 +35,7 @@ final class DeadlineRiskInterpreter {
         Map response
         try {
             response = gateway.complete(request)
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException failure) {
             return Result.clarification('I could not interpret that reply. Ask again with the row number and the Deadline or priority you want.')
         }
         if (response == null) {
@@ -111,6 +111,7 @@ final class DeadlineRiskInterpreter {
 
     static final class Request {
         final String proposalId
+        final String planId
         final String threadTs
         final String actorId
         final boolean authorized
@@ -120,6 +121,7 @@ final class DeadlineRiskInterpreter {
         final DeadlineRiskInventory inventory
         Request(Map values) {
             proposalId = values.proposalId
+            planId = values.planId
             threadTs = values.threadTs
             actorId = values.actorId
             authorized = values.authorized == true
@@ -160,9 +162,9 @@ final class DeadlineRiskInterpreter {
 
         Map complete(Request request) {
             def interpreted = suggestions.call(request)
-            if (!interpreted?.accepted) return null
+            if (!interpreted?.accepted) return [clarification: interpreted?.error?.detail ?: 'model result unavailable']
             def rows = interpreted.bundle?.suggestions ?: []
-            if (interpreted.bundle?.rootOutcome == 'clarification' || rows.any { it.clarification }) {
+            if (rows.any { it.clarification }) {
                 return [clarification: rows.find { it.clarification }?.clarification ?: 'Please clarify the outstanding instruction.']
             }
             [actions: rows.collect { [number: it.number, deadlineDate: it.deadlineDate, priority: it.priority] }]

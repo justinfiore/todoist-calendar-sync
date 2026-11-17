@@ -417,7 +417,8 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
 
     /** AI side service: bounded suggestions/audit only, with no persistence or mutation port. */
     def aiSuggestions(String planId, String type,
-                      String correlationId, String feedbackText = null) {
+                      String correlationId, String feedbackText = null,
+                      Collection<Integer> allowedRiskNumbers = []) {
         if (!plannerConfig.ai.enabled) throw new IllegalStateException('AI is disabled; set planner.ai.enabled explicitly')
         Plan plan = requirePlan(planId)
         if (aiSuggestionProvider != null) {
@@ -439,7 +440,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
             new OpenAiCompatibleLlmGateway(plannerConfig.ai)
             } as Supplier,
             clock).orElseThrow()
-        service.suggest(type, correlationId, plan, events, feedbackText)
+        service.suggest(type, correlationId, plan, events, feedbackText, allowedRiskNumbers)
     }
 
     String renderPlan(Plan plan) { PlanStore.toJson(plan) }

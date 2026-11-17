@@ -18,10 +18,14 @@ final class DeadlineRiskReplyWiring {
         if (orchestrator?.plannerConfig?.ai?.enabled != true) return null
         ZoneId zone = orchestrator.plannerConfig.timezone
         def interpreter = new DeadlineRiskInterpreter(new DeadlineRiskInterpreter.LlmGateway({ request ->
-            orchestrator.aiSuggestions(request.proposalId, 'deadline_risk_mitigation',
-                "risk-${request.threadTs}", request.reply)
+            orchestrator.aiSuggestions(request.planId, 'deadline_risk_mitigation',
+                "risk-${request.threadTs}", request.reply, request.inventory.rows.collect { it.number })
         }))
-        def gateway = new TodoistRestGateway(config.todoist)
+        def gateway = new TodoistRestGateway(config.todoist + [
+            allowInsecureHttp: config.todoist.allowInsecureHttp == true,
+            secretResolver: config.todoist.secretResolver,
+            httpClient: config.todoist.httpClient
+        ])
         def feedback = new DeadlineRiskFeedback(new SyncDeadlineWriter(gateway), zone, gateway)
         BiConsumer<String, String> post = { String thread, String text ->
             reply.call(thread, text, "deadline-risk:${thread}")
