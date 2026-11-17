@@ -20,10 +20,12 @@ final class DeadlineRiskReplyHandler {
     private final Closure liveTasks
     private final Closure receipts
     private final Closure successor
+    private final Closure currentPolicyIdentity
 
     DeadlineRiskReplyHandler(DeadlineRiskInterpreter interpreter, DeadlineRiskFeedback feedback,
                              ZoneId zone, BiConsumer<String, String> reply,
-                             Closure liveTasks, Closure receipts, Closure successor = null) {
+                             Closure liveTasks, Closure receipts, Closure successor = null,
+                             Closure currentPolicyIdentity = null) {
         this.interpreter = interpreter
         this.feedback = feedback
         this.zone = zone
@@ -31,6 +33,7 @@ final class DeadlineRiskReplyHandler {
         this.liveTasks = liveTasks
         this.receipts = receipts
         this.successor = successor
+        this.currentPolicyIdentity = currentPolicyIdentity
     }
 
     boolean handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
@@ -75,7 +78,7 @@ final class DeadlineRiskReplyHandler {
         }
         Map<String, Map> live = liveTasks.call(bound*.taskId) as Map
         def preflight = feedback.preflight(inventory, bound, live,
-            conversation.proposalId, conversation.overrides?.deadlinePolicyIdentity?.toString())
+            conversation.proposalId, currentPolicyIdentity != null ? currentPolicyIdentity.call()?.toString() : conversation.overrides?.deadlinePolicyIdentity?.toString())
         if (!preflight.accepted) {
             reply.accept(event.threadTs, "No task was changed. ${preflight.problems.join('; ')}")
             return false

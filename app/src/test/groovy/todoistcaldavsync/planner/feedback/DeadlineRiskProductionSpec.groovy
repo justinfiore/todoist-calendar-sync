@@ -98,6 +98,27 @@ class DeadlineRiskProductionSpec extends Specification {
         server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync'))).isEmpty()
     }
 
+    def "reply handler rejects a changed current deadline policy before any write"() {
+        given:
+        def posted = []
+        def writer = new CountingGateway(server)
+        def handler = new DeadlineRiskReplyHandler(
+            new DeadlineRiskInterpreter(new DeadlineRiskInterpreter.FixtureGateway()),
+            new DeadlineRiskFeedback(writer, zone), zone,
+            { thread, text -> posted << text },
+            { ids -> ids.collectEntries { [(it): [id: it, deadline: [date: '2026-08-07'], priority: 1]] } },
+            { op, id, outcomes = null -> [:] }, null, { 'different-policy' })
+
+        when:
+        boolean verified = handler.handle(new MessagingEvent(eventId: 'stale-policy', threadTs: '1.1',
+            actorId: 'U1', text: '1 push back 2 weeks'), conversation(), storedRows())
+
+        then:
+        !verified
+        posted.any { it.contains('policy is stale') && it.contains('No task was changed') }
+        server.findAll(postRequestedFor(urlEqualTo('/api/v1/sync'))).isEmpty()
+    }
+
     def "authorized recurring deadline edit is acknowledged by the next lifecycle poll"() {
         given:
         def marker = [

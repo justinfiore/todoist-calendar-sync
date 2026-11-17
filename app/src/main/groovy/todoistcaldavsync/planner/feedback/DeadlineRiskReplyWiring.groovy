@@ -36,7 +36,8 @@ final class DeadlineRiskReplyWiring {
             { String op, String id, List outcomes = null ->
                 DeadlineRiskReceipts.handle(config.applicationsDir.resolve('deadline-risk'), op, id, outcomes)
             },
-            null)
+            null,
+            { todoistcaldavsync.planner.scheduling.DeadlinePolicy.from(orchestrator.plannerConfig).identity() })
     }
 
     /** Adapts authorized Sync writes onto the existing feedback executor. */
