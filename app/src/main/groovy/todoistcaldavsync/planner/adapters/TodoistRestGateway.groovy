@@ -36,6 +36,7 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
     private final int maxPages
     private final long maxResponseBytes
     private final HttpClient client
+    private volatile String lastSyncToken
     private final boolean includeProjectNames
 
     TodoistRestGateway(Map options = [:]) {
@@ -60,6 +61,7 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
     }
 
     URI getBaseUri() { baseUri }
+    String getLastSyncToken() { lastSyncToken }
     String getTokenEnv() { tokenEnv }
 
     @Override
@@ -186,7 +188,10 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
             return new TodoistCommandResult(TodoistCommandState.AMBIGUOUS, commandId)
         }
         Object status = response.sync_status[commandId]
-        if (status == 'ok') return new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+        if (status == 'ok') {
+            if (response.sync_token) lastSyncToken = response.sync_token.toString()
+            return new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+        }
         String code = status instanceof Map ? (status.error_code ?: status.error)?.toString() : 'rejected'
         new TodoistCommandResult(TodoistCommandState.REJECTED, commandId, code)
     }

@@ -41,6 +41,17 @@ final class ItemsSyncStateStore {
         write(new ItemsSyncState(page.syncToken, page.items, page.fullSyncDateUtc))
     }
 
+    synchronized void enqueue(Map item, String syncToken = null) {
+        if (!(item instanceof Map) || !(item.id ?: item.task_id)) {
+            throw new IllegalArgumentException('item id is required')
+        }
+        ItemsSyncState current = load()
+        String id = (item.id ?: item.task_id).toString()
+        List<Map> pending = new ArrayList<>(current.pendingItems.findAll { (it.id ?: it.task_id)?.toString() != id })
+        pending << new LinkedHashMap(item)
+        write(new ItemsSyncState(syncToken ?: current.syncToken, pending, current.fullSyncDateUtc))
+    }
+
     synchronized void acknowledge(String taskId) {
         ItemsSyncState current = load()
         List<Map> remaining = current.pendingItems.findAll { (it.id ?: it.task_id)?.toString() != taskId }

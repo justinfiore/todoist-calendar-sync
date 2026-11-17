@@ -27,7 +27,7 @@ final class DeadlineRiskReplyWiring {
             secretResolver: config.todoist.secretResolver,
             httpClient: config.todoist.httpClient
         ])
-        def feedback = new DeadlineRiskFeedback(new SyncDeadlineWriter(gateway), zone, gateway)
+        def feedback = new DeadlineRiskFeedback(new SyncDeadlineWriter(gateway, config.applicationsDir), zone, gateway)
         BiConsumer<String, String> post = { String thread, String text ->
             reply.call(thread, text, "deadline-risk:${thread}:${UUID.randomUUID()}")
         } as BiConsumer
@@ -43,7 +43,11 @@ final class DeadlineRiskReplyWiring {
     static final class SyncDeadlineWriter implements todoistcaldavsync.planner.adapters.TodoistWriteGateway,
             DeadlineRiskFeedback.PriorityWriter {
         private final TodoistRestGateway gateway
-        SyncDeadlineWriter(TodoistRestGateway gateway) { this.gateway = gateway }
+        private final java.nio.file.Path applicationsDir
+        SyncDeadlineWriter(TodoistRestGateway gateway, java.nio.file.Path applicationsDir = null) {
+            this.gateway = gateway
+            this.applicationsDir = applicationsDir
+        }
 
         void updateTaskDue(String taskId, String dueDateTimeIso) {
             throw new UnsupportedOperationException('Deadline risk replies do not change Due')
@@ -52,8 +56,16 @@ final class DeadlineRiskReplyWiring {
         void updateTaskDeadline(String taskId, String deadlineIso) {
             String commandId = UUID.nameUUIDFromBytes("deadline-risk:${taskId}:${deadlineIso}".getBytes('UTF-8')).toString()
             def result = gateway.updateAuthorizedDeadline(taskId, deadlineIso, commandId)
+            if (result.state == todoistcaldavsync.planner.adapters.TodoistCommandState.AMBIGUOUS) {
+                throw new DeadlineRiskFeedback.AmbiguousWrite(commandId)
+            }
             if (result.state != todoistcaldavsync.planner.adapters.TodoistCommandState.COMMITTED) {
                 throw new IllegalStateException("deadline write ${result.state}")
+            }
+            Map live = gateway.fetchTask(taskId)
+            if (live != null && applicationsDir != null && gateway.lastSyncToken) {
+                new todoistcaldavsync.planner.recurrence.ItemsSyncStateStore(applicationsDir)
+                    .enqueue(live, gateway.lastSyncToken)
             }
         }
 

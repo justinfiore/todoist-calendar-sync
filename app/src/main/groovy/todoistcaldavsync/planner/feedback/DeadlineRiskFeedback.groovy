@@ -112,6 +112,8 @@ final class DeadlineRiskFeedback {
         }
         try {
             writer.updateTaskDeadline(action.taskId, action.deadlineDate.toString())
+        } catch (AmbiguousWrite e) {
+            return new Outcome(action.taskId, 'deadline', 'unknown', e.commandId, 'ambiguous')
         } catch (RuntimeException e) {
             return new Outcome(action.taskId, 'deadline', 'rejected', commandId, e.message)
         }
@@ -169,6 +171,14 @@ final class DeadlineRiskFeedback {
     /** Gateway extension. Existing due/deadline methods do not carry priority. */
     interface PriorityWriter {
         void updateTaskPriority(String taskId, int apiPriority)
+    }
+
+    static final class AmbiguousWrite extends RuntimeException {
+        final String commandId
+        AmbiguousWrite(String commandId) {
+            super('ambiguous')
+            this.commandId = commandId
+        }
     }
 
     static final class Action {

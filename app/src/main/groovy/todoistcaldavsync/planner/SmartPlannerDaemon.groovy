@@ -271,6 +271,9 @@ final class SmartPlannerDaemon implements AutoCloseable {
                 conversations.save(conversation)
             }
 
+            if (action == null && handleDeadlineRiskReply(event, conversation)) {
+                return
+            }
             if (action == null && orchestrator.plannerConfig.ai.enabled) {
                 def interpreted = aiSuggestion(conversation.planId,
                     'conversational_feedback_interpretation', event.eventId ?: "feedback-${event.messageTs}", event.text)
@@ -327,9 +330,6 @@ final class SmartPlannerDaemon implements AutoCloseable {
                         return
                     }
                 }
-            }
-            if (action == null && handleDeadlineRiskReply(event, conversation)) {
-                return
             }
             if (action == null) {
                 safeReply(event.channelId, event.threadTs,

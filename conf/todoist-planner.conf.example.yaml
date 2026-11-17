@@ -317,6 +317,7 @@ planner:
       - event_classification_suggestions
       - temporary_planning_overrides
       - conversational_feedback_interpretation
+      - deadline_risk_mitigation
     redaction_enabled: true
     require_confirmation: true
     safety:
