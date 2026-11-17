@@ -41,7 +41,7 @@ final class DeadlineRiskReplyWiring {
 
     /** Adapts authorized Sync writes onto the existing feedback executor. */
     static final class SyncDeadlineWriter implements todoistcaldavsync.planner.adapters.TodoistWriteGateway,
-            DeadlineRiskFeedback.PriorityWriter {
+            DeadlineRiskFeedback.PriorityWriter, DeadlineRiskFeedback.LifecycleInboxWriter {
         private final TodoistRestGateway gateway
         private final java.nio.file.Path applicationsDir
         SyncDeadlineWriter(TodoistRestGateway gateway, java.nio.file.Path applicationsDir = null) {
@@ -60,20 +60,26 @@ final class DeadlineRiskReplyWiring {
                 throw new DeadlineRiskFeedback.AmbiguousWrite(commandId)
             }
             if (result.state != todoistcaldavsync.planner.adapters.TodoistCommandState.COMMITTED) {
-                throw new IllegalStateException("deadline write ${result.state}")
+                throw new DeadlineRiskFeedback.RejectedWrite("deadline write ${result.state}")
             }
+        }
+
+        void enqueueCurrentTask(String taskId) {
             Map live = gateway.fetchTask(taskId)
-            if (live != null && applicationsDir != null && gateway.lastSyncToken) {
-                new todoistcaldavsync.planner.recurrence.ItemsSyncStateStore(applicationsDir)
-                    .enqueue(live, gateway.lastSyncToken)
+            if (live != null && applicationsDir != null) {
+                new todoistcaldavsync.planner.recurrence.ItemsSyncStateStore(applicationsDir.resolve('recurrence'))
+                    .enqueue(live)
             }
         }
 
         void updateTaskPriority(String taskId, int apiPriority) {
             String commandId = UUID.nameUUIDFromBytes("deadline-risk:${taskId}:priority:${apiPriority}".getBytes('UTF-8')).toString()
             def result = gateway.updateAuthorizedPriority(taskId, apiPriority, commandId)
+            if (result.state == todoistcaldavsync.planner.adapters.TodoistCommandState.AMBIGUOUS) {
+                throw new DeadlineRiskFeedback.AmbiguousWrite(commandId)
+            }
             if (result.state != todoistcaldavsync.planner.adapters.TodoistCommandState.COMMITTED) {
-                throw new IllegalStateException("priority write ${result.state}")
+                throw new DeadlineRiskFeedback.RejectedWrite("priority write ${result.state}")
             }
         }
     }

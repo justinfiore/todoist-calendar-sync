@@ -271,8 +271,18 @@ final class SmartPlannerDaemon implements AutoCloseable {
                 conversations.save(conversation)
             }
 
-            if (action == null && handleDeadlineRiskReply(event, conversation)) {
-                return
+            if (action == null) {
+                boolean handled
+                synchronized (mutationLock) {
+                    ConversationRecord current = conversations.find(event.channelId, event.threadTs)
+                    if (current?.status != 'ACTIVE' || current.planId != conversation.planId) {
+                        safeReply(event.channelId, event.threadTs, 'The proposal changed; request a fresh review.',
+                            "feedback-stale:${event.eventId}")
+                        return
+                    }
+                    handled = handleDeadlineRiskReply(event, current)
+                }
+                if (handled) return
             }
             if (action == null && orchestrator.plannerConfig.ai.enabled) {
                 def interpreted = aiSuggestion(conversation.planId,
