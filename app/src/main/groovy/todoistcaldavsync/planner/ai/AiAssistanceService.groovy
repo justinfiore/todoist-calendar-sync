@@ -44,7 +44,7 @@ final class AiAssistanceService {
 
     AssistanceResult suggest(String type, String correlationId, Plan plan,
                              Collection<CalendarEvent> events = [], String feedbackText = null,
-                             Collection<Integer> allowedRiskNumbers = []) {
+                             Collection<Integer> allowedRiskNumbers = [], Map extraContext = [:]) {
         Instant started = clock.get()
         if (!config.allowedSuggestionTypes.contains(type)) {
             return AssistanceResult.rejected(new LlmError(LlmErrorClass.CONFIGURATION, 'suggestion type is not allowed'), null)
@@ -64,6 +64,7 @@ final class AiAssistanceService {
         Set<String> feedbackActions = type == 'conversational_feedback_interpretation'
             ? LlmSchemaValidator.FEEDBACK_ACTIONS : Collections.emptySet()
         Map requestContext = new LinkedHashMap(context.context)
+        if (extraContext) requestContext.deadlineRisk = extraContext
         if (proposalId != null) requestContext.expectedFeedback = [proposalId:proposalId, planId:plan.id,
             planVersion:plan.version, planHash:planHash, allowedActions:feedbackActions as List]
         LlmRequest request

@@ -110,34 +110,37 @@ final class DeadlineRiskFeedback {
         if (alreadyApplied.contains(commandId)) {
             return new Outcome(action.taskId, 'deadline', 'verified', commandId, 'already applied')
         }
-        if (lifecycle != null) {
-            Map live = lifecycle.fetchTask(action.taskId)
-            LifecycleMarker marker = LifecycleMarkerCodec.parse(live?.description?.toString())
-            if (marker != null) {
-                Map nextValues = [
-                    taskId: marker.taskId, completedCount: marker.completedCount,
-                    deadlineMode: marker.deadlineMode, deadlineSource: marker.deadlineSource,
-                    deadlineDate: action.deadlineDate, pendingLegacySourceDate: marker.pendingLegacySourceDate,
-                    lastVerifiedDue: marker.lastVerifiedDue, recurrenceFingerprint: marker.recurrenceFingerprint,
-                    lastPlannerDue: marker.lastPlannerDue, markerGeneration: marker.markerGeneration + 1,
-                    lastCommandId: commandId
-                ]
-                LifecycleMarker next = new LifecycleMarker(nextValues)
-                String description = LifecycleMarkerCodec.replace(live.description?.toString(), next)
-                LifecycleMutation mutation = LifecycleMutation.validated(
-                    action.taskId, commandId, action.deadlineDate.toString(), null, description)
-                TodoistCommandResult result = lifecycle.updateLifecycleFields(mutation)
-                String state = result?.state == TodoistCommandState.COMMITTED ? 'verified'
-                    : result?.state == TodoistCommandState.REJECTED ? 'rejected' : 'unknown'
-                return new Outcome(action.taskId, 'deadline', state, commandId, result?.errorCode)
-            }
-        }
         try {
             writer.updateTaskDeadline(action.taskId, action.deadlineDate.toString())
-            return new Outcome(action.taskId, 'deadline', 'verified', commandId, null)
         } catch (RuntimeException e) {
             return new Outcome(action.taskId, 'deadline', 'rejected', commandId, e.message)
         }
+        if (lifecycle != null) {
+            try {
+                Map live = lifecycle.fetchTask(action.taskId)
+                def read = new LifecycleMarkerCodec().read(live?.description?.toString())
+                if (read?.status?.name() == 'VALID' && read.marker != null) {
+                    LifecycleMarker marker = read.marker
+                    LifecycleMarker next = new LifecycleMarker(
+                        taskId: marker.taskId, completedCount: marker.completedCount,
+                        deadlineMode: marker.deadlineMode, deadlineSource: 'authorized_reply',
+                        deadlineDate: action.deadlineDate, pendingLegacySourceDate: marker.pendingLegacySourceDate,
+                        lastVerifiedDue: marker.lastVerifiedDue, recurrenceFingerprint: marker.recurrenceFingerprint,
+                        lastPlannerDue: marker.lastPlannerDue, markerGeneration: marker.markerGeneration + 1,
+                        lastCommandId: "deadline-risk:${commandId}")
+                    String description = new LifecycleMarkerCodec().merge(live.description?.toString(), next)
+                    TodoistCommandResult markerWrite = lifecycle.updateLifecycleFields(LifecycleMutation.validated(
+                        action.taskId, UUID.nameUUIDFromBytes("deadline-risk-marker:${commandId}".getBytes('UTF-8')).toString(),
+                        null, null, description))
+                    if (markerWrite?.state != TodoistCommandState.COMMITTED) {
+                        return new Outcome(action.taskId, 'deadline', 'unknown', commandId, 'marker update not committed')
+                    }
+                }
+            } catch (RuntimeException e) {
+                return new Outcome(action.taskId, 'deadline', 'unknown', commandId, e.message)
+            }
+        }
+        return new Outcome(action.taskId, 'deadline', 'verified', commandId, null)
     }
 
     private Outcome applyPriority(Action action, Set<String> alreadyApplied, List<String> notes) {

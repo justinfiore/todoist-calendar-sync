@@ -19,7 +19,8 @@ final class DeadlineRiskReplyWiring {
         ZoneId zone = orchestrator.plannerConfig.timezone
         def interpreter = new DeadlineRiskInterpreter(new DeadlineRiskInterpreter.LlmGateway({ request ->
             orchestrator.aiSuggestions(request.planId, 'deadline_risk_mitigation',
-                "risk-${request.threadTs}", request.reply, request.inventory.rows.collect { it.number })
+                "risk-${request.threadTs}", request.reply, request.inventory.rows.collect { it.number },
+                DeadlineRiskInterpreter.context(request))
         }))
         def gateway = new TodoistRestGateway(config.todoist + [
             allowInsecureHttp: config.todoist.allowInsecureHttp == true,
@@ -28,7 +29,7 @@ final class DeadlineRiskReplyWiring {
         ])
         def feedback = new DeadlineRiskFeedback(new SyncDeadlineWriter(gateway), zone, gateway)
         BiConsumer<String, String> post = { String thread, String text ->
-            reply.call(thread, text, "deadline-risk:${thread}")
+            reply.call(thread, text, "deadline-risk:${thread}:${UUID.randomUUID()}")
         } as BiConsumer
         new DeadlineRiskReplyHandler(interpreter, feedback, zone, post,
             { List ids -> ids.collectEntries { [(it): gateway.fetchTask(it)] } },

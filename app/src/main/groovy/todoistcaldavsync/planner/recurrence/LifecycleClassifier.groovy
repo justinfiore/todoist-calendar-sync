@@ -47,9 +47,9 @@ final class LifecycleClassifier {
         String fingerprint = LifecycleSupport.fingerprint(live.todoistDue)
         boolean knownDue = live.todoistDue.date == marker.lastVerifiedDue ||
             marker.lastPlannerDue != null && live.todoistDue.date == marker.lastPlannerDue
-        if (live.deadlineDate != marker.deadlineDate && fingerprint == marker.recurrenceFingerprint && knownDue) {
-            // An authorized Deadline reply changes the date without changing Due or completion.
-            // The manager reconciles the marker instead of freezing or reverting the edit.
+        boolean authorizedReceipt = marker.deadlineSource == 'authorized_reply' &&
+            marker.lastCommandId?.startsWith('deadline-risk:') && marker.deadlineDate == live.deadlineDate
+        if (authorizedReceipt && fingerprint == marker.recurrenceFingerprint && knownDue) {
             return new LifecycleClassification(LifecycleState.USER_EDITED, true, 'authorized_deadline_edit')
         }
         if (fingerprint != marker.recurrenceFingerprint || !knownDue ||

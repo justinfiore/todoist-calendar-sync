@@ -430,6 +430,7 @@ final class AiSuggestionBundle {
         this.originalJson=originalJson;this.originalRequest=originalRequest;this.validatedAt=validatedAt
     }
     AiSuggestion find(String id){suggestions.find{it.suggestionId==id}}
+    String sourceJson() { originalJson }
 }
 final class ValidationResult {
     final AiSuggestionBundle bundle; final LlmError error

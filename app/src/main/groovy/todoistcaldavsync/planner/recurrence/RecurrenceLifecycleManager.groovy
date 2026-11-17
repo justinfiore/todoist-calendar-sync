@@ -115,6 +115,9 @@ final class RecurrenceLifecycleManager {
         if (previous == null || task.deadlineDate == null) {
             return LifecycleTransition.frozen('deadline_edit_unmarked')
         }
+        if (previous.deadlineDate == task.deadlineDate && previous.deadlineSource == 'authorized_reply') {
+            return new LifecycleTransition('deadline_acknowledged', task, 0, false)
+        }
         LifecycleMarker next = marker(task, task.deadlineDate, previous.deadlineMode, 'authorized_reply',
             previous.pendingLegacySourceDate, previous.markerGeneration + 1L)
         Task verified = writer.write(task, next, task.deadlineDate.toString(), null)

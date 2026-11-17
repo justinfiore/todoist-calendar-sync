@@ -163,6 +163,10 @@ final class DeadlineRiskInterpreter {
         Map complete(Request request) {
             def interpreted = suggestions.call(request)
             if (!interpreted?.accepted) return [clarification: interpreted?.error?.detail ?: 'model result unavailable']
+            def root = interpreted.bundle?.sourceJson() ? new groovy.json.JsonSlurper().parseText(interpreted.bundle.sourceJson()) : [:]
+            if (root.outcome == 'clarification') {
+                return [clarification: root.clarification ?: 'Please clarify the outstanding instruction.']
+            }
             def rows = interpreted.bundle?.suggestions ?: []
             if (rows.any { it.clarification }) {
                 return [clarification: rows.find { it.clarification }?.clarification ?: 'Please clarify the outstanding instruction.']

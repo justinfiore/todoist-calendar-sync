@@ -399,12 +399,20 @@ final class SmartPlannerDaemon implements AutoCloseable {
     private boolean handleDeadlineRiskReply(MessagingEvent event, ConversationRecord conversation) {
         def risks = conversation.overrides?.deadlineRisks
         if (!(risks instanceof List) || risks.isEmpty() || deadlineRiskHandler == null) return false
-        if (!(event.text =~ /\d/)) return false
+        boolean pendingClarification = pendingDeadlineClarification(conversation, event)
+        if (!(event.text =~ /\d/) && !pendingClarification) return false
         deadlineRiskHandler.handle(event, conversation, risks as List)
         if (deadlineRiskHandler.lastVerified) {
             publishDeadlineSuccessor(event, conversation)
         }
         return true
+    }
+
+    private boolean pendingDeadlineClarification(ConversationRecord conversation, MessagingEvent event) {
+        def record = todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
+            config.applicationsDir.resolve('deadline-risk'), 'load-record',
+            "clarify:${conversation.proposalId}:${event.threadTs}")
+        record instanceof Map && record.pending == true
     }
 
     private void publishDeadlineSuccessor(MessagingEvent event, ConversationRecord conversation) {

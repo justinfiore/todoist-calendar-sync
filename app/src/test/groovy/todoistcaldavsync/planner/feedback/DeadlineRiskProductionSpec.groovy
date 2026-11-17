@@ -135,9 +135,23 @@ class DeadlineRiskProductionSpec extends Specification {
             tasks: [recurrence: [enabled: true, rollout_cutoff: '2026-01-01T00:00:00Z']]
         ])
         def classifier = new todoistcaldavsync.planner.recurrence.LifecycleClassifier()
-        def classification = classifier.classify(task, 'smartplanner-seen')
         def manager = new todoistcaldavsync.planner.recurrence.RecurrenceLifecycleManager(config,
             new todoistcaldavsync.planner.recurrence.LifecycleMarkerWriter(gateway, config))
+        def acknowledgedMarker = new todoistcaldavsync.planner.recurrence.LifecycleMarker(
+            taskId: 'rec-1', completedCount: 2, deadlineMode: 'managed', deadlineSource: 'authorized_reply',
+            deadlineDate: '2026-08-21', lastVerifiedDue: '2026-08-10',
+            recurrenceFingerprint: marker.recurrence_fingerprint, markerGeneration: 4,
+            lastCommandId: "deadline-risk:${commandId}")
+        def acknowledgedTask = todoistcaldavsync.planner.domain.Task.builder()
+            .id(task.id).content(task.content).labels(task.labels).priority(task.priority)
+            .deadline(task.deadline).deadlineDate(java.time.LocalDate.parse('2026-08-21'))
+            .todoistDue(task.todoistDue).completedCount(task.completedCount)
+            .description(new todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec().merge(task.description, acknowledgedMarker))
+            .lifecycleMarker(acknowledgedMarker).effectiveDuration(task.effectiveDuration)
+            .durationSource(task.durationSource ?: 'default').build()
+        def classification = classifier.classify(acknowledgedTask, 'smartplanner-seen')
+        def acknowledged = manager.process(acknowledgedTask)
+        def human = manager.process(task)
 
         then:
         write.state == TodoistCommandState.COMMITTED
@@ -153,6 +167,9 @@ class DeadlineRiskProductionSpec extends Specification {
         task.completedCount == 2
         task.todoistDue.date == '2026-08-10'
         task.lifecycleMarker.completedCount == 2
+        acknowledged.action == 'deadline_acknowledged'
+        !acknowledged.frozen
+        human.frozen
     }
 
     def "restarted receipt store does not send a second sync write"() {
