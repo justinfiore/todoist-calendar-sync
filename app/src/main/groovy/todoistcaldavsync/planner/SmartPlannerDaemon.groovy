@@ -622,6 +622,9 @@ final class SmartPlannerDaemon implements AutoCloseable {
     private ConversationRecord planAndPublish(Map run, ConversationRecord previous, Map overrides, boolean threaded) {
         Instant startedAt = clock.get()
         String name = run.name.toString()
+        if (conversations.list().any { it.runName == name && it.status == 'PUBLISHING_REVISION' }) {
+            throw new IllegalStateException("Planning run '${name}' has an unresolved proposal revision")
+        }
         runtimeStatus[name] = [state: 'RUNNING', startedAt: startedAt.toString()]
         Duration horizon = overrideHorizon(run.horizon as Duration, overrides)
         // Reverse synchronization is a daemon lifecycle operation, deliberately separate from

@@ -278,6 +278,9 @@ class SmartPlannerDaemonSpec extends Specification {
         when:
         try { daemon.handleEvent(event) } catch (IllegalStateException ignored) { }
         def blocked = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', original.threadTs)
+        def proposalCount = surface.delegate.proposals.size()
+        Throwable planningFailure = null
+        try { daemon.runNow('daily') } catch (IllegalStateException failure) { planningFailure = failure }
         daemon.handleEvent(new MessagingEvent(eventId: 'approve-old', type: 'thread_reply', actorId: 'U1',
             channelId: 'C123', messageTs: '1000.72', threadTs: original.threadTs, text: 'yes'))
         daemon.handleEvent(event)
@@ -285,6 +288,8 @@ class SmartPlannerDaemonSpec extends Specification {
 
         then:
         blocked.status == 'PUBLISHING_REVISION'
+        planningFailure?.message?.contains('unresolved proposal revision')
+        surface.delegate.proposals.size() == proposalCount
         revised.status == 'ACTIVE'
         revised.iteration == original.iteration + 1
         parts[2].dueUpdates.empty
