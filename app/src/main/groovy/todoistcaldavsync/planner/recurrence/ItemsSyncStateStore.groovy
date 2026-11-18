@@ -20,7 +20,9 @@ final class ItemsSyncStateStore {
         this.path = directory.resolve('todoist-items-sync.json')
     }
 
-    synchronized ItemsSyncState load() {
+    ItemsSyncState load() { synchronized (ItemsSyncStateStore) { readState() } }
+
+    private ItemsSyncState readState() {
         if (!Files.exists(path)) return ItemsSyncState.bootstrap()
         try {
             Object parsed = new JsonSlurper().parseText(Files.readString(path, StandardCharsets.UTF_8))
@@ -36,18 +38,31 @@ final class ItemsSyncStateStore {
         catch (Exception e) { throw new IllegalStateException('corrupt Todoist items Sync state', e) }
     }
 
-    synchronized void checkpoint(TodoistSyncPage page) {
+    void checkpoint(TodoistSyncPage page) { synchronized (ItemsSyncStateStore) {
         if (page == null) throw new IllegalArgumentException('Sync page is required')
-        write(new ItemsSyncState(page.syncToken, page.items, page.fullSyncDateUtc))
-    }
+        ItemsSyncState current = readState()
+        write(new ItemsSyncState(page.syncToken, current.pendingItems + page.items, page.fullSyncDateUtc))
+    } }
 
-    synchronized void acknowledge(String taskId) {
-        ItemsSyncState current = load()
-        List<Map> remaining = current.pendingItems.findAll { (it.id ?: it.task_id)?.toString() != taskId }
+    void enqueue(Map item) { synchronized (ItemsSyncStateStore) {
+        if (!(item instanceof Map) || !(item.id ?: item.task_id)) {
+            throw new IllegalArgumentException('item id is required')
+        }
+        ItemsSyncState current = readState()
+        List<Map> pending = new ArrayList<>(current.pendingItems)
+        pending << new LinkedHashMap(item)
+        write(new ItemsSyncState(current.syncToken, pending, current.fullSyncDateUtc))
+    } }
+
+    void acknowledge(String taskId) { synchronized (ItemsSyncStateStore) {
+        ItemsSyncState current = readState()
+        List<Map> remaining = new ArrayList<>(current.pendingItems)
+        int index = remaining.findIndexOf { (it.id ?: it.task_id)?.toString() == taskId }
+        if (index >= 0) remaining.remove(index)
         write(new ItemsSyncState(current.syncToken, remaining, current.fullSyncDateUtc))
-    }
+    } }
 
-    synchronized void reset() { Files.deleteIfExists(path) }
+    void reset() { synchronized (ItemsSyncStateStore) { Files.deleteIfExists(path) } }
 
     private void write(ItemsSyncState state) {
         Files.createDirectories(path.parent)

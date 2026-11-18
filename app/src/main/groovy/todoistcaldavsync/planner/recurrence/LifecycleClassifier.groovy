@@ -47,6 +47,11 @@ final class LifecycleClassifier {
         String fingerprint = LifecycleSupport.fingerprint(live.todoistDue)
         boolean knownDue = live.todoistDue.date == marker.lastVerifiedDue ||
             marker.lastPlannerDue != null && live.todoistDue.date == marker.lastPlannerDue
+        boolean authorizedReceipt = marker.deadlineSource == 'authorized_reply' &&
+            marker.lastCommandId?.startsWith('deadline-risk:') && marker.deadlineDate == live.deadlineDate
+        if (authorizedReceipt && fingerprint == marker.recurrenceFingerprint && knownDue) {
+            return new LifecycleClassification(LifecycleState.USER_EDITED, true, 'authorized_deadline_edit')
+        }
         if (fingerprint != marker.recurrenceFingerprint || !knownDue ||
             live.deadlineDate != marker.deadlineDate) {
             return result(LifecycleState.USER_EDITED, 'live_precondition_drift')

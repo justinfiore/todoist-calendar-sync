@@ -234,11 +234,43 @@ Pre-cutoff Due-only tasks remain recurrence-safe but are only logged as legacy c
 `smartplanner-onboard` in Todoist to migrate one candidate. SmartPlanner preserves its original Due
 date in the description marker, writes and verifies Deadline and `smartplanner-seen`, and removes the
 request label last. A pre-cutoff task that already has Deadline can be classified without conversion
-or the request label. The configured `hard` label means the date-only Deadline is a finish-by
-constraint. Without it, Deadline is a soft target and work may be placed late with an increasing
-penalty. Hard urgency is
-boosted only inside `hard_deadline_soon_days`; outside the window, Todoist priority remains the
-ordinary ordering signal.
+or the request label. Deadline classification is independent of this lifecycle gate. `planner.tasks.default_deadline_mode`
+defaults to `hard` for recurring and ordinary tasks. Optional `hard_label` and `soft_label` both
+default to no match and override that default; when both match, hard wins and the proposal names the
+conflict. A label literally named `hard` has no meaning until configured. Nested
+`recurrence.hard_label` and `recurrence.hard_deadline_soon_days` are rejected. Move them to
+`planner.tasks.hard_label` and `planner.tasks.hard_deadline_soon_days`. Four windows
+(`hard_deadline_soon_days`, `soft_deadline_soon_days`, `messaging.hard_deadline_warning_days`,
+`messaging.soft_deadline_warning_days`) each default to seven local calendar days and do not imply
+each other. Select `default_deadline_mode: soft` to keep the previous unlabeled soft treatment.
+Installations that previously relied on the implicit `hard` label must set `hard_label` explicitly.
+
+Hard Deadlines still cannot finish late. The scheduler protects capacity a feasible hard Deadline
+still needs, including against an earlier soft task, and keeps manual or frozen placements even when
+that leaves the hard task unscheduled. A soft task may run first when the hard work can still finish
+on time. Soft urgency rises with the approaching civil date and with scarcity of remaining feasible
+capacity. Unknown coverage adds no invented free time. Inside its urgency window, a soft P4 outranks
+P1–P3 work with no Deadline, with or without Due, without changing native priority. Overdue soft work
+keeps that elevated urgency.
+
+Proposal warnings use the warning window, not the urgency window. A task is at risk when the selected
+plan leaves it unscheduled or finishing after Deadline. An unscheduled task whose Deadline is after
+the proposal horizon is marked unverified, not impossible. Slack shows those rows in a native table
+with a proposal-specific number, linked task, project, Deadline, hard/soft mode, and P1–P4 priority.
+Numbers stay bound to that proposal and thread. A numbered reply may change only the requested native
+Deadline or priority after the configured interpreter returns a complete action set. Any unresolved
+instruction asks in the same thread and writes nothing. A fully resolved authorized reply is the write
+authority; it does not approve Calendar apply and does not widen temporary AI planning overrides.
+When a proposal is revised in the same thread, start each Deadline reply (including clarification)
+with the exact `proposal ...` line shown in that revision. This prevents a reply to an older table
+from silently selecting a different task in the newer table.
+
+Before every edit, SmartPlanner rereads the task and rejects changed or unavailable preconditions;
+it rereads the edited field afterward and reports an unverified outcome as unknown. Todoist's
+documented task update does not expose a conditional version check in this integration. An external
+edit between the final read and the unconditional write can therefore still be overwritten, including
+human description edits during a lifecycle marker update. Post-write verification cannot recover such
+an edit. Avoid editing the same task concurrently with an authorized Deadline reply.
 
 The final description suffix beginning `**SmartPlanner metadata — do not edit**` is portable
 lifecycle authority. Human text before it remains owned by the user. A malformed, moved, duplicated,

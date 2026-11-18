@@ -170,17 +170,24 @@ planner:
   tasks:
     scheduling_eligible_labels: [schedule]
     manual_label: manual
+    # Deadline policy is independent of recurrence. Omitted mode means hard for every
+    # native Deadline. Both labels are disabled unless set; a label literally named
+    # "hard" has no special meaning until hard_label names it.
+    default_deadline_mode: hard
+    # hard_label: firm
+    # soft_label: flexible
+    hard_deadline_soon_days: 7
+    soft_deadline_soon_days: 7
     # Native recurring-task lifecycle. Keep disabled until the recurrence QA matrix passes.
+    # Deadline hardness is not configured here. Nested hard_label and
+    # hard_deadline_soon_days are rejected; move them to the keys above.
     recurrence:
       enabled: false
       seen_label: smartplanner-seen
       onboard_label: smartplanner-onboard
-      hard_label: hard
       # Compared with Todoist task creation time. Set to the enablement instant;
       # missing/pre-cutoff creation times remain legacy until explicitly onboarded.
       rollout_cutoff: '2026-10-02T00:00:00Z'
-      # Only controls approaching-hard urgency; Due time remains a preference.
-      hard_deadline_soon_days: 5
     default_duration_minutes: 30
     duration_labels:
       t15: 15
@@ -265,6 +272,9 @@ planner:
     capacity_risk_alerts: true
     proposal_summary: true
     risk_deadline_days: 5
+    # Independent of urgency windows and of each other. Overdue Deadlines are always in window.
+    hard_deadline_warning_days: 7
+    soft_deadline_warning_days: 7
     # timezone: America/New_York        # defaults to planner.timezone
     # schedules:
     #   - name: daily
@@ -307,6 +317,7 @@ planner:
       - event_classification_suggestions
       - temporary_planning_overrides
       - conversational_feedback_interpretation
+      - deadline_risk_mitigation
     redaction_enabled: true
     require_confirmation: true
     safety:

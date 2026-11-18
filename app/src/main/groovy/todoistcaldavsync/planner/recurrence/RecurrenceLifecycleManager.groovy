@@ -39,6 +39,9 @@ final class RecurrenceLifecycleManager {
             case LifecycleState.INITIALIZED:
                 return has(live, config.recurrence.onboardLabel) ? finalizeOnboarding(live) :
                     LifecycleTransition.noop('current')
+            case LifecycleState.USER_EDITED:
+                return classification.reason == 'authorized_deadline_edit'
+                    ? acknowledgeDeadlineEdit(live) : LifecycleTransition.frozen(classification.reason)
             default:
                 return LifecycleTransition.frozen(classification.reason ?: classification.state.name().toLowerCase())
         }
@@ -100,6 +103,25 @@ final class RecurrenceLifecycleManager {
             previous.deadlineSource, previous.pendingLegacySourceDate, previous.markerGeneration + 1L)
         Task verified = writer.write(task, committed, previous.deadlineDate?.toString(), finalLabels)
         new LifecycleTransition('onboarding_finalized', verified, 0, false)
+    }
+
+    /**
+     * Record an authorized Deadline change in the marker without moving Due, completion,
+     * or occurrence. The live Deadline is the new authority; this does not write it back
+     * to the previous marker date.
+     */
+    private LifecycleTransition acknowledgeDeadlineEdit(Task task) {
+        LifecycleMarker previous = task.lifecycleMarker
+        if (previous == null || task.deadlineDate == null) {
+            return LifecycleTransition.frozen('deadline_edit_unmarked')
+        }
+        if (previous.deadlineDate == task.deadlineDate && previous.deadlineSource == 'authorized_reply') {
+            return new LifecycleTransition('deadline_acknowledged', task, 0, false)
+        }
+        LifecycleMarker next = marker(task, task.deadlineDate, previous.deadlineMode, 'authorized_reply',
+            previous.pendingLegacySourceDate, previous.markerGeneration + 1L)
+        Task verified = writer.write(task, next, task.deadlineDate.toString(), null)
+        new LifecycleTransition('deadline_acknowledged', verified, 0, false)
     }
 
     private LifecycleTransition advance(Task task, LifecycleClassification classification) {

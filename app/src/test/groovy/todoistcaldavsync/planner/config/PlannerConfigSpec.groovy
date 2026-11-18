@@ -878,11 +878,10 @@ class PlannerConfigSpec extends Specification {
         config.stability.requireApprovalForMoveWithin.toDays() == 3
     }
 
-    def "recurrence lifecycle validates rollout safety labels and urgency window"() {
+    def "recurrence lifecycle validates rollout safety and rejects nested deadline policy"() {
         given:
         Map recurrence = [enabled: true, rollout_cutoff: '2026-10-01T00:00:00Z',
-            seen_label: 'smartplanner-seen', onboard_label: 'smartplanner-onboard',
-            hard_label: 'hard', hard_deadline_soon_days: 5] + invalid
+            seen_label: 'smartplanner-seen', onboard_label: 'smartplanner-onboard'] + invalid
 
         when:
         PlannerConfig.fromMap(planner: [mode: 'preview',
@@ -897,8 +896,118 @@ class PlannerConfigSpec extends Specification {
         invalid                                                        | expected
         [rollout_cutoff: null]                                         | 'planner.tasks.recurrence.rollout_cutoff'
         [seen_label: 'same', onboard_label: 'SAME']                     | 'must be distinct'
-        [hard_deadline_soon_days: 0]                                   | 'planner.tasks.recurrence.hard_deadline_soon_days must be positive'
-        [hard_deadline_soon_days: 'not-an-integer']                    | 'planner.tasks.recurrence.hard_deadline_soon_days must be a positive integer'
+        [hard_label: 'hard']                                           | 'planner.tasks.recurrence.hard_label is no longer a deadline policy'
+        [hard_deadline_soon_days: 5]                                   | 'planner.tasks.recurrence.hard_deadline_soon_days is no longer a deadline policy'
+    }
+
+    def "deadline policy is explicit, recurrence-independent, and label-disabled by default"() {
+        when:
+        def omitted = PlannerConfig.fromMap(planner: [mode: 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [recurrence: [enabled: recurrenceOn, rollout_cutoff: '2026-10-01T00:00:00Z']]])
+
+        then:
+        omitted.deadlinePolicy.defaultMode == 'hard'
+        omitted.deadlinePolicy.hardLabel == null
+        omitted.deadlinePolicy.softLabel == null
+        omitted.deadlinePolicy.hardUrgencyDays == 7
+        omitted.deadlinePolicy.softUrgencyDays == 7
+        omitted.deadlinePolicy.hardWarningDays == 7
+        omitted.deadlinePolicy.softWarningDays == 7
+        omitted.recurrence.enabled == recurrenceOn
+
+        where:
+        recurrenceOn << [false, true]
+    }
+
+    def "deadline policy accepts soft default, distinct labels, and independent windows"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [
+                default_deadline_mode: 'soft',
+                hard_label: 'firm',
+                soft_label: 'flexible',
+                hard_deadline_soon_days: 3,
+                soft_deadline_soon_days: 9,
+                recurrence: [enabled: false]
+            ],
+            messaging: [hard_deadline_warning_days: 14]
+        ])
+
+        then:
+        config.deadlinePolicy.defaultMode == 'soft'
+        config.deadlinePolicy.hardLabel == 'firm'
+        config.deadlinePolicy.softLabel == 'flexible'
+        config.deadlinePolicy.hardUrgencyDays == 3
+        config.deadlinePolicy.softUrgencyDays == 9
+        config.deadlinePolicy.hardWarningDays == 14
+        config.deadlinePolicy.softWarningDays == 7
+    }
+
+    def "deadline policy rejects invalid mode, windows, blank-as-match, and identical labels"() {
+        when:
+        PlannerConfig.fromMap(planner: [mode: 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: tasks, messaging: messaging])
+
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains(expected)
+
+        where:
+        tasks                                              | messaging                         | expected
+        [default_deadline_mode: 'firm']                   | [:]                               | 'default_deadline_mode must be hard or soft'
+        [hard_deadline_soon_days: 0]                      | [:]                               | 'hard_deadline_soon_days must be positive'
+        [soft_deadline_soon_days: 'soon']                 | [:]                               | 'soft_deadline_soon_days must be a positive integer'
+        [hard_label: 'same', soft_label: 'SAME']          | [:]                               | 'must be distinct'
+        [:]                                               | [hard_deadline_warning_days: -1]  | 'hard_deadline_warning_days must be positive'
+        [:]                                               | [soft_deadline_warning_days: 1.5] | 'soft_deadline_warning_days must be a positive integer'
+    }
+
+    def "blank deadline labels mean no match and do not activate a literal hard label"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [mode: 'preview',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [hard_label: '  ', soft_label: '']])
+
+        then:
+        config.deadlinePolicy.hardLabel == null
+        config.deadlinePolicy.softLabel == null
+    }
+
+    def "documented deadline migration example parses without changing runtime recurrence"() {
+        when:
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview',
+            timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [
+                default_deadline_mode: 'soft',
+                hard_label: 'firm',
+                soft_label: 'flexible',
+                hard_deadline_soon_days: 7,
+                soft_deadline_soon_days: 7,
+                recurrence: [
+                    enabled: true,
+                    rollout_cutoff: '2026-10-02T00:00:00Z',
+                    seen_label: 'smartplanner-seen',
+                    onboard_label: 'smartplanner-onboard'
+                ]
+            ],
+            messaging: [
+                hard_deadline_warning_days: 7,
+                soft_deadline_warning_days: 7
+            ]
+        ])
+
+        then:
+        config.recurrence.enabled
+        config.recurrence.seenLabel == 'smartplanner-seen'
+        config.deadlinePolicy.defaultMode == 'soft'
+        config.deadlinePolicy.hardLabel == 'firm'
+        !config.messaging.enabled
     }
 
     def "Builder.build rejects invalid state that cannot escape"() {

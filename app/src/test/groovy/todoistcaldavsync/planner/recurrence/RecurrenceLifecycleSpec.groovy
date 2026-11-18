@@ -606,6 +606,67 @@ class RecurrenceLifecycleSpec extends Specification {
         restarted.load().pendingItems*.id == ['b']
     }
 
+    def "enqueue preserves cursor and a poll fetches unrelated deltas after draining"() {
+        given:
+        def dir = Files.createTempDirectory('items-enqueue')
+        def store = new ItemsSyncStateStore(dir)
+        store.checkpoint(new TodoistSyncPage('old', false, null, []))
+        new ItemsSyncStateStore(dir).enqueue([id: 'written'])
+        List<String> tokens = []
+        List<String> processed = []
+        TodoistLifecycleGateway gateway = [syncItems: { String token ->
+            tokens << token
+            new TodoistSyncPage('new', false, null, [[id: 'unrelated']])
+        }] as TodoistLifecycleGateway
+        def poller = new TodoistItemsPoller(gateway, store, { Map item -> processed << item.id })
+
+        when:
+        poller.poll()
+        poller.poll()
+
+        then:
+        tokens == ['old']
+        processed == ['written', 'unrelated']
+        store.load().syncToken == 'new'
+    }
+
+    def "checkpoint retains concurrent enqueues and acknowledgement removes only one occurrence"() {
+        given:
+        def dir = Files.createTempDirectory('items-merge')
+        def first = new ItemsSyncStateStore(dir)
+        def second = new ItemsSyncStateStore(dir)
+
+        when:
+        first.enqueue([id: 'a', version: 1])
+        second.checkpoint(new TodoistSyncPage('next', false, null, [[id: 'b']]))
+        second.enqueue([id: 'a', version: 2])
+        first.acknowledge('a')
+
+        then:
+        first.load().syncToken == 'next'
+        first.load().pendingItems == [[id: 'b'], [id: 'a', version: 2]]
+    }
+
+    def "independent store instances serialize concurrent enqueues"() {
+        given:
+        def dir = Files.createTempDirectory('items-concurrent')
+        def pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        def start = new java.util.concurrent.CountDownLatch(1)
+
+        when:
+        def futures = (0..<40).collect { int n ->
+            pool.submit({ -> start.await(); new ItemsSyncStateStore(dir).enqueue([id: "${n}".toString()]) } as Runnable)
+        }
+        start.countDown()
+        futures*.get()
+
+        then:
+        new ItemsSyncStateStore(dir).load().pendingItems*.id.toSet() == (0..<40).collect { it.toString() }.toSet()
+
+        cleanup:
+        pool.shutdownNow()
+    }
+
     def "items poller replays a staged delta after processor failure without refetching"() {
         given:
         def dir = Files.createTempDirectory('items-poller-replay')

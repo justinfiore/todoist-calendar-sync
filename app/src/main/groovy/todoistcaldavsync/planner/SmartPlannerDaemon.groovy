@@ -2,6 +2,8 @@ package todoistcaldavsync.planner
 
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.ai.LlmErrorClass
+import todoistcaldavsync.planner.feedback.DeadlineRiskReplyHandler
+import todoistcaldavsync.planner.feedback.DeadlineRiskReplyWiring
 import todoistcaldavsync.planner.feedback.RegexFeedbackEngine
 import todoistcaldavsync.planner.messaging.*
 import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
@@ -36,6 +38,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
     private volatile Throwable fatalFailure
     private final Object mutationLock = new Object()
     private final Set<String> allowedActors
+    private DeadlineRiskReplyHandler deadlineRiskHandler
 
     SmartPlannerDaemon(ProductionPlannerOrchestrator orchestrator,
                        MessagingSurface surface,
@@ -56,6 +59,14 @@ final class SmartPlannerDaemon implements AutoCloseable {
         this.conversations = conversationStore ?: new ConversationStore(config.deliveriesDir.resolve('conversations'))
         this.regexFeedback = new RegexFeedbackEngine(config.feedbackRules())
         this.allowedActors = Collections.unmodifiableSet(config.feedbackActors().collect { it.toString() } as Set)
+        this.deadlineRiskHandler = DeadlineRiskReplyWiring.wire(orchestrator, config, { String thread, String text, String key ->
+            if (key?.startsWith('deadline-result:')) {
+                blockDeadlineRevision(deadlineReceipt(key.substring('deadline-result:'.length())), config.slack.channel.toString(), thread)
+            }
+            safeReply(config.slack.channel, thread, text, key)
+        }, { event, prior ->
+            blockDeadlineRevision(deadlineReceipt(event.eventId), event.channelId, event.threadTs)
+        })
         config.planningRuns().each {
             running[it.name.toString()] = new AtomicBoolean(false)
             pending[it.name.toString()] = new AtomicBoolean(false)
@@ -149,6 +160,25 @@ final class SmartPlannerDaemon implements AutoCloseable {
                 return // feedback is thread-only
             }
             ConversationRecord conversation = conversations.find(event.channelId, event.threadTs)
+            Map deadlineReceipt = deadlineReceipt(event.eventId)
+            if (deadlineReceipt.deadlineConversation instanceof Map) {
+                synchronized (mutationLock) {
+                    ConversationRecord original = ConversationRecord.fromMap(deadlineReceipt.deadlineConversation as Map)
+                    if (deadlineReceipt.actorId != event.actorId || original.channelId != event.channelId ||
+                        original.threadTs != event.threadTs) {
+                        throw new IllegalStateException('Deadline result binding is missing or changed')
+                    }
+                    blockDeadlineRevision(deadlineReceipt, event.channelId, event.threadTs)
+                    PublishedMessage result = surface.reply(event.channelId, event.threadTs,
+                        todoistcaldavsync.planner.feedback.DeadlineRiskReplyHandler.outcomeText(
+                            (deadlineReceipt.outcomes ?: []) as List, '', deadlineReceipt.plannedFields as Integer),
+                        "deadline-result:${event.eventId}")
+                    if (result == null || !result.delivered()) throw new IllegalStateException('Deadline result delivery failed')
+                    publishDeadlineSuccessor(event, original)
+                }
+                completed = true
+                return
+            }
             if (conversation == null || conversation.status != 'ACTIVE') {
                 completed = true
                 return
@@ -261,10 +291,26 @@ final class SmartPlannerDaemon implements AutoCloseable {
                         "feedback-confirm-stale:${event.eventId}")
                     return
                 }
-                conversation = conversation.withPendingConfirmation([:], clock.get())
-                conversations.save(conversation)
+                synchronized (mutationLock) {
+                    if (!activeProposal(conversation)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
+                    conversation = conversation.withPendingConfirmation([:], clock.get())
+                    conversations.save(conversation)
+                }
             }
 
+            if (action == null) {
+                boolean handled
+                synchronized (mutationLock) {
+                    ConversationRecord current = conversations.find(event.channelId, event.threadTs)
+                    if (current?.status != 'ACTIVE' || current.planId != conversation.planId) {
+                        safeReply(event.channelId, event.threadTs, 'The proposal changed; request a fresh review.',
+                            "feedback-stale:${event.eventId}")
+                        return
+                    }
+                    handled = handleDeadlineRiskReply(event, current)
+                }
+                if (handled) return
+            }
             if (action == null && orchestrator.plannerConfig.ai.enabled) {
                 def interpreted = aiSuggestion(conversation.planId,
                     'conversational_feedback_interpretation', event.eventId ?: "feedback-${event.messageTs}", event.text)
@@ -314,7 +360,10 @@ final class SmartPlannerDaemon implements AutoCloseable {
                         Map pending = [action: proposedAction,
                             sourceEventId: event.eventId, planId: conversation.planId, planHash: conversation.planHash,
                             expiresAt: clock.get().plus(Duration.ofMinutes(15)).toString()]
-                        conversations.save(conversation.withPendingConfirmation(pending, clock.get()))
+                        synchronized (mutationLock) {
+                            if (!activeProposal(conversation)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
+                            conversations.save(conversation.withPendingConfirmation(pending, clock.get()))
+                        }
                         safeReply(event.channelId, event.threadTs,
                             "AI suggests `${proposedAction}`. Confirm with a configured `${proposedAction}` phrase within 15 minutes. No plan or provider changes have occurred.",
                             "feedback-ai-confirm:${event.eventId}")
@@ -335,29 +384,47 @@ final class SmartPlannerDaemon implements AutoCloseable {
                     "feedback-stale:${event.eventId}")
                 return
             }
+            if (action in ['approve', 'apply_safe'] && conversation.overrides?.deadlinePolicyIdentity !=
+                todoistcaldavsync.planner.scheduling.DeadlinePolicy.from(orchestrator.plannerConfig).identity()) {
+                safeReply(event.channelId, event.threadTs, 'Deadline policy changed or is unavailable; request a fresh proposal. No changes were applied.',
+                    "feedback-policy-stale:${event.eventId}")
+                return
+            }
             switch (action) {
                 case 'acknowledge':
-                    conversations.save(conversation.withStatus('ACKNOWLEDGED', clock.get()))
+                    synchronized (mutationLock) {
+                        if (!activeProposal(conversation)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
+                        conversations.save(conversation.withStatus('ACKNOWLEDGED', clock.get()))
+                    }
                     safeReply(event.channelId, event.threadTs, 'Acknowledged. No Todoist or calendar changes were made.', "feedback-ack:${event.eventId}")
                     break
                 case 'reject':
-                    String command = structuredCommand ?: "reject ${conversation.proposalId} ${conversation.planHash} ${match?.captures?.reason ?: event.text}"
-                    orchestrator.feedback(conversation.planId, command, event.actorId, event.eventId, event.messageTs)
-                    conversations.save(conversation.withStatus('REJECTED', clock.get()))
+                    synchronized (mutationLock) {
+                        if (!activeProposal(conversation)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
+                        String command = structuredCommand ?: "reject ${conversation.proposalId} ${conversation.planHash} ${match?.captures?.reason ?: event.text}"
+                        orchestrator.feedback(conversation.planId, command, event.actorId, event.eventId, event.messageTs)
+                        conversations.save(conversation.withStatus('REJECTED', clock.get()))
+                    }
                     safeReply(event.channelId, event.threadTs, 'Proposal rejected. No Todoist or calendar changes were made.', "feedback-reject:${event.eventId}")
                     break
                 case 'approve':
-                    String command = structuredCommand ?: "approve ${conversation.proposalId} ${conversation.planHash}"
-                    def parsed = orchestrator.feedback(conversation.planId, command, event.actorId, event.eventId, event.messageTs)
-                    if (!parsed.accepted || parsed.approval == null) throw new IllegalStateException(parsed.message ?: 'approval rejected')
-                    def applied = orchestrator.applyDecision(conversation.planId, parsed.decision.id)
-                    conversations.save(conversation.withStatus('APPLIED', clock.get()))
-                    safeReply(event.channelId, event.threadTs, "Approved plan applied with status `${applied.status}`.", "feedback-approve:${event.eventId}")
+                    synchronized (mutationLock) {
+                        if (!activeProposal(conversation)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
+                        String command = structuredCommand ?: "approve ${conversation.proposalId} ${conversation.planHash}"
+                        def parsed = orchestrator.feedback(conversation.planId, command, event.actorId, event.eventId, event.messageTs)
+                        if (!parsed.accepted || parsed.approval == null) throw new IllegalStateException(parsed.message ?: 'approval rejected')
+                        def applied = orchestrator.applyDecision(conversation.planId, parsed.decision.id)
+                        conversations.save(conversation.withStatus('APPLIED', clock.get()))
+                        safeReply(event.channelId, event.threadTs, "Approved plan applied with status `${applied.status}`.", "feedback-approve:${event.eventId}")
+                    }
                     break
                 case 'apply_safe':
-                    def receipt = orchestrator.applySafe(conversation.planId)
-                    conversations.save(conversation.withStatus('SAFE_CHANGES_APPLIED', clock.get()))
-                    safeReply(event.channelId, event.threadTs, "Safe changes processed with status `${receipt.overallStatus.wire}`; protected changes remain withheld.", "feedback-safe:${event.eventId}")
+                    synchronized (mutationLock) {
+                        if (!activeProposal(conversation)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
+                        def receipt = orchestrator.applySafe(conversation.planId)
+                        conversations.save(conversation.withStatus('SAFE_CHANGES_APPLIED', clock.get()))
+                        safeReply(event.channelId, event.threadTs, "Safe changes processed with status `${receipt.overallStatus.wire}`; protected changes remain withheld.", "feedback-safe:${event.eventId}")
+                    }
                     break
                 case 'replan':
                     synchronized (mutationLock) { replanInThread(event, conversation, validateOverrides(plan, overrides)) }
@@ -383,6 +450,127 @@ final class SmartPlannerDaemon implements AutoCloseable {
         }
     }
 
+    /**
+     * Numbered Deadline replies are a separate contract from temporary AI overrides.
+     * A clarification writes nothing. A complete authorized result is itself the write authority.
+     */
+    private boolean handleDeadlineRiskReply(MessagingEvent event, ConversationRecord conversation) {
+        def risks = conversation.overrides?.deadlineRisks
+        if (!(risks instanceof List) || risks.isEmpty() || deadlineRiskHandler == null) return false
+        boolean pendingClarification = pendingDeadlineClarification(conversation, event)
+        if (!(event.text =~ /\d/) && !pendingClarification) return false
+        MessagingEvent boundEvent = event
+        if (conversation.iteration > 1) {
+            String prefix = "proposal ${conversation.proposalId}\n"
+            if (!event.text.startsWith(prefix)) {
+                safeReply(event.channelId, event.threadTs,
+                    "To identify the revised proposal, begin your reply with `proposal ${conversation.proposalId}` on its own line. No task was changed.",
+                    "deadline-proposal-binding:${event.eventId}")
+                return true
+            }
+            boundEvent = new MessagingEvent(eventId: event.eventId, type: event.type, actorId: event.actorId,
+                channelId: event.channelId, messageTs: event.messageTs, threadTs: event.threadTs,
+                text: event.text.substring(prefix.length()), bot: event.bot)
+        }
+        if (deadlineRiskHandler.handle(boundEvent, conversation, risks as List)) {
+            publishDeadlineSuccessor(event, conversation)
+        }
+        return true
+    }
+
+    private boolean pendingDeadlineClarification(ConversationRecord conversation, MessagingEvent event) {
+        def record = todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
+            config.applicationsDir.resolve('deadline-risk'), 'load-record',
+            "clarify:${conversation.proposalId}:${event.threadTs}")
+        record instanceof Map && record.pending == true
+    }
+
+    private Map deadlineReceipt(String eventId) {
+        def record = todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
+            config.applicationsDir.resolve('deadline-risk'), 'load-record', eventId)
+        record instanceof Map ? record as Map : [:]
+    }
+
+    private boolean activeProposal(ConversationRecord proposal) {
+        ConversationRecord current = conversations.find(proposal.channelId, proposal.threadTs)
+        current?.status == 'ACTIVE' && current.planId == proposal.planId &&
+            current.proposalId == proposal.proposalId && current.iteration == proposal.iteration
+    }
+
+    private void blockDeadlineRevision(Map receipt, String channel, String thread) {
+        Map prior = receipt.deadlineConversation instanceof Map ? receipt.deadlineConversation as Map : null
+        ConversationRecord current = conversations.find(channel, thread)
+        Map next = receipt.deadlineRevision instanceof Map ? receipt.deadlineRevision.next as Map : null
+        if (next && current?.status == 'ACTIVE' && current.planId == next.planId &&
+            current.proposalId == next.proposalId && current.iteration == next.iteration) return
+        if (!prior || current == null || current.planId != prior.planId || current.proposalId != prior.proposalId ||
+            !(current.status in ['ACTIVE', 'PUBLISHING_DEADLINE_REVISION'])) {
+            throw new IllegalStateException('Deadline revision conversation changed before result delivery')
+        }
+        if (current.status == 'ACTIVE') conversations.save(current.withStatus('PUBLISHING_DEADLINE_REVISION', clock.get()))
+    }
+
+    private void publishDeadlineSuccessor(MessagingEvent event, ConversationRecord conversation) {
+        Map record = deadlineReceipt(event.eventId)
+        Map prior = record.deadlineConversation instanceof Map ? record.deadlineConversation as Map : null
+        if (!prior || record.actorId != event.actorId || prior.channelId != event.channelId ||
+            prior.threadTs != event.threadTs || prior.planId != conversation.planId ||
+            prior.proposalId != conversation.proposalId) {
+            throw new IllegalStateException('Deadline revision binding is missing or changed')
+        }
+        ConversationRecord current = conversations.find(event.channelId, event.threadTs)
+        Map revision = record.deadlineRevision instanceof Map ? record.deadlineRevision as Map : null
+        if (revision && current?.status == 'ACTIVE' && current.planId == revision.next?.planId &&
+            current.proposalId == revision.next?.proposalId && current.iteration == revision.next?.iteration) return
+        if (current == null || current.planId != conversation.planId ||
+            current.proposalId != conversation.proposalId || !(current.status in ['ACTIVE', 'PUBLISHING_DEADLINE_REVISION'])) {
+            throw new IllegalStateException('Deadline revision conversation changed; manual review required')
+        }
+        if (current.status == 'ACTIVE') conversations.save(conversation.withStatus('PUBLISHING_DEADLINE_REVISION', clock.get()))
+        if (!revision) {
+            Instant now = clock.get()
+            Map run = findRun(conversation.runName)
+            Duration horizon = overrideHorizon(run.horizon as Duration, conversation.overrides)
+            Plan plan = orchestrator.preview(now, now.plus(horizon), conversation.planId, conversation.overrides)
+            Proposal proposal = Proposal.fromPlan(plan)
+            Message rendered = renderer().renderProposal(plan, now)
+            Map message = rendered.toMap()
+            message.body = "*Revised proposal — iteration ${conversation.iteration + 1}*\n" +
+                "For Deadline changes, begin your reply with `proposal ${proposal.id}` on its own line, followed by your numbered instructions.\n${rendered.body}"
+            message.destination = event.channelId
+            message.idempotencyKey = "replan:${event.eventId}:${proposal.id}"
+            message.metadata = new LinkedHashMap(rendered.metadata ?: [:])
+            message.metadata.threadTs = event.threadTs
+            Map nextOverrides = new LinkedHashMap(conversation.overrides ?: [:])
+            nextOverrides.deadlineRisks = rendered.metadata?.deadlineRisks ?: []
+            if (rendered.metadata?.deadlinePolicyIdentity != null) {
+                nextOverrides.deadlinePolicyIdentity = rendered.metadata.deadlinePolicyIdentity
+            }
+            ConversationRecord next = conversation.next(planId: plan.id, planVersion: plan.version,
+                planHash: proposal.planHash, proposalId: proposal.id, updatedAt: now,
+                overrides: nextOverrides, status: 'ACTIVE')
+            revision = [message: message, next: next.toMap()]
+            todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
+                config.applicationsDir.resolve('deadline-risk'), 'merge-record', event.eventId,
+                [[deadlineRevision: revision]])
+        }
+        Message message = Message.fromMap(revision.message as Map)
+        ConversationRecord next = ConversationRecord.fromMap(revision.next as Map)
+        Plan retained = orchestrator.planStore.load(next.planId)
+        if (message.destination != event.channelId || message.metadata.threadTs != event.threadTs ||
+            message.planId != next.planId || message.proposalId != next.proposalId ||
+            message.planHash != next.planHash || message.idempotencyKey != "replan:${event.eventId}:${next.proposalId}" ||
+            next.channelId != event.channelId || next.threadTs != event.threadTs ||
+            next.previousPlanId != conversation.planId || next.previousProposalId != conversation.proposalId ||
+            retained == null || Proposal.fromPlan(retained).id != next.proposalId ||
+            PlanHash.compute(retained) != next.planHash) {
+            throw new IllegalStateException('Deadline revision state is invalid; manual review required')
+        }
+        PublishedMessage sent = surface.publishProposal(message)
+        if (sent == null || !sent.delivered()) throw new IllegalStateException('Deadline successor delivery failed')
+        conversations.save(next)
+    }
+
     private def aiSuggestion(String planId,String type,String correlationId,String feedback) {
         if(closed.get())throw new IllegalStateException('daemon is shutting down; AI request refused')
         Thread current=Thread.currentThread()
@@ -401,6 +589,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
     }
 
     private void replanInThread(MessagingEvent event, ConversationRecord prior, Map overrides, Plan confirmedPlan = null) {
+        if (!activeProposal(prior)) throw new IllegalArgumentException('The proposal changed; request a fresh review')
         Map run = findRun(prior.runName)
         Instant now = clock.get()
         Duration horizon = overrideHorizon(run.horizon as Duration, overrides)
@@ -410,19 +599,32 @@ final class SmartPlannerDaemon implements AutoCloseable {
         // Fail closed before exposing a new human-visible identity. If delivery or
         // final persistence fails, the old plan is no longer approvable.
         conversations.save(prior.withStatus('PUBLISHING_REVISION', now))
-        PublishedMessage reply = safeReply(event.channelId, event.threadTs,
-            "*Revised proposal — iteration ${prior.iteration + 1}*\n${message.body}",
-            "replan:${event.eventId}:${proposal.id}")
+        Map revised = message.toMap()
+        revised.body = "*Revised proposal — iteration ${prior.iteration + 1}*\n" +
+            "For Deadline changes, begin your reply with `proposal ${proposal.id}` on its own line, followed by your numbered instructions.\n${message.body}"
+        revised.destination = event.channelId
+        revised.idempotencyKey = "replan:${event.eventId}:${proposal.id}"
+        revised.metadata = new LinkedHashMap(message.metadata ?: [:])
+        revised.metadata.threadTs = event.threadTs
+        PublishedMessage reply = surface.publishProposal(Message.fromMap(revised))
         if (reply == null || !reply.delivered()) throw new IllegalStateException('revised proposal delivery failed')
+        Map nextOverrides = new LinkedHashMap(overrides ?: [:])
+        nextOverrides.deadlineRisks = message.metadata?.deadlineRisks ?: []
+        if (message.metadata?.deadlinePolicyIdentity != null) {
+            nextOverrides.deadlinePolicyIdentity = message.metadata.deadlinePolicyIdentity
+        }
         ConversationRecord next = prior.next(planId: plan.id, planVersion: plan.version,
             planHash: proposal.planHash, proposalId: proposal.id, updatedAt: now,
-            overrides: overrides, status: 'ACTIVE')
+            overrides: nextOverrides, status: 'ACTIVE')
         conversations.save(next)
     }
 
     private ConversationRecord planAndPublish(Map run, ConversationRecord previous, Map overrides, boolean threaded) {
         Instant startedAt = clock.get()
         String name = run.name.toString()
+        if (conversations.list().any { it.runName == name && it.status == 'PUBLISHING_DEADLINE_REVISION' }) {
+            throw new IllegalStateException("Planning run '${name}' has an unresolved proposal revision")
+        }
         runtimeStatus[name] = [state: 'RUNNING', startedAt: startedAt.toString()]
         Duration horizon = overrideHorizon(run.horizon as Duration, overrides)
         // Reverse synchronization is a daemon lifecycle operation, deliberately separate from
@@ -434,11 +636,16 @@ final class SmartPlannerDaemon implements AutoCloseable {
             .withDeliveryKey("daemon:${name}:${proposal.id}", [planningRun: name, horizon: horizon.toString()])
         PublishedMessage published = surface.publishProposal(rendered)
         if (!published.delivered()) throw new IllegalStateException(published.error ?: 'proposal delivery failed')
+        Map publishedOverrides = new LinkedHashMap(overrides ?: [:])
+        if (rendered.metadata?.deadlineRisks) publishedOverrides.deadlineRisks = rendered.metadata.deadlineRisks
+        if (rendered.metadata?.deadlinePolicyIdentity != null) {
+            publishedOverrides.deadlinePolicyIdentity = rendered.metadata.deadlinePolicyIdentity
+        }
         ConversationRecord record = new ConversationRecord(channelId: published.channelId,
             threadTs: published.threadTs, runName: name, planId: plan.id, planVersion: plan.version,
             planHash: proposal.planHash, proposalId: proposal.id, iteration: 1,
             previousPlanId: previous?.planId, previousProposalId: previous?.proposalId,
-            createdAt: startedAt, updatedAt: clock.get(), status: 'ACTIVE', overrides: overrides)
+            createdAt: startedAt, updatedAt: clock.get(), status: 'ACTIVE', overrides: publishedOverrides)
         if (previous != null && (previous.channelId != record.channelId || previous.threadTs != record.threadTs)) {
             conversations.save(previous.withStatus('SUPERSEDED', clock.get()))
         }
@@ -569,7 +776,8 @@ final class SmartPlannerDaemon implements AutoCloseable {
 
     private MessageRenderer renderer() {
         new MessageRenderer(orchestrator.plannerConfig.messaging.timezone ?: orchestrator.plannerConfig.timezone,
-            config.slack.channel, orchestrator.plannerConfig.messaging.riskDeadlineDays)
+            config.slack.channel, orchestrator.plannerConfig.messaging.riskDeadlineDays,
+            todoistcaldavsync.planner.scheduling.DeadlinePolicy.from(orchestrator.plannerConfig))
     }
 
     private static Duration overrideHorizon(Duration configured, Map overrides) {

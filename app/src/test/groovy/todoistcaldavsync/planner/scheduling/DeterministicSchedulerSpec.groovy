@@ -1089,6 +1089,145 @@ class DeterministicSchedulerSpec extends Specification {
         plan.tasks.every { !it.manual }
     }
 
+    def "hard peers protect constrained capacity while preserving priority when all cannot fit"() {
+        given:
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-17:00']]],
+            tasks: [default_deadline_mode: 'hard', contexts: [
+                morning: [match_labels: ['morning'], preferred_windows: ['weekday 09:00-10:00'],
+                          preferred_bonus: 500, avoid_penalty: 0]
+            ]],
+            batching: [enabled: false],
+            stability: [freeze_within: 'PT0S', minimum_buffer_between_blocks_minutes: 0, churn_penalty: 0]
+        ])
+        def flexible = task(id: 'flexible', labels: ['morning'], priority: 4, minutes: 30, deadline: dayEnd)
+        def constrained = task(id: 'constrained', priority: 1, minutes: 60, deadline: dayEnd)
+        def sched = new DeterministicScheduler(config)
+        def slots = [slot('09:00', '10:00'), slot('11:00', '11:30')]
+
+        when:
+        def plan = sched.propose([flexible, constrained], slots, dayStart, dayEnd, now)
+        def overfull = sched.propose([flexible, constrained], [slots[0]], dayStart, dayEnd, now)
+
+        then:
+        plan.unscheduled.empty
+        plan.scheduledBlocks.find { it.taskIds == ['constrained'] }.start == slots[0].start
+        plan.scheduledBlocks.find { it.taskIds == ['flexible'] }.start == slots[1].start
+        overfull.scheduledBlocks*.taskIds.flatten() == ['flexible']
+        overfull.unscheduled*.task*.id == ['constrained']
+    }
+
+    def "soft work cannot take the only interval a hard commitment can still use"() {
+        given:
+        def slots = [slot('09:00', '10:00')]
+        def hardDeadline = LocalDate.of(2026, 8, 6).atTime(10, 0).atZone(zone).toInstant()
+        def softDeadline = LocalDate.of(2026, 8, 6).atTime(9, 30).atZone(zone).toInstant()
+        def tasks = [
+            task(id: 'soft-first', priority: 4, minutes: 60, deadline: softDeadline),
+            task(id: 'hard-last', priority: 1, minutes: 60, deadline: hardDeadline)
+        ]
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00', '13:00-17:00']]],
+            tasks: [default_duration_minutes: 30, default_deadline_mode: 'soft', hard_label: 'firm'],
+            stability: [freeze_within: 'PT48H', keep_manual_moves: true,
+                        minimum_buffer_between_blocks_minutes: 0, churn_penalty: 0]
+        ])
+
+        when:
+        def plan = new DeterministicScheduler(config).propose(tasks.collect {
+            it.id == 'hard-last' ? task(id: it.id, labels: ['firm'], priority: 1, minutes: 60, deadline: hardDeadline) : it
+        }, slots, dayStart, dayEnd, now)
+
+        then:
+        plan.scheduledBlocks*.taskIds.flatten() == ['hard-last']
+        plan.unscheduled*.task*.id == ['soft-first']
+        plan.scheduledBlocks[0].end == hardDeadline
+        plan.unscheduled[0].code != 'deadline_infeasible' || plan.unscheduled[0].reason
+    }
+
+    def "urgent soft work precedes a hard commitment that can still finish on time"() {
+        given:
+        def slots = [slot('09:00', '11:00')]
+        def laterHard = LocalDate.of(2026, 8, 6).atTime(11, 0).atZone(zone).toInstant()
+        def soonSoft = LocalDate.of(2026, 8, 6).atTime(9, 30).atZone(zone).toInstant()
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [default_duration_minutes: 30, default_deadline_mode: 'soft', hard_label: 'firm'],
+            stability: [freeze_within: 'PT0S', keep_manual_moves: true,
+                        minimum_buffer_between_blocks_minutes: 0, churn_penalty: 0]
+        ])
+        def tasks = [
+            task(id: 'distant-hard', labels: ['firm'], priority: 4, minutes: 60, deadline: laterHard),
+            task(id: 'urgent-soft', priority: 1, minutes: 30, deadline: soonSoft)
+        ]
+
+        when:
+        def plan = new DeterministicScheduler(config).propose(tasks, slots, dayStart, dayEnd, now)
+
+        then:
+        plan.unscheduled.isEmpty()
+        plan.scheduledBlocks.find { it.taskIds == ['urgent-soft'] }.start.isBefore(
+            plan.scheduledBlocks.find { it.taskIds == ['distant-hard'] }.start)
+        !plan.scheduledBlocks.find { it.taskIds == ['distant-hard'] }.end.isAfter(laterHard)
+    }
+
+    def "manual placement is preserved even when it leaves a hard commitment unscheduled"() {
+        given:
+        def slots = [slot('09:00', '10:00')]
+        def hardDeadline = LocalDate.of(2026, 8, 6).atTime(10, 0).atZone(zone).toInstant()
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [default_duration_minutes: 30, hard_label: 'firm'],
+            stability: [freeze_within: 'PT48H', keep_manual_moves: true,
+                        minimum_buffer_between_blocks_minutes: 0, churn_penalty: 0]
+        ])
+        def hard = task(id: 'hard-blocked', labels: ['firm'], priority: 4, minutes: 60, deadline: hardDeadline)
+        def manual = task(id: 'kept', priority: 1, minutes: 60, deadline: dayEnd)
+        def previous = Plan.builder().id('prev').createdAt(now).mode('preview').scheduledBlocks([
+            ScheduledBlock.builder().id('block-kept').start(slots[0].start).end(slots[0].end)
+                .taskIds(['kept']).title('kept').manualOverride(true).reason('manual').build()
+        ]).build()
+
+        when:
+        def plan = new DeterministicScheduler(config).propose([hard, manual], slots, dayStart, dayEnd, now,
+            previous, ['kept'] as Set)
+
+        then:
+        plan.scheduledBlocks*.taskIds.flatten() == ['kept']
+        plan.scheduledBlocks[0].manualOverride
+        plan.unscheduled*.task*.id == ['hard-blocked']
+        plan.unscheduled[0].code == 'deadline_infeasible'
+    }
+
+    def "changed deadline mode changes plan identity so an old approval cannot be reused"() {
+        given:
+        def slots = [slot('09:00', '10:00')]
+        def tasks = [task(id: 'same', minutes: 30, deadline: dayEnd)]
+        def hard = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [default_deadline_mode: 'hard', default_duration_minutes: 30],
+            stability: [minimum_buffer_between_blocks_minutes: 0, freeze_within: 'PT0S']
+        ])
+        def soft = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-12:00']]],
+            tasks: [default_deadline_mode: 'soft', default_duration_minutes: 30],
+            stability: [minimum_buffer_between_blocks_minutes: 0, freeze_within: 'PT0S']
+        ])
+
+        when:
+        def hardPlan = new DeterministicScheduler(hard).propose(tasks, slots, dayStart, dayEnd, now)
+        def softPlan = new DeterministicScheduler(soft).propose(tasks, slots, dayStart, dayEnd, now)
+
+        then:
+        hardPlan.id != softPlan.id
+    }
+
     def "soft-blocked slots remain usable but do not create hard conflicts"() {
         given:
         def slots = [
