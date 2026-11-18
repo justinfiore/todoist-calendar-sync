@@ -21,11 +21,14 @@ final class DeadlineRiskReplyHandler {
     private final Closure receipts
     private final Closure successor
     private final Closure currentPolicyIdentity
+    private final Closure reportOutcome
+    private final Closure beforeWrites
 
     DeadlineRiskReplyHandler(DeadlineRiskInterpreter interpreter, DeadlineRiskFeedback feedback,
                              ZoneId zone, BiConsumer<String, String> reply,
                              Closure liveTasks, Closure receipts, Closure successor = null,
-                             Closure currentPolicyIdentity = null) {
+                             Closure currentPolicyIdentity = null, Closure reportOutcome = null,
+                             Closure beforeWrites = null) {
         this.interpreter = interpreter
         this.feedback = feedback
         this.zone = zone
@@ -34,6 +37,8 @@ final class DeadlineRiskReplyHandler {
         this.receipts = receipts
         this.successor = successor
         this.currentPolicyIdentity = currentPolicyIdentity
+        this.reportOutcome = reportOutcome
+        this.beforeWrites = beforeWrites
     }
 
     boolean handle(MessagingEvent event, ConversationRecord conversation, List storedRows) {
@@ -83,19 +88,30 @@ final class DeadlineRiskReplyHandler {
             reply.accept(event.threadTs, "No task was changed. ${preflight.problems.join('; ')}")
             return false
         }
+        int plannedFields = preflight.actions.sum { (it.deadlineDate != null ? 1 : 0) + (it.priority != null ? 1 : 0) } as int
+        receipts.call('merge-record', event.eventId, [[
+            deadlineConversation: conversation.toMap(), actorId: event.actorId, plannedFields: plannedFields
+        ]])
+        beforeWrites?.call(event, conversation)
         def execution = feedback.execute(preflight, [] as Set, { List outcomes ->
             receipts.call('save', event.eventId, outcomes.collect { it.toMap() })
         }, event.eventId, { String id -> (liveTasks.call([id]) as Map)[id] })
         receipts.call('save', event.eventId, execution.outcomes.collect { it.toMap() })
         receipts.call('save', pendingKey, [[pending: false, originalReply: replyText, replyTime: replyTime]])
-        String summary = execution.outcomes.collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
         def successorResult = successor == null ? null : successor.call(conversation, event)
         boolean posted = successorResult?.posted == true
         String successorNote = posted ? "Fresh proposal ${successorResult.proposalId} posted. "
             : (successorResult ? "Fresh proposal was not posted (${successorResult.status ?: 'undelivered'}). " : "")
-        reply.accept(event.threadTs,
-            "Deadline reply processed without Calendar changes. ${summary}. ${successorNote}" +
-            "This reply is not calendar approval.")
-        return execution.anyVerified()
+        String text = outcomeText(execution.outcomes.collect { it.toMap() }, successorNote, plannedFields)
+        if (reportOutcome != null) reportOutcome.call(event, text)
+        else reply.accept(event.threadTs, text)
+        return beforeWrites != null || execution.outcomes.any { it.state in ['verified', 'unknown'] }
+    }
+
+    static String outcomeText(List outcomes, String successorNote = '', Integer plannedFields = null) {
+        String summary = (outcomes ?: []).collect { "${it.taskId} ${it.field}: ${it.state}" }.join('; ')
+        String incomplete = plannedFields != null && (outcomes ?: []).size() < plannedFields
+            ? 'Some requested changes were not completed; request a fresh review. ' : ''
+        "Deadline reply processed without Calendar changes. ${summary}. ${incomplete}${successorNote}This reply is not calendar approval."
     }
 }

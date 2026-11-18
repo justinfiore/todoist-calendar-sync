@@ -165,6 +165,7 @@ class SmartPlannerDaemonSpec extends Specification {
     private static final class FlakySurface implements MessagingSurface {
         final InMemoryMessagingSurface delegate = new InMemoryMessagingSurface()
         int remainingProposalFailures
+        int remainingDeadlineResultFailures
         Throwable proposalFailure
 
         @Override void start(java.util.function.Consumer<MessagingEvent> handler) { delegate.start(handler) }
@@ -176,6 +177,9 @@ class SmartPlannerDaemonSpec extends Specification {
             delegate.publishProposal(message)
         }
         @Override PublishedMessage reply(String channel, String thread, String text, String key) {
+            if (key?.startsWith('deadline-result:') && remainingDeadlineResultFailures-- > 0) {
+                return new PublishedMessage(channelId: channel, status: 'FAILED', error: 'injected failure')
+            }
             delegate.reply(channel, thread, text, key)
         }
         @Override void setWorkingStatus(String channel, String thread, String status, List<String> loading) {
@@ -253,7 +257,79 @@ class SmartPlannerDaemonSpec extends Specification {
         [daemon, orchestrator, writeGateway, calendar, surface, integration]
     }
 
-    def 'numbered deadline reply uses the daemon handler, local model HTTP, one sync write, and the revised proposal'() {
+    def 'an ambiguous deadline checkpoint blocks the old plan and recovers without a write'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-unknown-').toFile()
+        def now = new AtomicReference<>(initial)
+        def surface = new FlakySurface()
+        def parts = build(state, now, surface)
+        def daemon = parts[0]
+        daemon.start()
+        def original = daemon.runNow('daily')
+        def receipts = todoistcaldavsync.planner.feedback.DeadlineRiskReceipts
+        def dir = parts[5].applicationsDir.resolve('deadline-risk')
+        receipts.handle(dir, 'merge-record', 'unknown-event', [[deadlineConversation: original.toMap(),
+            actorId: 'U1', plannedFields: 1, outcomes: [[taskId: 't1', field: 'priority',
+                state: 'unknown', detail: 'write may have started']]]])
+        surface.remainingDeadlineResultFailures = 1
+        def event = new MessagingEvent(eventId: 'unknown-event', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '1000.71', threadTs: original.threadTs, text: '1 P2')
+
+        when:
+        try { daemon.handleEvent(event) } catch (IllegalStateException ignored) { }
+        def blocked = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', original.threadTs)
+        daemon.handleEvent(new MessagingEvent(eventId: 'approve-old', type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '1000.72', threadTs: original.threadTs, text: 'yes'))
+        daemon.handleEvent(event)
+        def revised = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', original.threadTs)
+
+        then:
+        blocked.status == 'PUBLISHING_REVISION'
+        revised.status == 'ACTIVE'
+        revised.iteration == original.iteration + 1
+        parts[2].dueUpdates.empty
+        parts[3].upserts.empty
+        surface.delegate.replies.any { it.text.contains('unknown') }
+
+        cleanup:
+        daemon?.close()
+    }
+
+    def 'changed deadline policy refuses #action after restart'() {
+        given:
+        File state = Files.createTempDirectory('smartplanner-policy-').toFile()
+        def now = new AtomicReference<>(initial)
+        def parts = build(state, now)
+        def daemon = parts[0]
+        daemon.start()
+        def original = daemon.runNow('daily')
+        daemon.close()
+        def rules = [[name: 'approve', pattern: '(?i)^yes$', action: 'approve'],
+                     [name: 'safe', pattern: '(?i)^safe$', action: 'apply_safe']]
+        def restarted = build(state, now, new InMemoryMessagingSurface(), null, null, null, null, null,
+            [tasks: [scheduling_eligible_labels: ['schedule'], default_duration_minutes: 30, default_deadline_mode: 'soft'],
+             integration: [feedback: [allowed_actors: ['U1'], rules: rules]]])
+        restarted[0].start()
+
+        when:
+        restarted[4].emit(new MessagingEvent(eventId: "policy-${action}", type: 'thread_reply', actorId: 'U1',
+            channelId: 'C123', messageTs: '1000.73', threadTs: original.threadTs, text: action))
+
+        then:
+        restarted[4].replies.any { it.text.contains('Deadline policy changed') }
+        new ConversationStore(restarted[5].deliveriesDir.resolve('conversations')).find('C123', original.threadTs).status == 'ACTIVE'
+        restarted[2].dueUpdates.empty
+        restarted[3].upserts.empty
+
+        cleanup:
+        daemon?.close()
+        restarted[0]?.close()
+
+        where:
+        action << ['yes', 'safe']
+    }
+
+    def 'numbered deadline reply recovers from #failure delivery failure without another sync write'() {
         given:
         def llm = new com.github.tomakehurst.wiremock.WireMockServer(com.github.tomakehurst.wiremock.core.WireMockConfiguration.options().dynamicPort())
         def todoist = new com.github.tomakehurst.wiremock.WireMockServer(com.github.tomakehurst.wiremock.core.WireMockConfiguration.options().dynamicPort())
@@ -278,7 +354,7 @@ class SmartPlannerDaemonSpec extends Specification {
         def syncClient = new UpdatingSyncClient(todoist, commandId)
         File state = Files.createTempDirectory('smartplanner-deadline-route-').toFile()
         def now = new AtomicReference<>(initial)
-        def surface = new InMemoryMessagingSurface()
+        def surface = new FlakySurface()
         def factory = { cfg ->
             new todoistcaldavsync.planner.ai.OpenAiCompatibleLlmGateway(cfg, { req ->
                 def sent = new groovy.json.JsonSlurper().parse(req.body)
@@ -310,16 +386,37 @@ class SmartPlannerDaemonSpec extends Specification {
         daemon.start()
         def conversation = daemon.runNow('daily')
         assert conversation.overrides.deadlineRisks*.taskId == ['t1']
+        if (failure == 'successor') surface.remainingProposalFailures = 1
+        if (failure == 'result') surface.remainingDeadlineResultFailures = 1
 
-        when:
-        daemon.handleEvent(new MessagingEvent([eventId: 'e-deadline', type: 'thread_reply', actorId: 'U1',
-            channelId: 'C123', messageTs: '2.2', threadTs: conversation.threadTs, text: '1 elevate to P2']))
+        when: 'the first successor delivery fails after the real Todoist write'
+        try {
+            daemon.handleEvent(new MessagingEvent([eventId: 'e-deadline', type: 'thread_reply', actorId: 'U1',
+                channelId: 'C123', messageTs: '2.2', threadTs: conversation.threadTs, text: '1 elevate to P2']))
+        } catch (IllegalStateException ignored) { }
+        def blocked = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', conversation.threadTs)
+        def receipt = todoistcaldavsync.planner.feedback.DeadlineRiskReceipts.handle(
+            parts[5].applicationsDir.resolve('deadline-risk'), 'load-record', 'e-deadline')
+        daemon.close()
+        def restartedSurface = new FlakySurface()
+        def restarted = build(state, now, restartedSurface, null, read, null, null, null, [
+            ai: [enabled: true, provider: 'openai_compatible', endpoint: 'https://api.openai.com/v1/chat/completions',
+                model: 'gpt-fixture', secret_env: 'LLM_FIXTURE_KEY', allowed_hosts: ['api.openai.com'],
+                allowed_suggestion_types: ['deadline_risk_mitigation']],
+            integration: [todoist: [base_url: "http://127.0.0.1:${todoist.port()}/api/v1", token_env: 'TEST_TOKEN',
+                allow_insecure_http: true, secret_resolver: { 'fixture-token' }, http_client: syncClient]]
+        ], null, factory)
+        SmartPlannerDaemon recoveredDaemon = restarted[0]
+        recoveredDaemon.start()
         def posts = todoist.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
             com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync')))
-        def stored = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', conversation.threadTs)
-        def successor = parts[1].planStore.load(stored.planId)
+        def stored = new ConversationStore(restarted[5].deliveriesDir.resolve('conversations')).find('C123', conversation.threadTs)
+        def successor = restarted[1].planStore.load(stored.planId)
+        def outbound = restartedSurface.delegate
 
         then:
+        blocked.status == 'PUBLISHING_REVISION'
+        if (failure == 'successor') assert receipt.deadlineRevision.next.planId == stored.planId
         posts.size() == 1
         def command = new groovy.json.JsonSlurper().parseText(URLDecoder.decode(posts[0].bodyAsString.split('commands=')[1], 'UTF-8'))[0]
         command.uuid == commandId
@@ -331,23 +428,27 @@ class SmartPlannerDaemonSpec extends Specification {
         successor.tasks.find { it.id == 't1' }.deadlineDate.toString() == '2026-08-07'
         stored.planId != conversation.planId
         stored.iteration == conversation.iteration + 1
-        surface.replies.any { it.text?.contains('Revised proposal — iteration 2') && it.text?.contains('Write report') }
-        def revised = surface.replies.find { it.text?.contains('Revised proposal — iteration 2') }
+        outbound.replies.any { it.text?.contains('Revised proposal — iteration 2') && it.text?.contains('Write report') }
+        def revised = outbound.replies.find { it.text?.contains('Revised proposal — iteration 2') }
         revised.threadTs == conversation.threadTs
         revised.metadata.deadlineRisks == stored.overrides.deadlineRisks
-        !surface.replies.any { it.text?.toLowerCase()?.contains('calendar applied') }
+        !outbound.replies.any { it.text?.toLowerCase()?.contains('calendar applied') }
 
         when: 'an unbound reply meant for the previous table arrives after the revision'
-        daemon.handleEvent(new MessagingEvent([eventId: 'e-stale-row', type: 'thread_reply', actorId: 'U1',
+        recoveredDaemon.handleEvent(new MessagingEvent([eventId: 'e-stale-row', type: 'thread_reply', actorId: 'U1',
             channelId: 'C123', messageTs: '2.3', threadTs: conversation.threadTs, text: '1 elevate to P2']))
 
         then:
         todoist.findAll(com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
             com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo('/api/v1/sync'))).size() == 1
-        surface.replies.last().text.contains("proposal ${stored.proposalId}")
-        surface.replies.last().text.contains('No task was changed')
+        outbound.replies.last().text.contains("proposal ${stored.proposalId}")
+        outbound.replies.last().text.contains('No task was changed')
         cleanup:
+        recoveredDaemon?.close()
         llm.stop(); todoist.stop(); state.deleteDir()
+
+        where:
+        failure << ['result', 'successor']
     }
 
     def 'malformed model output writes no sync command and posts no successor'() {

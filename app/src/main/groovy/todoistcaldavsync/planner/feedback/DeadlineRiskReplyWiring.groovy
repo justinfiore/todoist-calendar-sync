@@ -14,7 +14,7 @@ import java.util.function.BiConsumer
 final class DeadlineRiskReplyWiring {
     static DeadlineRiskReplyHandler wire(ProductionPlannerOrchestrator orchestrator,
                                          ProductionIntegrationConfig config,
-                                         Closure reply) {
+                                         Closure reply, Closure beforeWrites = null) {
         if (orchestrator?.plannerConfig?.ai?.enabled != true) return null
         ZoneId zone = orchestrator.plannerConfig.timezone
         def interpreter = new DeadlineRiskInterpreter(new DeadlineRiskInterpreter.LlmGateway({ request ->
@@ -37,7 +37,11 @@ final class DeadlineRiskReplyWiring {
                 DeadlineRiskReceipts.handle(config.applicationsDir.resolve('deadline-risk'), op, id, outcomes)
             },
             null,
-            { todoistcaldavsync.planner.scheduling.DeadlinePolicy.from(orchestrator.plannerConfig).identity() })
+            { todoistcaldavsync.planner.scheduling.DeadlinePolicy.from(orchestrator.plannerConfig).identity() },
+            { event, String text ->
+                def sent = reply.call(event.threadTs, text, "deadline-result:${event.eventId}")
+                if (sent == null || !sent.delivered()) throw new IllegalStateException('Deadline result delivery failed')
+            }, beforeWrites)
     }
 
     /** Adapts authorized Sync writes onto the existing feedback executor. */

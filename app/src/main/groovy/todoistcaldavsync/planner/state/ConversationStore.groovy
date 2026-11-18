@@ -65,8 +65,12 @@ final class ConversationStore {
             events[id] = [status: 'PROCESSING', ownerId: eventOwnerId,
                 claimedAt: (at ?: Instant.now()).toString(), channelId: channelId, messageTs: messageTs,
                 payload: retainedPayload]
-            // Bound state growth while retaining deterministic newest insertion order.
-            while (events.size() > 10_000) events.remove(events.keySet().iterator().next())
+            // Never discard an event that still carries recoverable work.
+            while (events.size() > 10_000) {
+                def completedId = events.find { key, value -> value instanceof Map && value.status == 'COMPLETED' }?.key
+                if (completedId == null) break
+                events.remove(completedId)
+            }
             root.events = events
             writeUnlocked(root)
             true

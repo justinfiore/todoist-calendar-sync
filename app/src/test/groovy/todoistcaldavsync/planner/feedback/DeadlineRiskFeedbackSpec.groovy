@@ -217,6 +217,14 @@ class DeadlineRiskFeedbackSpec extends Specification {
         directory?.toFile()?.deleteDir()
     }
 
+    def "interrupted batch result reports that remaining edits were not completed"() {
+        expect:
+        DeadlineRiskReplyHandler.outcomeText([[taskId: 't1', field: 'deadline', state: 'verified']], '', 2)
+            .contains('Some requested changes were not completed')
+        !DeadlineRiskReplyHandler.outcomeText([[taskId: 't1', field: 'deadline', state: 'verified']], '', 1)
+            .contains('Some requested changes were not completed')
+    }
+
     private static class PriorityFailingGateway extends InMemoryTodoistGateway {
         private final InMemoryTodoistGateway delegate
         private final String failId
