@@ -504,10 +504,10 @@ final class SmartPlannerDaemon implements AutoCloseable {
         if (next && current?.status == 'ACTIVE' && current.planId == next.planId &&
             current.proposalId == next.proposalId && current.iteration == next.iteration) return
         if (!prior || current == null || current.planId != prior.planId || current.proposalId != prior.proposalId ||
-            !(current.status in ['ACTIVE', 'PUBLISHING_REVISION'])) {
+            !(current.status in ['ACTIVE', 'PUBLISHING_DEADLINE_REVISION'])) {
             throw new IllegalStateException('Deadline revision conversation changed before result delivery')
         }
-        if (current.status == 'ACTIVE') conversations.save(current.withStatus('PUBLISHING_REVISION', clock.get()))
+        if (current.status == 'ACTIVE') conversations.save(current.withStatus('PUBLISHING_DEADLINE_REVISION', clock.get()))
     }
 
     private void publishDeadlineSuccessor(MessagingEvent event, ConversationRecord conversation) {
@@ -523,10 +523,10 @@ final class SmartPlannerDaemon implements AutoCloseable {
         if (revision && current?.status == 'ACTIVE' && current.planId == revision.next?.planId &&
             current.proposalId == revision.next?.proposalId && current.iteration == revision.next?.iteration) return
         if (current == null || current.planId != conversation.planId ||
-            current.proposalId != conversation.proposalId || !(current.status in ['ACTIVE', 'PUBLISHING_REVISION'])) {
+            current.proposalId != conversation.proposalId || !(current.status in ['ACTIVE', 'PUBLISHING_DEADLINE_REVISION'])) {
             throw new IllegalStateException('Deadline revision conversation changed; manual review required')
         }
-        if (current.status == 'ACTIVE') conversations.save(conversation.withStatus('PUBLISHING_REVISION', clock.get()))
+        if (current.status == 'ACTIVE') conversations.save(conversation.withStatus('PUBLISHING_DEADLINE_REVISION', clock.get()))
         if (!revision) {
             Instant now = clock.get()
             Map run = findRun(conversation.runName)
@@ -622,7 +622,7 @@ final class SmartPlannerDaemon implements AutoCloseable {
     private ConversationRecord planAndPublish(Map run, ConversationRecord previous, Map overrides, boolean threaded) {
         Instant startedAt = clock.get()
         String name = run.name.toString()
-        if (conversations.list().any { it.runName == name && it.status == 'PUBLISHING_REVISION' }) {
+        if (conversations.list().any { it.runName == name && it.status == 'PUBLISHING_DEADLINE_REVISION' }) {
             throw new IllegalStateException("Planning run '${name}' has an unresolved proposal revision")
         }
         runtimeStatus[name] = [state: 'RUNNING', startedAt: startedAt.toString()]

@@ -287,7 +287,7 @@ class SmartPlannerDaemonSpec extends Specification {
         def revised = new ConversationStore(parts[5].deliveriesDir.resolve('conversations')).find('C123', original.threadTs)
 
         then:
-        blocked.status == 'PUBLISHING_REVISION'
+        blocked.status == 'PUBLISHING_DEADLINE_REVISION'
         planningFailure?.message?.contains('unresolved proposal revision')
         surface.delegate.proposals.size() == proposalCount
         revised.status == 'ACTIVE'
@@ -420,7 +420,7 @@ class SmartPlannerDaemonSpec extends Specification {
         def outbound = restartedSurface.delegate
 
         then:
-        blocked.status == 'PUBLISHING_REVISION'
+        blocked.status == 'PUBLISHING_DEADLINE_REVISION'
         if (failure == 'successor') assert receipt.deadlineRevision.next.planId == stored.planId
         posts.size() == 1
         def command = new groovy.json.JsonSlurper().parseText(URLDecoder.decode(posts[0].bodyAsString.split('commands=')[1], 'UTF-8'))[0]
@@ -1480,6 +1480,18 @@ class SmartPlannerDaemonSpec extends Specification {
         restarted[4].replies.empty
         restarted[1].planStore.listPlanIds().size() == 2
         new ConversationStore(conversationDir).find('C123', original.threadTs).status == 'PUBLISHING_REVISION'
+
+        when: 'a fresh planning run recovers without approving the old proposal'
+        // The restarted in-memory surface resets its synthetic timestamp sequence.
+        restarted[4].reply('C123', original.threadTs, 'fixture', 'fixture-sequence')
+        def fresh = daemon.runNow('daily')
+
+        then:
+        fresh.status == 'ACTIVE'
+        fresh.threadTs != original.threadTs
+        new ConversationStore(conversationDir).find('C123', original.threadTs).status == 'SUPERSEDED'
+        restarted[2].dueUpdates.empty
+        restarted[3].upserts.empty
 
         cleanup:
         daemon?.close()
