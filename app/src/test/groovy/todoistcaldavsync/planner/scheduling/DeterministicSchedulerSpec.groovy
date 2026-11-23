@@ -1118,6 +1118,28 @@ class DeterministicSchedulerSpec extends Specification {
         overfull.unscheduled*.task*.id == ['constrained']
     }
 
+    def "soft deadline at the horizon gets scarce capacity ahead of no-deadline work"() {
+        given:
+        def config = PlannerConfig.fromMap(planner: [
+            mode: 'preview', timezone: 'America/New_York',
+            availability: [working_windows: [weekday: ['09:00-10:00']]],
+            tasks: [default_duration_minutes: 30, default_deadline_mode: 'soft'],
+            batching: [enabled: false],
+            stability: [freeze_within: 'PT0S', minimum_buffer_between_blocks_minutes: 0, churn_penalty: 0]
+        ])
+        def soft = task(id: 'soft-p4', priority: 1, minutes: 60, deadline: dayEnd)
+        def noDeadline = task(id: 'plain-p1', priority: 4, minutes: 60, dueTime: now)
+
+        when:
+        def plan = new DeterministicScheduler(config).propose([noDeadline, soft], [slot('09:00', '10:00')],
+            dayStart, dayEnd, now)
+
+        then:
+        plan.scheduledBlocks*.taskIds.flatten() == ['soft-p4']
+        plan.unscheduled*.task*.id == ['plain-p1']
+        soft.priority == 1
+    }
+
     def "soft work cannot take the only interval a hard commitment can still use"() {
         given:
         def slots = [slot('09:00', '10:00')]

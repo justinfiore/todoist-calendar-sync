@@ -191,6 +191,27 @@ class PlanScorerSpec extends Specification {
             null, [], now, now + Duration.ofDays(14), null, null, false, false) == PlanScorer.INFEASIBLE
     }
 
+    def "in-window deadlines at the horizon retain soft and hard urgency"() {
+        given:
+        def soft = policyScorer(default_deadline_mode: 'soft')
+        def hard = policyScorer(default_deadline_mode: 'hard')
+        def start = now + Duration.ofHours(1)
+        def end = start + Duration.ofMinutes(30)
+        def boundary = task(id: 'boundary', priority: 1, deadline: rangeEnd)
+        def noDeadline = task(id: 'no-deadline', priority: 4)
+
+        expect:
+        soft.deadlineUrgency(boundary, end, now, rangeEnd) >= DeadlinePolicy.SOFT_WINDOW_FLOOR
+        hard.deadlineUrgency(boundary, end, now, rangeEnd) >= DeadlinePolicy.HARD_WINDOW_FLOOR
+        soft.scorePlacement(boundary, start, end, null, [], now, rangeEnd, null, null, false, false) >
+            soft.scorePlacement(noDeadline, start, end, null, [], now, rangeEnd, null, null, false, false)
+        soft.deadlineUrgency(boundary, end, now, rangeEnd) ==
+            soft.deadlineUrgency(boundary, end, now, rangeEnd + Duration.ofSeconds(1))
+        hard.deadlineUrgency(boundary, rangeEnd + Duration.ofSeconds(1), now, rangeEnd) == PlanScorer.INFEASIBLE
+        soft.deadlineUrgency(task(deadline: now + Duration.ofDays(10)), end, now,
+            now + Duration.ofDays(10)) < DeadlinePolicy.SOFT_WINDOW_FLOOR
+    }
+
     def "preferred context window scores higher than avoided window"() {
         given:
         def phone = task(id: 'phone', labels: ['schedule', 'phone'], priority: 2, deadline: rangeEnd)

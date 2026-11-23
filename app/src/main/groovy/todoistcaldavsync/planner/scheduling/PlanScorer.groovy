@@ -76,8 +76,7 @@ class PlanScorer {
         boolean late = placementEnd != null && placementEnd.isAfter(task.deadline)
         if (late && hard) return INFEASIBLE
         boolean inWindow = deadlinePolicy.inUrgencyWindow(task, now)
-        boolean horizonBoundary = rangeEnd != null && task.deadline == rangeEnd
-        if (horizonBoundary || (!inWindow && !late)) {
+        if (!inWindow && !late) {
             Instant horizon = rangeEnd ?: (now + Duration.ofDays(14))
             long totalSec = Math.max(1L, Duration.between(now, horizon).seconds)
             long remainingSec = Duration.between(now, task.deadline).seconds
