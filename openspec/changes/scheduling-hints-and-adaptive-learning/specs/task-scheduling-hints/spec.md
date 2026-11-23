@@ -69,3 +69,33 @@ The system SHALL preserve existing label-based preferred-window configuration be
 #### Scenario: Existing context-only installation
 - **WHEN** configuration contains only previously supported context labels, preferred windows, bonuses, and penalties
 - **THEN** those settings SHALL retain their existing preference meaning
+
+### Requirement: Hints reuse the independent Deadline policy
+The system SHALL use the shared Deadline policy for classification, constraint cutoffs, urgency windows, warning windows, and policy identity. Hint classification and timing relaxation SHALL NOT change Deadline mode or urgency rules. Deadline classification SHALL remain independent of recurrence enablement; unconfigured labels SHALL NOT create implicit overrides.
+
+#### Scenario: Configured overrides are independent of recurrence
+- **WHEN** a task with a native Deadline matches a configured soft or hard override label
+- **THEN** the shared policy SHALL classify it identically with recurrence enabled or disabled
+- **AND** a configured hard override SHALL win when both overrides match
+
+#### Scenario: Literal label without an override
+- **WHEN** a task has the label soft-deadline but no Deadline label overrides are configured
+- **THEN** its Deadline mode SHALL follow the configured default rather than an implicit label interpretation
+
+#### Scenario: Timing exception leaves Deadline policy unchanged
+- **WHEN** a timing exception permits out-of-window placement to meet a soft Deadline
+- **THEN** the Deadline SHALL remain soft with the same urgency and warning windows and policy identity
+- **AND** changing energy or focus preferences SHALL NOT redefine those policy inputs
+
+### Requirement: Reservation and placement preserve member-level feasibility
+Capacity reservation SHALL use the same timing rules, buffers, member Deadline checks, and split fallback as actual placement. Optional grouping SHALL NOT make otherwise feasible hard commitments appear infeasible or let soft members consume another hard task's only feasible capacity by inheriting a bundled member's precedence.
+
+#### Scenario: Fragmented capacity fits hard members separately
+- **WHEN** two 30-minute hard tasks due at 10:30 form an optional 60-minute bundle, the only available intervals are 09:00–09:30 and 10:00–10:30, and buffers are zero
+- **THEN** reservation SHALL recognize that the hard tasks fit separately
+- **AND** a separate 30-minute soft task targeting 09:15 SHALL NOT consume a fragment needed by those hard commitments merely because the whole bundle cannot fit
+
+#### Scenario: Mixed bundle must split to protect another hard task
+- **WHEN** zero-buffer availability is 09:00–10:30 and 11:00–11:30, a 30-minute hard task due at 09:30 is bundled with a 30-minute soft task targeting 09:40, and a separate 60-minute hard task is due at 10:30
+- **THEN** the optional bundle SHALL split so both hard tasks can finish on time
+- **AND** the soft member SHALL remain eligible for 11:00–11:30 rather than borrow the early hard member's precedence

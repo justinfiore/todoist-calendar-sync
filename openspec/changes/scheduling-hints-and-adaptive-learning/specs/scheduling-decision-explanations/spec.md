@@ -36,3 +36,21 @@ The system SHALL ground explanations in the saved proposal's decision evidence r
 #### Scenario: Re-render stored proposal after learning changes
 - **WHEN** the same saved proposal is rendered after newer evidence has changed the learning state
 - **THEN** its explanation SHALL still describe the evidence and decisions used for that saved proposal
+
+### Requirement: Explanations preserve proposal-bound Deadline feedback
+Explanation visibility SHALL NOT alter required risk warnings, row numbering, task bindings, Deadline policy identity, clarification state, receipt semantics, or Calendar approval authority. Each successor conversation SHALL contain its own proposal's risk inventory, including an empty inventory. Saved explanations SHALL remain bound to the plan's reference time and applicable configuration/evidence identity rather than recomputing reasons from newer inputs.
+
+#### Scenario: Toggle explanation for the same proposal
+- **WHEN** the same saved proposal and risk inventory are rendered with explanations enabled and disabled
+- **THEN** required risk warnings, numbered task bindings, and Deadline policy identity SHALL remain unchanged
+- **AND** only the explanatory closing section SHALL be controlled by the toggle
+
+#### Scenario: Successor no longer has Deadline risks
+- **WHEN** a revised proposal has no risk rows after a prior proposal contained numbered risks
+- **THEN** its stored successor conversation SHALL replace the prior risk inventory with an empty list
+- **AND** a later numbered reply SHALL NOT target an old task using the cleared inventory
+
+#### Scenario: Saved explanation and policy identity survive newer inputs
+- **WHEN** learning evidence or configuration changes after a proposal is saved
+- **THEN** rendering that saved proposal's explanation SHALL use its original reference time and configuration/evidence identity
+- **AND** adding the explanation SHALL NOT replace the proposal's stored Deadline policy identity with a newer one

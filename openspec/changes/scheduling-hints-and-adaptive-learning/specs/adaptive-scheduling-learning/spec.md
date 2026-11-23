@@ -64,6 +64,11 @@ Supported learning SHALL be allowed to favor adjacent or bundled placements base
 - **WHEN** qualifying task or project evidence favors bundling related tasks in the same project
 - **THEN** grouping SHALL be eligible to influence their placement without changing native priority or Deadline
 
+#### Scenario: Learned bundle would destroy a hard commitment
+- **WHEN** qualified evidence favors a bundle but an ungrouped allocation preserves a hard task's only feasible capacity and the bundle would consume it
+- **THEN** the planner SHALL split or decline the learned bundle and retain the feasible hard commitment
+- **AND** reservation SHALL evaluate member timing and split fallback consistently with actual placement
+
 ### Requirement: Supported learning can outweigh soft preferences but not timing rules
 Sufficiently supported learning SHALL be allowed to outweigh configured energy and focus preferences, rather than only break ties. Learning alone SHALL NOT relax an explicit timing category. Deadline-driven timing exceptions SHALL remain available under the separate timing policy.
 
@@ -96,6 +101,15 @@ The system SHALL support repeated missed scheduled slots and identifiable human 
 #### Scenario: Move could be another automation
 - **WHEN** the planner sees a changed task time but cannot confidently attribute it to the human rather than another automation or recurrence advancement
 - **THEN** the move SHALL be excluded from learning rather than admitted with weaker confidence
+
+#### Scenario: Human authorizes a native Deadline or priority edit
+- **WHEN** an authorized Slack reply changes a native Deadline or priority without identifying a human move of a scheduled execution interval
+- **THEN** neither that edit nor its lifecycle acknowledgement SHALL count as human time-of-day or grouping preference evidence
+
+#### Scenario: Authorized edit produces a successor schedule
+- **WHEN** the planner generates or applies a successor schedule after an authorized Deadline or priority edit
+- **THEN** the generated placements SHALL NOT count as human rescheduling or positive grouping evidence
+- **AND** an actually applied slot MAY later qualify for a distinct missed-slot observation under the normal occurrence, grace, and collection rules
 
 #### Scenario: Completion is marked at night
 - **WHEN** a task is marked complete at night without evidence of its execution interval
