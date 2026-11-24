@@ -839,12 +839,15 @@ final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChan
         }
     }
 
-    private static String renderCalendar(CalendarEvent event) {
+    private String renderCalendar(CalendarEvent event) {
         [
             'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//todoist-caldav-sync//planner//EN',
             'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
             "UID:${escape(event.uid)}", "DTSTAMP:${ICAL_UTC.format(Instant.now())}",
-            "DTSTART:${ICAL_UTC.format(event.start)}", "DTEND:${ICAL_UTC.format(event.end)}",
+            event.allDay ? "DTSTART;VALUE=DATE:${ICAL_DATE.format(event.start.atZone(defaultZone).toLocalDate())}" :
+                "DTSTART:${ICAL_UTC.format(event.start)}",
+            event.allDay ? "DTEND;VALUE=DATE:${ICAL_DATE.format(event.end.atZone(defaultZone).toLocalDate())}" :
+                "DTEND:${ICAL_UTC.format(event.end)}",
             "SUMMARY:${escape(event.title)}", "DESCRIPTION:${escape(event.description ?: '')}",
             'END:VEVENT', 'END:VCALENDAR', ''
         ].join('\r\n')

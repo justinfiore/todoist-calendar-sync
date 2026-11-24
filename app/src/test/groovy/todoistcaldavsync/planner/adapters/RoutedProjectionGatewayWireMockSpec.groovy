@@ -1,6 +1,7 @@
 package todoistcaldavsync.planner.adapters
 
 import com.github.tomakehurst.wiremock.WireMockServer
+import com.github.tomakehurst.wiremock.extension.ResponseDefinitionTransformerV2
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import spock.lang.Specification
@@ -26,6 +27,71 @@ class RoutedProjectionGatewayWireMockSpec extends Specification {
     @TempDir Path stateDirectory
     def setup() { server = new WireMockServer(options().dynamicPort()); server.start() }
     def cleanup() { server.stop() }
+
+    def 'CalDAV persists date-only creation and both timed conversions in a non-UTC timezone'() {
+        given:
+        server.stop()
+        String payload
+        int version = 0
+        def transformer = [getName: { 'caldav-storage' }, transform: { served ->
+            switch (served.request.method.value()) {
+                case 'REPORT': return aResponse().withStatus(207)
+                    .withBody('<d:multistatus xmlns:d="DAV:"/>').build()
+                case 'PUT':
+                    payload = served.request.bodyAsString
+                    version++
+                    return aResponse().withStatus(version == 1 ? 201 : 204).build()
+                case 'GET': return payload == null ? aResponse().withStatus(404).build() :
+                    aResponse().withStatus(200).withHeader('ETag', '"v' + version + '"').withBody(payload).build()
+                default: throw new AssertionError('unexpected request')
+            }
+        }] as ResponseDefinitionTransformerV2
+        server = new WireMockServer(options().dynamicPort().extensions(transformer))
+        server.start()
+        server.stubFor(any(anyUrl()).willReturn(aResponse().withTransformers('caldav-storage')))
+        def provider = new CalDavHttpGateway(calendars: [[name: 'Work', url: server.baseUrl() + '/work/', managed_destination: true]],
+            managedCalendarNames: ['Work'], allowInsecureHttp: true, timezone: 'Pacific/Auckland')
+        def config = todoistcaldavsync.planner.config.PlannerConfig.fromMap(planner: [timezone: 'Pacific/Auckland',
+            availability: [working_windows: [weekday: ['09:00-17:00']]],
+            routing: [mode: 'legacy_rules', labelsToInclude: ['work'], rules: [[rule: 'work', calendarName: 'Work']]]])
+        def projections = new todoistcaldavsync.planner.sync.RoutedProjections(config, provider)
+        Closure target = { String due, int revision = 1 ->
+            def task = todoistcaldavsync.planner.domain.Task.fromTodoistMap(
+                [id: 'a', content: 'A', labels: ['work'], due: [date: due]],
+                config.durationResolver, config.manualLabel, config.timezone)
+            projections.fromMembers([projections.member(task)], 'Work', 'A', 'Human note', false, revision, task.allDayDue)
+        }
+
+        when:
+        CalendarEvent created = provider.createProjection(target('2026-11-24'))
+
+        then:
+        created.allDay
+        created.start == Instant.parse('2026-11-23T11:00:00Z')
+        created.end == Instant.parse('2026-11-24T11:00:00Z')
+        payload.contains('DTSTART;VALUE=DATE:20261124\r\nDTEND;VALUE=DATE:20261125')
+
+        when:
+        CalendarEvent timed = provider.replaceProjection(created, target('2026-11-24T14:13:00Z', 2))
+
+        then:
+        !timed.allDay
+        timed.start == Instant.parse('2026-11-24T14:13:00Z')
+        !payload.contains('VALUE=DATE')
+        payload.contains('DTSTART:20261124T141300Z')
+
+        when:
+        CalendarEvent dateOnly = provider.replaceProjection(timed, target('2026-11-26', 3))
+
+        then:
+        dateOnly.allDay
+        dateOnly.start == Instant.parse('2026-11-25T11:00:00Z')
+        dateOnly.end == Instant.parse('2026-11-26T11:00:00Z')
+        payload.contains('DTSTART;VALUE=DATE:20261126\r\nDTEND;VALUE=DATE:20261127')
+        server.verify(1, putRequestedFor(anyUrl()).withHeader('If-None-Match', equalTo('*')))
+        server.verify(1, putRequestedFor(anyUrl()).withHeader('If-Match', equalTo('"v1"')))
+        server.verify(1, putRequestedFor(anyUrl()).withHeader('If-Match', equalTo('"v2"')))
+    }
 
     private ProjectionCalendarGateway gateway(boolean google) {
         if (google) {
