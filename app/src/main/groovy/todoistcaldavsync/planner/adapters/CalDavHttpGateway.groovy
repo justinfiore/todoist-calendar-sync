@@ -394,6 +394,11 @@ final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChan
     }
 
     @Override
+    String newProjectionResourceId(String destination, String uid) {
+        projectionResourceId(destination, uid)
+    }
+
+    @Override
     CalendarEvent readResource(String destination, String resourceId) {
         CalendarEndpoint endpoint = requireManagedDestination(destination)
         URI resource = URI.create(resourceId)

@@ -98,11 +98,15 @@ final class ProjectionMembershipChange {
         if (!changed) return [status: 'unchanged', reports: [:]]
         flush.call()
         // A singleton edit at the same identity is handled by conditional in-place reconciliation.
-        if (targets.any { it.id == source.id && it.calendarName == source.calendarName }) {
+        if (targets.any { it.uid == source.uid && it.calendarName == source.calendarName }) {
             throw new IllegalStateException('same-resource schedule edit requires single projection reconciliation')
         }
         if (preview) return [status: 'preview_replacement', reports: reports,
             targets: targets.collect { ProjectionMetadata.eventMap(it) }]
+        targets = targets.collect { CalendarEvent target ->
+            ProjectionMetadata.eventFromMap(ProjectionMetadata.eventMap(target) +
+                [id: calendar.newProjectionResourceId(target.calendarName, target.uid)])
+        }
         replacement().replace([source], targets, [taskBaselines: taskBaselines, reports: reports, items: items])
     }
 

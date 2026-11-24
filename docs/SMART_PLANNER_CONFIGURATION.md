@@ -139,6 +139,9 @@ metadata retains destination, ordered occurrence intervals, membership revision,
 fingerprint, Due tuple, native-duration presence, effective minutes and task timestamps. The
 local projection also retains exact resource ID, ETag and verified event schedule. Historical
 records contain only one completed occurrence; active records cannot overlap occurrence coverage.
+Logical UIDs remain stable across regrouping, but Google provider IDs identify a single resource
+lifetime: a fresh UID-bound ID is allocated and journaled before creation, then reused on recovery.
+Cancelled Google IDs are never reinserted. CalDAV may reuse an absent resource URL conditionally.
 
 Replacement operations persist their immutable source/target resources, task/lifecycle evidence
 and per-resource pending/unknown/conflict/verified outcomes **before** mutation. They create and

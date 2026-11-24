@@ -269,7 +269,10 @@ class ApplicationStateStore {
                 String resourceId = (resource.event?.id ?: resource.id)?.toString()
                 String key = destination + '\u0000' + resourceId
                 Map previous = records[key]
-                if (previous?.status == 'cancelled') throw new IllegalStateException('cancelled projection requires explicit reconciliation')
+                String uid = (resource.event?.uid ?: resource.uid)?.toString()
+                if (previous?.status == 'cancelled' || records.values().any { it.status == 'cancelled' && it.event.uid == uid }) {
+                    throw new IllegalStateException('cancelled projection requires explicit reconciliation')
+                }
                 if (previous?.status != 'retired') return
                 CalendarEvent before = ProjectionMetadata.eventFromMap(previous.event as Map)
                 boolean restoredSchedule = false

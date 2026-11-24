@@ -40,6 +40,7 @@ class ProjectionMembershipE2ESpec extends Specification {
     WireMockServer server
     Map<String, Map> tasks = [:]
     Map<String, Map> events = [:]
+    Map<String, Map> tombstones = [:]
     List<String> mutations = []
     boolean interruptRetirement
     boolean interrupted
@@ -131,7 +132,7 @@ class ProjectionMembershipE2ESpec extends Specification {
             }
             String key = destination + ':' + (parts.size() > 5 ? parts[5] : '')
             if (method == 'GET') {
-                Map event = events[key]
+                Map event = events[key] ?: tombstones[key]
                 return event == null ? aResponse().withStatus(404).build() : okJson(JsonOutput.toJson(event)).build()
             }
             if (method == 'POST') {
@@ -146,7 +147,7 @@ class ProjectionMembershipE2ESpec extends Specification {
                     return okJson(JsonOutput.toJson(events[destination + ':' + body.id])).withStatus(201).build()
                 }
                 key = destination + ':' + body.id
-                if (events.containsKey(key)) return aResponse().withStatus(409).build()
+                if (events.containsKey(key) || tombstones.containsKey(key)) return aResponse().withStatus(409).build()
                 mutations << 'create:' + key
                 events[key] = body + [destination: destination, etag: '"created"', updated: '2026-11-24T13:00:00Z']
                 afterCreate?.call()
@@ -180,7 +181,7 @@ class ProjectionMembershipE2ESpec extends Specification {
             }
             if (request.getHeader('If-Match') != events[key]?.etag) return aResponse().withStatus(412).build()
             mutations << 'delete:' + key
-            events.remove(key)
+            tombstones[key] = events.remove(key) + [status: 'cancelled']
             if (interruptLegacyDelete && key.contains('legacy-')) {
                 interruptLegacyDelete = false
                 return aResponse().withStatus(503).build()
@@ -1356,6 +1357,8 @@ class ProjectionMembershipE2ESpec extends Specification {
         restored.status == 'verified'
         liveEvents().size() == 1
         liveEvents().first().start == Instant.parse('2026-11-25T22:13:00Z')
+        liveEvents().first().id != initial.id
+        tombstones['work:' + initial.id].status == 'cancelled'
         store.loadProjections().values().count { it.status == 'current' } == 1
         taskWrites.empty
 
@@ -1368,6 +1371,44 @@ class ProjectionMembershipE2ESpec extends Specification {
 
         where:
         removed << ['Due', 'inclusion']
+    }
+
+    def 'provider E2E return relocation allocates a fresh Google lifetime and resumes its unknown create exactly once'() {
+        given:
+        events.clear()
+        sync().project(normalize(tasks.a))
+        CalendarEvent initial = liveEvents().first()
+        tasks.a.labels = ['work', 'family']; tasks.a.updated_at = '2026-11-24T20:00:00Z'
+        sync().reconcile(initial, [normalize(tasks.a)], true)
+        CalendarEvent family = liveEvents().first()
+        tasks.a.labels = ['work']; tasks.a.updated_at = '2026-11-24T21:00:00Z'
+        interruptAfterCreate = 3
+
+        when:
+        sync().reconcile(family, [normalize(tasks.a)], true)
+
+        then:
+        thrown(RuntimeException)
+        mutations.count { it.startsWith('create:') } == 3
+
+        when:
+        Map pending = store.loadSyncOperations().values().find { it.status == 'pending' }
+        String journaledId = pending.intent.resources.values().find { it.action == 'create' }.event.id
+        service().resume(pending.id.toString())
+        CalendarEvent restored = liveEvents().first()
+
+        then:
+        liveEvents().size() == 1
+        restored.uid == initial.uid
+        restored.id == journaledId
+        restored.id != initial.id
+        restored.calendarName == 'Work'
+        restored.start == initial.start && restored.end == initial.end
+        tombstones['work:' + initial.id].status == 'cancelled'
+        tombstones['family:' + family.id].status == 'cancelled'
+        mutations.count { it.startsWith('create:') } == 3
+        store.loadProjections().values().count { it.status == 'current' } == 1
+        taskWrites.empty
     }
 
     def 'provider E2E competing edits cancellation and lost-state disagreements never choose a winner'() {

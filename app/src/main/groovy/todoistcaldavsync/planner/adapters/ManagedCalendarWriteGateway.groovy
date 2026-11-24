@@ -111,6 +111,12 @@ class ManagedCalendarWriteGateway implements ProjectionCalendarGateway {
     }
 
     @Override
+    String newProjectionResourceId(String destination, String uid) {
+        requireManagedDestination(destination)
+        projectionDelegate().newProjectionResourceId(destination, uid)
+    }
+
+    @Override
     CalendarEvent readResource(String destination, String id) {
         requireManagedDestination(destination)
         projectionDelegate().readResource(destination, id)

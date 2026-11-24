@@ -175,6 +175,8 @@ final class LegacyCalendarMigration {
                             (config.routing.includes(task) ? 'unroutable' : 'ineligible')]
                     } else {
                         if (calendar.findEventByUid(event.uid) != null) throw new IllegalStateException('preexisting planner identity requires separate reconciliation')
+                        event = ProjectionMetadata.eventFromMap(ProjectionMetadata.eventMap(event) +
+                            [id: calendar.newProjectionResourceId(event.calendarName, event.uid)])
                         current.created[key([destination: event.calendarName, id: event.id])] =
                             [target: ProjectionMetadata.eventMap(event), outcome: 'pending', taskId: task.id]
                     }
@@ -345,7 +347,12 @@ final class LegacyCalendarMigration {
         Map expected = [:]
         (current.reconstructionTasks as List<Map>).each { Map raw ->
             CalendarEvent event = new RoutedProjections(config, calendar).fromTask(normalize(raw))
-            if (event != null) expected[key([destination: event.calendarName, id: event.id])] = ProjectionMetadata.eventMap(event)
+            if (event != null) {
+                Map row = current.created.values().find { it.taskId == raw.id.toString() }
+                if (row == null) throw new IllegalStateException('reconstruction coverage mismatch')
+                event = ProjectionMetadata.eventFromMap(ProjectionMetadata.eventMap(event) + [id: row.target.id])
+                expected[key([destination: event.calendarName, id: event.id])] = ProjectionMetadata.eventMap(event)
+            }
         }
         if (expected.keySet() != current.created.keySet()) throw new IllegalStateException('reconstruction coverage mismatch')
         current.created.each { String identity, Map row ->

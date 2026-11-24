@@ -148,6 +148,8 @@ final class RoutedScheduleReconciler {
     private Map forward(CalendarEvent expected, CalendarEvent target, List<Task> tasks, String action = null) {
         store.withMutationLock {
             tasks.each { writer.preflight(it) }
+            if (expected == null) target = ProjectionMetadata.eventFromMap(ProjectionMetadata.eventMap(target) +
+                [id: calendar.newProjectionResourceId(target.calendarName, target.uid)])
             String id = UUID.randomUUID().toString()
             store.beginSyncOperation(id, [type: 'schedule-forward', taskIds: tasks*.id,
                 routingFingerprint: config.routing.fingerprint,

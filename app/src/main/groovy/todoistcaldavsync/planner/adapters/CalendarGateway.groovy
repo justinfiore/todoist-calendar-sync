@@ -79,6 +79,8 @@ interface CalendarWriteGateway {
 /** Exact-resource capabilities used by durable routed operations, never generic UID adoption. */
 interface ProjectionCalendarGateway extends CalendarReadGateway, CalendarWriteGateway {
     String projectionResourceId(String destination, String uid)
+    /** Allocate once before journaling a create; retries must use the journaled ID. */
+    String newProjectionResourceId(String destination, String uid)
     CalendarEvent readResource(String destination, String resourceId)
     CalendarEvent createProjection(CalendarEvent target)
     CalendarEvent createReplacement(CalendarEvent target, ProjectionReplacementPermit permit)

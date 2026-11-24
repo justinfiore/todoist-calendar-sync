@@ -407,6 +407,12 @@ final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, Calen
     }
 
     @Override
+    String newProjectionResourceId(String destination, String uid) {
+        // Google retains cancelled IDs. Logical UID is stable; each resource lifetime is new.
+        projectionResourceId(destination, uid) + UUID.randomUUID().toString().replace('-', '')
+    }
+
+    @Override
     CalendarEvent readResource(String destination, String resourceId) {
         CalendarMapping mapping = requireManagedDestination(destination)
         if (!resourceId) throw new IllegalArgumentException('exact Google resource ID is required')
@@ -441,8 +447,9 @@ final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, Calen
     private CalendarEvent createProjectionResource(CalendarEvent target, ProjectionReplacementPermit permit) {
         requireOwnedIncoming(target)
         ProjectionMetadata.read(target)
-        if (target.id != projectionResourceId(target.calendarName, target.uid)) {
-            throw new IllegalArgumentException('projection create requires its deterministic provider resource ID')
+        String prefix = projectionResourceId(target.calendarName, target.uid)
+        if (target.id != prefix && !(target.id ==~ (java.util.regex.Pattern.quote(prefix) + '[a-f0-9]{32}'))) {
+            throw new IllegalArgumentException('projection create requires a UID-bound provider resource lifetime')
         }
         List<CalendarEvent> collisions = findIdentityResources(target.uid)
         if (permit != null) permit.validate(target, collisions)

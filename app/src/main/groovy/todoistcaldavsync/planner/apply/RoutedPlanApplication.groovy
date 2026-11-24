@@ -76,7 +76,7 @@ final class RoutedPlanApplication {
                     }, destinations.first(), block.title, 'Approved plan ' + plan.id)
                     String uid = ManagedEventIds.uidForOccurrences(members*.occurrenceIdentity()*.occurrenceKey())
                     CalendarEvent before = sources.find { it.uid == uid && it.calendarName == destinations.first() }
-                    String resourceId = before?.id ?: calendar.projectionResourceId(destinations.first(), uid)
+                    String resourceId = before?.id ?: calendar.newProjectionResourceId(destinations.first(), uid)
                     String key = 'calendar:' + destinations.first() + ':' + resourceId
                     resources[key] = [action: before == null ? 'create' : 'update', uid: uid, id: resourceId,
                         destination: destinations.first(), title: block.title, taskIds: block.taskIds,
