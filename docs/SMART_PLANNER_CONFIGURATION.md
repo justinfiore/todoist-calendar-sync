@@ -174,7 +174,10 @@ No split/departure changes residual Todoist Dues, native durations, Deadline or 
 resizes allocate positive whole minutes proportionally: [30,60] → 60 gives [20,40], [10,10] → 21
 gives [11,10] (persisted-order tie), and [1,1,98] → 3 gives [1,1,1]. Too-short/non-minute spans and
 calendar all-day/timed conversions are withheld. Hermetic CLI/daemon scenarios cover these contracts;
-they are not evidence that installed-provider, migration or live acceptance has passed.
+fresh synthetic installed-launcher checks also cover enabled CalDAV sync, ambiguous-create restart,
+and deletion-first migration through verified sync release. Installed release-planning and rollback
+were not exercised in that follow-up; rollback has in-process provider E2E coverage. These checks
+do not substitute for isolated live Google/Todoist acceptance or production handoff approval.
 
 #### Independent routed synchronization
 

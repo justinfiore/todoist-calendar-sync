@@ -4,38 +4,42 @@
 Google Calendar API adapter for SmartPlanner calendar reads, global UID collision lookup, managed-output-only writes/deletes, and explicit QA-only calendar provisioning.
 ## Requirements
 ### Requirement: Google Calendar API provider implements calendar ports
-The system SHALL provide a Google Calendar API gateway that implements `CalendarReadGateway` and `CalendarWriteGateway` for explicitly configured Google calendars, preserving configured calendar display names in domain events.
+The system SHALL implement calendar read/write ports for explicitly configured Google calendars, preserve display names, and perform global identity lookup across those configured calendars. Ordinary lookup SHALL reject duplicate logical identities; relocation recovery SHALL use exact recorded source/target resources without treating arbitrary duplicates as owned.
 
 #### Scenario: Read a bounded time range from configured calendars
 - **WHEN** SmartPlanner requests events for a positive time range using the Google provider
-- **THEN** the gateway SHALL query every configured calendar with bounded pagination and return only events within the requested range as `CalendarEvent` values
+- **THEN** the gateway SHALL query every configured calendar with bounded pagination and return only events within that range as domain events
 
 #### Scenario: Find planner UID globally across configured Google calendars
 - **WHEN** SmartPlanner looks up an event UID using the Google provider
-- **THEN** the gateway SHALL search every configured Google calendar by the provider iCalendar UID as a collision barrier and by the writable private `plannerUid` extended property for planner-owned identity, and SHALL return null only if no configured calendar contains either matching identity
+- **THEN** the gateway SHALL search every configured calendar by provider iCalendar UID and writable private planner UID and return null only if neither identity matches
 
 #### Scenario: Duplicate UID fails safely
-- **WHEN** more than one configured Google calendar contains the same provider iCalendar UID or private planner UID
-- **THEN** the gateway SHALL raise a classified collision error and SHALL not treat the UID as missing
+- **WHEN** several resources match an identity and they are not the exact pair of an unresolved recorded relocation
+- **THEN** the gateway SHALL raise a collision error and SHALL NOT adopt, overwrite, or treat them as missing
 
 ### Requirement: Google event writes preserve managed ownership boundaries
-The Google Calendar API gateway SHALL create, update, or delete events only in the configured managed output calendar and only when existing SmartPlanner ownership, planner UID, and expected block metadata checks pass.
+The Google Calendar API gateway SHALL mutate events only within explicitly managed destinations and only with verified planner ownership, identity, occurrence and membership. Single-output configurations SHALL retain their original boundary. A recorded relocation SHALL be the only exception permitting the same logical planner identity temporarily in two managed destinations; unrelated UID collisions SHALL remain errors.
 
 #### Scenario: Owned planned event is created or updated
-- **WHEN** an event targets the managed output calendar and contains valid planner UID and ownership metadata
-- **THEN** the gateway SHALL create or update only the corresponding Google event, SHALL persist the deterministic planner UID in a private extended property, and SHALL not write the server-generated/read-only iCalendar UID
+- **WHEN** an event targets its validated managed destination with valid planner identity and ownership metadata
+- **THEN** the gateway SHALL create/update only that resource, persist deterministic planner UID in writable private metadata, and SHALL NOT write server-generated/read-only iCalendar UID
 
 #### Scenario: Write outside managed output is refused
-- **WHEN** an event targets any configured Google calendar other than the managed output calendar
-- **THEN** the gateway SHALL refuse before sending a Google Calendar mutation request
+- **WHEN** an event targets a read-only calendar, an unconfigured destination, or a destination inconsistent with its validated route
+- **THEN** the gateway SHALL refuse before sending a Google Calendar mutation
 
 #### Scenario: Delete requires live ownership revalidation
-- **WHEN** deletion is requested for a planner event UID and expected block ID
-- **THEN** the gateway SHALL reread the live event globally and SHALL delete only if it is in the managed output calendar and its ownership/block metadata match
+- **WHEN** deletion is requested for a planner identity and expected block/membership revision
+- **THEN** the gateway SHALL reread the exact live resource and delete only when managed destination, ownership and expected metadata/version match
 
 #### Scenario: Indeterminate mutation is not blindly retried
-- **WHEN** a create, update, or delete request times out or fails after dispatch such that remote outcome is unknown
-- **THEN** the gateway SHALL classify the result as ambiguous and SHALL not retry the mutation automatically
+- **WHEN** a create, update, delete or relocation request has an unknown remote outcome
+- **THEN** the gateway SHALL report ambiguity and require live reconciliation before another mutation
+
+#### Scenario: Routed relocation partially completes
+- **WHEN** a persisted relocation has a verified old source resource and a verified replacement in the target calendar
+- **THEN** reconciliation SHALL recognize only those recorded resource IDs as an authorized transitional pair and remove the old one only after ownership/version revalidation
 
 ### Requirement: QA-only Google calendar provisioning is explicit
 The system SHALL provide an explicit QA-only operation or helper that lists and creates named Google calendars through the authenticated Google Calendar API using only the separate QA token store and SHALL not invoke that operation from normal capacity, preview, apply, apply-safe, deliver, feedback, or daemon flows.
