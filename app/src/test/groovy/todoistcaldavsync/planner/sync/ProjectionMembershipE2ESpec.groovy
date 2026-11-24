@@ -158,6 +158,13 @@ class ProjectionMembershipE2ESpec extends Specification {
             if (method == 'PATCH') {
                 if (request.getHeader('If-Match') != events[key]?.etag) return aResponse().withStatus(412).build()
                 Map body = new JsonSlurper().parseText(request.bodyAsString) as Map
+                for (String field : ['start', 'end']) {
+                    if (!(body[field] instanceof Map)) continue
+                    Map merged = (events[key][field] ?: [:]) + body[field]
+                    merged = merged.findAll { name, value -> value != null }
+                    if (merged.date && merged.dateTime) return aResponse().withStatus(400).build()
+                    body[field] = merged
+                }
                 events[key] += body + [etag: '"updated"', updated: '2026-11-24T18:00:00Z']
                 mutations << 'update:' + key
                 if (interruptUpgrade) {
@@ -1264,6 +1271,20 @@ class ProjectionMembershipE2ESpec extends Specification {
         taskWrites.isEmpty()
         sync().reconcile(actual, [normalize(tasks.a)], true).status == 'unchanged'
         mutations.size() == 2
+
+        when: 'the user explicitly converts the timed task back to date-only'
+        tasks.a.due = [date: '2026-11-27']
+        tasks.a.updated_at = '2026-11-24T20:00:00Z'
+        Map reverted = sync().reconcile(actual, [normalize(tasks.a)], true)
+        CalendarEvent allDay = liveEvents().first()
+
+        then:
+        reverted.status == 'verified'
+        allDay.allDay
+        allDay.start == Instant.parse('2026-11-27T00:00:00Z')
+        allDay.end == Instant.parse('2026-11-28T00:00:00Z')
+        events.values().first().start == [date: '2026-11-27']
+        taskWrites.empty
 
         where:
         date << ['2026-11-24T23:41:00Z', '2026-11-24']

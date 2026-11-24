@@ -471,8 +471,16 @@ final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, Calen
         }
         ProjectionMetadata.requireUnchanged(expected, readResource(expected.calendarName, expected.id))
         CalendarMapping mapping = requireManagedDestination(target.calendarName)
+        Map body = toGoogleEvent(target, timezone)
+        if (expected.allDay != target.allDay) {
+            // PATCH retains omitted nested fields; explicitly remove the old representation.
+            [body.start, body.end].each { Map time ->
+                if (target.allDay) { time.dateTime = null; time.timeZone = null }
+                else time.date = null
+            }
+        }
         GatewayResponse response = send('PATCH', eventsPath(mapping.id) + '/' + segment(expected.id), [:],
-            JsonOutput.toJson(toGoogleEvent(target, timezone)).getBytes(StandardCharsets.UTF_8), true,
+            JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true,
             ['If-Match': expected.etag])
         requireSuccess(response, 'replace exact projection')
         verifyProjectionWrite(target)
