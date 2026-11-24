@@ -24,6 +24,7 @@ final class LlmRequest {
     final Set<String> allowedEventIds
     final String expectedProposalId
     final Set<String> allowedFeedbackActions
+    final Set<Integer> allowedRiskNumbers
     final Instant planningRangeStart
     final Instant planningRangeEnd
     final Instant requestedAt
@@ -45,6 +46,8 @@ final class LlmRequest {
         this.allowedEventIds = exactIdentifiers(values.allowedEventIds, 'allowedEventIds', 256)
         this.expectedProposalId = optional(values.expectedProposalId)
         this.allowedFeedbackActions = Collections.unmodifiableSet(new LinkedHashSet<>(values.allowedFeedbackActions ?: []))
+        this.allowedRiskNumbers = Collections.unmodifiableSet(new LinkedHashSet<>(
+            (values.allowedRiskNumbers ?: []).collect { (it as Number).intValue() }))
         this.planningRangeStart = parseInstant(values.planningRangeStart, 'planningRangeStart')
         this.planningRangeEnd = parseInstant(values.planningRangeEnd, 'planningRangeEnd')
         this.requestedAt = parseInstant(values.requestedAt, 'requestedAt') ?: Instant.now()
@@ -60,6 +63,9 @@ final class LlmRequest {
         if (suggestionType == 'temporary_planning_overrides' &&
             (planningRangeStart == null || planningRangeEnd == null || !planningRangeEnd.isAfter(planningRangeStart))) {
             throw new IllegalArgumentException('temporary override requests require a positive planning range')
+        }
+        if (suggestionType == 'deadline_risk_mitigation' && !allowedRiskNumbers) {
+            throw new IllegalArgumentException('deadline risk requests require allowed row numbers')
         }
         if (suggestionType == 'conversational_feedback_interpretation') {
             if (!(expectedProposalId ==~ /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/)) throw new IllegalArgumentException('conversational feedback requires valid expectedProposalId')

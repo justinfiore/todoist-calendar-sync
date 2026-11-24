@@ -28,13 +28,17 @@ class PlanScorer {
     static final long INFEASIBLE = Long.MIN_VALUE / 4
 
     private final PlannerConfig config
+    private final DeadlinePolicy deadlinePolicy
 
     PlanScorer(PlannerConfig config) {
         if (config == null) {
             throw new IllegalArgumentException('PlannerConfig is required')
         }
         this.config = config
+        this.deadlinePolicy = DeadlinePolicy.from(config)
     }
+
+    DeadlinePolicy getDeadlinePolicy() { deadlinePolicy }
 
     /**
      * Priority weight: Todoist 4 (P1) is highest urgency.
@@ -52,33 +56,46 @@ class PlanScorer {
     /**
      * Deadline urgency: sooner deadlines score higher. No deadline is mild filler preference.
      */
-    long deadlineUrgency(Task task, Instant placementEnd, Instant now, Instant rangeEnd) {
+    /**
+     * Deadline urgency from the shared policy. Hard lateness is infeasible.
+     * Inside the applicable local-day window, time urgency rises as the Deadline approaches
+     * and scarcity of remaining feasible capacity raises it further. Overdue soft tasks keep
+     * the elevated window urgency instead of falling through to a lateness penalty that can
+     * erase it. Outside the window, only a mild horizon term remains, so a distant hard task
+     * does not unconditionally outrank nearer work.
+     *
+     * @param scarcityMinutes bounded scarcity from {@link DeadlinePolicy#scarcity}, or null when
+     *        pre-Deadline coverage is unknown. Unknown coverage adds no invented pressure.
+     */
+    long deadlineUrgency(Task task, Instant placementEnd, Instant now, Instant rangeEnd,
+                         Long scarcityMinutes = null) {
         if (task.deadline == null) {
             return 10L
         }
         boolean hard = isHard(task)
-        if (placementEnd != null && placementEnd.isAfter(task.deadline)) {
-            if (hard) return INFEASIBLE
-            long lateMinutes = Math.max(1L, Duration.between(task.deadline, placementEnd).toMinutes())
-            return -Math.min(800L, 100L + lateMinutes / 15L)
+        boolean late = placementEnd != null && placementEnd.isAfter(task.deadline)
+        if (late && hard) return INFEASIBLE
+        boolean inWindow = deadlinePolicy.inUrgencyWindow(task, now)
+        if (!inWindow && !late) {
+            Instant horizon = rangeEnd ?: (now + Duration.ofDays(14))
+            long totalSec = Math.max(1L, Duration.between(now, horizon).seconds)
+            long remainingSec = Duration.between(now, task.deadline).seconds
+            if (remainingSec <= 0) return 40L
+            double ratio = 1.0d - Math.min(1.0d, (double) remainingSec / (double) totalSec)
+            return Math.round(ratio * 40.0d)
         }
-        if (hard && config.recurrence?.enabled == true) {
-            Instant soonBoundary = now.atZone(config.timezone)
-                .plusDays(config.recurrence.hardDeadlineSoonDays).toInstant()
-            if (!task.deadline.isBefore(soonBoundary)) return 0L
-            long remainingMinutes = Math.max(0L, Duration.between(now, task.deadline).toMinutes())
-            long windowMinutes = Math.max(1L, Duration.between(now, soonBoundary).toMinutes())
-            return 600L + Math.round(600d * (1d - Math.min(1d, remainingMinutes / (double) windowMinutes)))
+        long time = deadlinePolicy.timeUrgency(task, now)
+        long scarcity = scarcityMinutes == null ? 0L : Math.max(0L, Math.min(DeadlinePolicy.SCARCITY_SPAN, scarcityMinutes))
+        long floor = hard ? DeadlinePolicy.HARD_WINDOW_FLOOR : DeadlinePolicy.SOFT_WINDOW_FLOOR
+        // Scarcity separates otherwise equal deadlines without exceeding one priority step,
+        // so a constrained P4 does not jump a roomy P1 that shares the same Deadline.
+        long pressure = Math.min(30L, scarcity / 20L)
+        // Overdue soft keeps the window floor plus saturated time urgency. The old capped
+        // lateness penalty must not replace it.
+        if (late && !hard) {
+            return floor + DeadlinePolicy.TIME_URGENCY_SPAN + pressure
         }
-        Instant horizon = rangeEnd ?: (now + Duration.ofDays(14))
-        long totalSec = Math.max(1L, Duration.between(now, horizon).seconds)
-        long remainingSec = Duration.between(now, task.deadline).seconds
-        if (remainingSec <= 0) {
-            return 500L
-        }
-        // 0..500 scaled by how soon the deadline is relative to horizon
-        double ratio = 1.0d - Math.min(1.0d, (double) remainingSec / (double) totalSec)
-        return Math.round(ratio * 500.0d)
+        return floor + time + pressure
     }
 
     long contextScore(Task task, Instant start, Instant end) {
@@ -188,7 +205,8 @@ class PlanScorer {
             return INFEASIBLE
         }
         long score = 0L
-        long urg = deadlineUrgency(task, end, now, rangeEnd)
+        Long scarcity = scarcityFor(task, now, placeableSlot)
+        long urg = deadlineUrgency(task, end, now, rangeEnd, scarcity)
         if (urg == INFEASIBLE) {
             return INFEASIBLE
         }
@@ -203,18 +221,29 @@ class PlanScorer {
         score -= contextSwitchPenalty(previousProjectId, task)
         score -= churnPenalty(task, start, previousStart, manualOverride, now)
         long needMins = Duration.between(start, end).toMinutes()
-        long slotMins = usableSlotMinutes(placeableSlot, start, end, isHard(task) ? task.deadline : null)
+        // Fragmentation uses the native Deadline even when it is soft. Clipping only the hard
+        // cutoff made a soft task's leftover look like a full slot and hid the penalty.
+        long slotMins = usableSlotMinutes(placeableSlot, start, end, task.deadline)
         score -= fragmentedSlotPenalty(slotMins, needMins)
-        // Prefer earlier starts as mild stable tie preference inside score (still secondary to id tie-break)
-        long minutesFromNow = Duration.between(now, start).toMinutes()
-        score -= Math.min(50L, Math.max(0L, minutesFromNow / 60L))
         return score
     }
 
     boolean isHard(Task task) {
-        if (config.recurrence?.enabled != true) return task?.deadline != null
-        String hardLabel = config.recurrence?.hardLabel ?: 'hard'
-        task?.labels?.any { it.equalsIgnoreCase(hardLabel) } == true
+        deadlinePolicy.isHard(task)
+    }
+
+    /**
+     * Scarcity against the candidate slot only. The scheduler adds competing-work pressure
+     * when it knows the rest of the queue; unknown coverage stays null rather than zero.
+     */
+    private Long scarcityFor(Task task, Instant now, TimeSlot placeableSlot) {
+        if (task?.deadline == null || !deadlinePolicy.inUrgencyWindow(task, now)) return null
+        if (placeableSlot == null) return null
+        Instant end = placeableSlot.end.isAfter(task.deadline) ? task.deadline : placeableSlot.end
+        if (!end.isAfter(placeableSlot.start)) return DeadlinePolicy.SCARCITY_SPAN
+        long usable = Duration.between(placeableSlot.start, end).toMinutes()
+        DeadlinePolicy.OptionalLong pressure = deadlinePolicy.scarcity(task, usable, 0L)
+        return pressure.present ? pressure.value : null
     }
 
     /**
@@ -242,12 +271,15 @@ class PlanScorer {
     }
 
     /**
-     * Deterministic ordering of tasks before greedy placement.
-     * Deadline soonest, then priority desc, then id.
+     * Deterministic ordering of otherwise equivalent tasks.
+     * Target date, then native priority, then stable id. Hardness is not an unconditional key:
+     * hard-capacity protection is a placement constraint, not a sort.
      */
     static int compareTaskOrder(Task a, Task b) {
         Instant da = a.deadline ?: Instant.MAX
         Instant db = b.deadline ?: Instant.MAX
+        // Equal targets keep native priority ahead of id. A lower id must not claim the only
+        // slot from a higher native priority that shares the Deadline.
         int c = da <=> db
         if (c != 0) {
             return c

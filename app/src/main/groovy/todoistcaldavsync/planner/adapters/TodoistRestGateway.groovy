@@ -36,6 +36,7 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
     private final int maxPages
     private final long maxResponseBytes
     private final HttpClient client
+    private volatile String lastSyncToken
     private final boolean includeProjectNames
 
     TodoistRestGateway(Map options = [:]) {
@@ -60,6 +61,7 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
     }
 
     URI getBaseUri() { baseUri }
+    String getLastSyncToken() { lastSyncToken }
     String getTokenEnv() { tokenEnv }
 
     @Override
@@ -148,7 +150,26 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
 
     @Override
     void updateTaskDeadline(String taskId, String deadlineIso) {
-        throw new UnsupportedOperationException('Planner Todoist adapter never mutates deadlines')
+        throw new UnsupportedOperationException(
+            'Ordinary planner writes do not mutate Deadline. Use updateAuthorizedDeadline from a validated risk reply.')
+    }
+
+    /**
+     * Exact authorized Deadline edit. Not used by preview, warning generation, or Calendar apply.
+     * The command id is the caller's stable receipt id so a redelivery is not a new write.
+     */
+    TodoistCommandResult updateAuthorizedDeadline(String taskId, String deadlineDate, String commandId) {
+        if (!taskId || !(deadlineDate ==~ /\d{4}-\d{2}-\d{2}/) || !validUuid(commandId)) {
+            throw new IllegalArgumentException('taskId, YYYY-MM-DD deadline, and UUID commandId are required')
+        }
+        sendItemUpdate(taskId, commandId, [deadline: [date: deadlineDate]])
+    }
+
+    TodoistCommandResult updateAuthorizedPriority(String taskId, int apiPriority, String commandId) {
+        if (!taskId || apiPriority < 1 || apiPriority > 4 || !validUuid(commandId)) {
+            throw new IllegalArgumentException('taskId, API priority 1..4, and UUID commandId are required')
+        }
+        sendItemUpdate(taskId, commandId, [priority: apiPriority])
     }
 
     private TodoistCommandResult sendItemUpdate(String taskId, String commandId, Map fields) {
@@ -167,7 +188,10 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
             return new TodoistCommandResult(TodoistCommandState.AMBIGUOUS, commandId)
         }
         Object status = response.sync_status[commandId]
-        if (status == 'ok') return new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+        if (status == 'ok') {
+            if (response.sync_token) lastSyncToken = response.sync_token.toString()
+            return new TodoistCommandResult(TodoistCommandState.COMMITTED, commandId)
+        }
         String code = status instanceof Map ? (status.error_code ?: status.error)?.toString() : 'rejected'
         new TodoistCommandResult(TodoistCommandState.REJECTED, commandId, code)
     }

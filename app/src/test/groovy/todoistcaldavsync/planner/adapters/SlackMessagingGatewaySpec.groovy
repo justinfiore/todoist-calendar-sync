@@ -28,6 +28,48 @@ class SlackMessagingGatewaySpec extends Specification {
             .build()
     }
 
+    def "chat payload carries a native deadline risk table and a text fallback"() {
+        given:
+        def captured = new AtomicReference<SlackMessagingGateway.HttpCall>()
+        def gw = new SlackMessagingGateway(
+            mode: 'chat_api',
+            botTokenEnv: 'SLACK_BOT_TOKEN',
+            destination: 'C123',
+            envResolver: { String n -> n == 'SLACK_BOT_TOKEN' ? 'xoxb-test' : null },
+            transport: { SlackMessagingGateway.HttpCall c ->
+                captured.set(c)
+                new SlackMessagingGateway.HttpResult(200, '{"ok":true,"ts":"1.2","channel":"C123"}')
+            },
+            clock: { now }
+        )
+        def message = Message.builder()
+            .kind('proposal').subject('Proposal prop-1').body('1. Same <https://app.todoist.com/app/task/a>')
+            .destination('C123').planId('p').planVersion(1).planHash('abc').proposalId('prop-1')
+            .idempotencyKey('k').createdAt(now)
+            .metadata([threadTs: '1.1', deadlineRisks: [
+                [number: 1, taskId: 'a', content: 'Same <script>', projectName: 'Alpha',
+                 deadlineDate: '2026-08-07', mode: 'hard', priority: 'P4',
+                 url: 'https://app.todoist.com/app/task/a'],
+                [number: 2, taskId: 'b', content: 'Same <script>', projectName: 'Beta',
+                 deadlineDate: '2026-08-08', mode: 'soft', priority: 'P1',
+                 url: 'https://app.todoist.com/app/task/b']
+            ]]).build()
+
+        when:
+        def receipt = gw.send(message)
+        def payload = new groovy.json.JsonSlurper().parseText(captured.get().body)
+
+        then:
+        receipt.status == 'DELIVERED'
+        payload.thread_ts == '1.1'
+        payload.text.contains('1. Same')
+        payload.blocks.find { it.type == 'table' }.rows.size() == 3
+        payload.blocks.find { it.type == 'table' }.rows[1][0].text == '1'
+        payload.blocks.find { it.type == 'table' }.rows[1][1].elements[0].elements[0].url ==
+            'https://app.todoist.com/app/task/a'
+        payload.blocks.find { it.type == 'table' }.rows[2][2].text == 'Beta'
+    }
+
     def "webhook send succeeds with injectable transport and escapes mrkdwn"() {
         given:
         def captured = new AtomicReference<SlackMessagingGateway.HttpCall>()

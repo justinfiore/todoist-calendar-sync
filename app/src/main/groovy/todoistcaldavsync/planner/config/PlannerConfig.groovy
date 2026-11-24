@@ -41,6 +41,7 @@ final class PlannerConfig {
     final MessagingConfig messaging
     final AiConfig ai
     final RecurrenceConfig recurrence
+    final DeadlinePolicyConfig deadlinePolicy
     final boolean calendarWritebackEnabled
 
     private static final Set<String> VALID_MODES = ['preview', 'approval_required', 'apply_safe_changes', 'fully_automated'] as Set
@@ -65,6 +66,7 @@ final class PlannerConfig {
         this.messaging = b.messaging ?: MessagingConfig.disabled()
         this.ai = b.ai ?: AiConfig.disabled()
         this.recurrence = b.recurrence ?: RecurrenceConfig.disabled()
+        this.deadlinePolicy = b.deadlinePolicy ?: DeadlinePolicyConfig.defaults(b.messaging)
         this.calendarWritebackEnabled = b.calendarWritebackEnabled
     }
 
@@ -181,6 +183,7 @@ final class PlannerConfig {
             p.messaging instanceof Map ? p.messaging as Map : null, timezone, errors)
         AiConfig ai = parseAi(p.ai instanceof Map ? p.ai as Map : null, errors)
         RecurrenceConfig recurrence = parseRecurrence(tasks, errors)
+        DeadlinePolicyConfig deadlinePolicy = parseDeadlinePolicy(tasks, messaging, errors)
         boolean calendarWritebackEnabled = parseCalendarWriteback(p, errors)
 
         if (!errors.isEmpty()) {
@@ -206,6 +209,7 @@ final class PlannerConfig {
             .messaging(messaging)
             .ai(ai)
             .recurrence(recurrence)
+            .deadlinePolicy(deadlinePolicy)
             .calendarWritebackEnabled(calendarWritebackEnabled)
             .build()
     }
@@ -226,20 +230,23 @@ final class PlannerConfig {
     }
 
     private static RecurrenceConfig parseRecurrence(Map tasks, List errors) {
-        Map raw = tasks.recurrence instanceof Map ? tasks.recurrence as Map : tasks
+        Map raw = tasks.recurrence instanceof Map ? tasks.recurrence as Map : [:]
+        if (tasks.recurrence instanceof Map) {
+            if (mapHasKey(raw, 'hard_label', 'hardLabel')) {
+                errors << 'planner.tasks.recurrence.hard_label is no longer a deadline policy. ' +
+                    'Move it to planner.tasks.hard_label (blank means no label match).'
+            }
+            if (mapHasKey(raw, 'hard_deadline_soon_days', 'hardDeadlineSoonDays')) {
+                errors << 'planner.tasks.recurrence.hard_deadline_soon_days is no longer a deadline policy. ' +
+                    'Move it to planner.tasks.hard_deadline_soon_days (default 7).'
+            }
+        }
         boolean enabled = raw.recurrence_enabled == true || raw.enabled == true && tasks.recurrence instanceof Map
         String seen = (raw.seen_label ?: raw.seenLabel ?: 'smartplanner-seen').toString()
         String onboard = (raw.onboard_label ?: raw.onboardLabel ?: 'smartplanner-onboard').toString()
-        String hard = (raw.hard_label ?: raw.hardLabel ?: 'hard').toString()
-        int soon = 5
-        def soonRaw = raw.containsKey('hard_deadline_soon_days') ? raw.hard_deadline_soon_days :
-            (raw.containsKey('hardDeadlineSoonDays') ? raw.hardDeadlineSoonDays : 5)
-        try { soon = soonRaw as int }
-        catch (Exception ignored) { errors << 'planner.tasks.recurrence.hard_deadline_soon_days must be a positive integer' }
-        if (soon <= 0) errors << 'planner.tasks.recurrence.hard_deadline_soon_days must be positive'
-        if ([seen, onboard, hard].any { !it }) errors << 'planner recurrence labels must not be empty'
-        if ([seen.toLowerCase(Locale.ROOT), onboard.toLowerCase(Locale.ROOT), hard.toLowerCase(Locale.ROOT)].toSet().size() != 3) {
-            errors << 'planner recurrence seen, onboard, and hard labels must be distinct'
+        if (!seen || !onboard) errors << 'planner recurrence labels must not be empty'
+        if (seen.toLowerCase(Locale.ROOT) == onboard.toLowerCase(Locale.ROOT)) {
+            errors << 'planner recurrence seen and onboard labels must be distinct'
         }
         Instant cutoff = null
         def cutoffRaw = raw.rollout_cutoff ?: raw.rolloutCutoff
@@ -248,7 +255,75 @@ final class PlannerConfig {
             catch (Exception ignored) { errors << 'planner.tasks.recurrence.rollout_cutoff must be an ISO-8601 instant' }
         }
         if (enabled && cutoff == null) errors << 'planner.tasks.recurrence.rollout_cutoff is required when recurrence lifecycle is enabled'
-        new RecurrenceConfig(enabled, seen, onboard, hard, cutoff, soon)
+        new RecurrenceConfig(enabled, seen, onboard, cutoff)
+    }
+
+    /**
+     * Explicit deadline policy. Recurrence enablement is not an input.
+     * Old nested policy keys are rejected above so two authorities cannot coexist.
+     */
+    private static DeadlinePolicyConfig parseDeadlinePolicy(Map tasks, MessagingConfig messaging, List errors) {
+        String mode = 'hard'
+        if (mapHasKey(tasks, 'default_deadline_mode', 'defaultDeadlineMode')) {
+            mode = (tasks.default_deadline_mode != null ? tasks.default_deadline_mode : tasks.defaultDeadlineMode).toString().trim().toLowerCase(Locale.ROOT)
+            if (!(mode in ['hard', 'soft'])) {
+                errors << "planner.tasks.default_deadline_mode must be hard or soft, got: ${mode}"
+                mode = 'hard'
+            }
+        }
+        String hardLabel = optionalLabel(tasks, 'hard_label', 'hardLabel', 'planner.tasks.hard_label', errors)
+        String softLabel = optionalLabel(tasks, 'soft_label', 'softLabel', 'planner.tasks.soft_label', errors)
+        if (hardLabel && softLabel && hardLabel.equalsIgnoreCase(softLabel)) {
+            errors << 'planner.tasks.hard_label and planner.tasks.soft_label must be distinct'
+        }
+        int hardUrgency = positiveDays(tasks, 'hard_deadline_soon_days', 'hardDeadlineSoonDays',
+            'planner.tasks.hard_deadline_soon_days', 7, errors)
+        int softUrgency = positiveDays(tasks, 'soft_deadline_soon_days', 'softDeadlineSoonDays',
+            'planner.tasks.soft_deadline_soon_days', 7, errors)
+        int hardWarning = messaging?.hardDeadlineWarningDays ?: 7
+        int softWarning = messaging?.softDeadlineWarningDays ?: 7
+        new DeadlinePolicyConfig(mode, hardLabel, softLabel, hardUrgency, softUrgency, hardWarning, softWarning)
+    }
+
+    private static String optionalLabel(Map raw, String snake, String camel, String path, List errors) {
+        if (!mapHasKey(raw, snake, camel)) return null
+        def value = raw.containsKey(snake) ? raw[snake] : raw[camel]
+        if (value == null) return null
+        String text = value.toString()
+        if (text.trim().isEmpty()) return null
+        if (text != text.trim()) {
+            errors << "${path} must not have surrounding whitespace"
+        }
+        return text.trim()
+    }
+
+    private static int positiveDays(Map raw, String snake, String camel, String path, int fallback, List errors) {
+        if (!mapHasKey(raw, snake, camel)) return fallback
+        def value = raw.containsKey(snake) ? raw[snake] : raw[camel]
+        if (value == null) return fallback
+        if (!(value instanceof Number) || value instanceof Double || value instanceof Float || value.toString().contains('.')) {
+            try {
+                if (value instanceof String && (value.toString() ==~ /-?\d+/)) {
+                    int parsed = Integer.parseInt(value.toString())
+                    if (parsed <= 0) errors << "${path} must be positive"
+                    return parsed > 0 ? parsed : fallback
+                }
+            } catch (Exception ignored) { }
+            errors << "${path} must be a positive integer"
+            return fallback
+        }
+        int parsed = (value as Number).intValue()
+        if (parsed <= 0) {
+            errors << "${path} must be positive"
+            return fallback
+        }
+        return parsed
+    }
+
+    private static boolean mapHasKey(Map raw, String... names) {
+        if (raw == null) return false
+        Set<String> wanted = names.collect { it?.toLowerCase(Locale.ROOT) }.findAll { it } as Set
+        raw.keySet().any { k -> wanted.contains(k?.toString()?.toLowerCase(Locale.ROOT)) }
     }
 
     /**
@@ -370,7 +445,8 @@ final class PlannerConfig {
 
     static final Set<String> AI_SUGGESTION_TYPES = [
         'task_suggestions', 'event_classification_suggestions',
-        'temporary_planning_overrides', 'conversational_feedback_interpretation'
+        'temporary_planning_overrides', 'conversational_feedback_interpretation',
+        'deadline_risk_mitigation'
     ] as Set
 
     private static AiConfig parseAi(Map raw, List errors) {
@@ -1297,7 +1373,9 @@ final class PlannerConfig {
             if (proposalSummary) enabledKinds << 'proposal'
         }
         int riskDays = 5
-        def rd = raw.risk_deadline_days ?: raw.riskDeadlineDays
+        def rd = mapHasKey(raw, 'risk_deadline_days', 'riskDeadlineDays')
+            ? (raw.containsKey('risk_deadline_days') ? raw.risk_deadline_days : raw.riskDeadlineDays)
+            : null
         if (rd != null) {
             try {
                 riskDays = rd as int
@@ -1347,9 +1425,14 @@ final class PlannerConfig {
                 errors << "planner.messaging.${k} must not store raw secrets; use *_env name references"
             }
         }
+        int hardWarningDays = positiveDays(raw, 'hard_deadline_warning_days', 'hardDeadlineWarningDays',
+            'planner.messaging.hard_deadline_warning_days', 7, errors)
+        int softWarningDays = positiveDays(raw, 'soft_deadline_warning_days', 'softDeadlineWarningDays',
+            'planner.messaging.soft_deadline_warning_days', 7, errors)
         MessagingConfig cfg = new MessagingConfig(enabled, provider, destination, secretEnv,
             webhookUrlEnv, botTokenEnv, slackMode, msgTz, dailySummary, weeklySummary, mediumHorizon,
-            capacityRiskAlerts, proposalSummary, enabledKinds, kindAllowlistExplicit, riskDays, schedules)
+            capacityRiskAlerts, proposalSummary, enabledKinds, kindAllowlistExplicit, riskDays,
+            hardWarningDays, softWarningDays, schedules)
         errors.addAll(collectMessagingErrors(cfg))
         return cfg
     }
@@ -1732,6 +1815,8 @@ final class PlannerConfig {
         /** True when config explicitly set {@code enabled_kinds} (including empty list). */
         final boolean kindAllowlistExplicit
         final int riskDeadlineDays
+        final int hardDeadlineWarningDays
+        final int softDeadlineWarningDays
         final List<MessageSchedule> schedules
 
         MessagingConfig(boolean enabled, String provider, String destination, String secretEnv,
@@ -1739,6 +1824,7 @@ final class PlannerConfig {
                         boolean dailySummary, boolean weeklySummary, boolean mediumHorizonSummary,
                         boolean capacityRiskAlerts, boolean proposalSummary,
                         Set<String> enabledKinds, boolean kindAllowlistExplicit, int riskDeadlineDays,
+                        int hardDeadlineWarningDays, int softDeadlineWarningDays,
                         List<MessageSchedule> schedules) {
             this.enabled = enabled
             this.provider = provider
@@ -1756,6 +1842,8 @@ final class PlannerConfig {
             this.enabledKinds = Collections.unmodifiableSet(new LinkedHashSet<>(enabledKinds ?: []))
             this.kindAllowlistExplicit = kindAllowlistExplicit
             this.riskDeadlineDays = riskDeadlineDays
+            this.hardDeadlineWarningDays = hardDeadlineWarningDays > 0 ? hardDeadlineWarningDays : 7
+            this.softDeadlineWarningDays = softDeadlineWarningDays > 0 ? softDeadlineWarningDays : 7
             this.schedules = Collections.unmodifiableList(new ArrayList<>(schedules ?: []))
         }
 
@@ -1789,7 +1877,7 @@ final class PlannerConfig {
 
         static MessagingConfig disabled() {
             new MessagingConfig(false, 'none', null, null, null, null, 'webhook', null,
-                true, true, true, true, true, [] as Set, false, 5, [])
+                true, true, true, true, true, [] as Set, false, 5, 7, 7, [])
         }
     }
 
@@ -2009,19 +2097,46 @@ final class PlannerConfig {
         final boolean enabled
         final String seenLabel
         final String onboardLabel
-        final String hardLabel
         final Instant rolloutCutoff
-        final int hardDeadlineSoonDays
 
-        RecurrenceConfig(boolean enabled, String seenLabel, String onboardLabel, String hardLabel,
-                         Instant rolloutCutoff, int hardDeadlineSoonDays) {
+        RecurrenceConfig(boolean enabled, String seenLabel, String onboardLabel, Instant rolloutCutoff) {
             this.enabled = enabled; this.seenLabel = seenLabel; this.onboardLabel = onboardLabel
-            this.hardLabel = hardLabel; this.rolloutCutoff = rolloutCutoff
-            this.hardDeadlineSoonDays = hardDeadlineSoonDays
+            this.rolloutCutoff = rolloutCutoff
         }
 
         static RecurrenceConfig disabled() {
-            new RecurrenceConfig(false, 'smartplanner-seen', 'smartplanner-onboard', 'hard', null, 5)
+            new RecurrenceConfig(false, 'smartplanner-seen', 'smartplanner-onboard', null)
+        }
+    }
+
+    /**
+     * Recurrence-independent Deadline classification and windows.
+     * Labels default to no match. Four windows default to seven local days and do not imply each other.
+     */
+    static final class DeadlinePolicyConfig {
+        final String defaultMode
+        final String hardLabel
+        final String softLabel
+        final int hardUrgencyDays
+        final int softUrgencyDays
+        final int hardWarningDays
+        final int softWarningDays
+
+        DeadlinePolicyConfig(String defaultMode, String hardLabel, String softLabel,
+                             int hardUrgencyDays, int softUrgencyDays,
+                             int hardWarningDays, int softWarningDays) {
+            this.defaultMode = defaultMode == 'soft' ? 'soft' : 'hard'
+            this.hardLabel = hardLabel
+            this.softLabel = softLabel
+            this.hardUrgencyDays = hardUrgencyDays
+            this.softUrgencyDays = softUrgencyDays
+            this.hardWarningDays = hardWarningDays
+            this.softWarningDays = softWarningDays
+        }
+
+        static DeadlinePolicyConfig defaults(MessagingConfig messaging = null) {
+            new DeadlinePolicyConfig('hard', null, null, 7, 7,
+                messaging?.hardDeadlineWarningDays ?: 7, messaging?.softDeadlineWarningDays ?: 7)
         }
     }
 
@@ -2184,6 +2299,7 @@ final class PlannerConfig {
         private MessagingConfig messaging = MessagingConfig.disabled()
         private AiConfig ai = AiConfig.disabled()
         private RecurrenceConfig recurrence = RecurrenceConfig.disabled()
+        private DeadlinePolicyConfig deadlinePolicy = DeadlinePolicyConfig.defaults()
         private boolean calendarWritebackEnabled = false
 
         Builder mode(String v) { this.mode = v; this }
@@ -2204,6 +2320,7 @@ final class PlannerConfig {
         Builder messaging(MessagingConfig v) { this.messaging = v ?: MessagingConfig.disabled(); this }
         Builder ai(AiConfig v) { this.ai = v ?: AiConfig.disabled(); this }
         Builder recurrence(RecurrenceConfig v) { this.recurrence = v ?: RecurrenceConfig.disabled(); this }
+        Builder deadlinePolicy(DeadlinePolicyConfig v) { this.deadlinePolicy = v ?: DeadlinePolicyConfig.defaults(messaging); this }
         Builder calendarWritebackEnabled(boolean v) { this.calendarWritebackEnabled = v; this }
 
         // package-private accessors for invariant validation
@@ -2222,6 +2339,7 @@ final class PlannerConfig {
         MessagingConfig getMessaging() { messaging }
         AiConfig getAi() { ai }
         RecurrenceConfig getRecurrence() { recurrence }
+        DeadlinePolicyConfig getDeadlinePolicy() { deadlinePolicy }
         boolean getCalendarWritebackEnabled() { calendarWritebackEnabled }
 
         PlannerConfig build() {
