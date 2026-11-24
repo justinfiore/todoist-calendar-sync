@@ -686,6 +686,39 @@ class ProjectionMembershipE2ESpec extends Specification {
         taskWrites.isEmpty()
     }
 
+    def 'fresh approved retained plans preserve provider titles across repeated previews'() {
+        given:
+        Map root = runtimeRoot()
+        root.planner.mode = 'approval_required'
+        root.planner.stability = [keep_manual_moves: true, freeze_within: 'PT0S']
+        def app = application(root)
+        allowTaskWrites = true
+
+        when:
+        Plan first = app.preview(Instant.parse('2026-11-24T00:00:00Z'), Instant.parse('2026-11-25T00:00:00Z'))
+        ApplicationReceipt applied = app.apply(first.id, approval(first))
+
+        then:
+        first.scheduledBlocks*.title == ['Joint: Focus']
+        applied.overallStatus == ApplyItemStatus.APPLIED
+        applied.errors.empty
+        liveEvents()*.title == ['Joint: Focus']
+        liveEvents()*.start == [source.start]
+        liveEvents()*.end == [source.end]
+
+        when:
+        Plan next = application(root).preview(Instant.parse('2026-11-24T00:00:00Z'), Instant.parse('2026-11-25T00:00:00Z'))
+        ApplicationReceipt again = application(root).apply(next.id, approval(next))
+
+        then:
+        again.overallStatus == ApplyItemStatus.APPLIED
+        again.errors.empty
+        liveEvents()*.title == ['Joint: Focus']
+        liveEvents()*.start == [source.start]
+        liveEvents()*.end == [source.end]
+        taskWrites.empty
+    }
+
     def 'approved routed plan E2E supersedes current placement and reapplies only from verified own evidence'() {
         given:
         Map root = runtimeRoot()

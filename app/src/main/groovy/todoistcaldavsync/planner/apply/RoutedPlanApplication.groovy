@@ -66,7 +66,11 @@ final class RoutedPlanApplication {
                             start: start.toString(), commandId: UUID.randomUUID().toString()]
                     }
                     // Bound portability and consecutive geometry before any task moves, including undated tasks.
-                    String title = calendar.projectionTitle(destinations.first(), block.title)
+                    String uid = ManagedEventIds.uidForOccurrences(members*.occurrenceIdentity()*.occurrenceKey())
+                    CalendarEvent before = sources.find { it.uid == uid && it.calendarName == destinations.first() }
+                    // Retained blocks carry the provider title, not a newly constructed planner title.
+                    String title = block.metadata.source == 'routed_sync' && block.id == before?.uid ?
+                        block.title : calendar.projectionTitle(destinations.first(), block.title)
                     projections.fromMembers(members.collect { Task task ->
                         MemberInterval interval = block.intervalFor(task.id)
                         [taskId: task.id, occurrenceKey: task.occurrenceIdentity().occurrenceKey(),
@@ -75,8 +79,6 @@ final class RoutedPlanApplication {
                             nativeMinutes: task.nativeDuration?.toMinutes(), effectiveMinutes: task.effectiveDuration.toMinutes(),
                             taskUpdated: task.updatedAt?.toString()]
                     }, destinations.first(), title, 'Approved plan ' + plan.id)
-                    String uid = ManagedEventIds.uidForOccurrences(members*.occurrenceIdentity()*.occurrenceKey())
-                    CalendarEvent before = sources.find { it.uid == uid && it.calendarName == destinations.first() }
                     String resourceId = before?.id ?: calendar.newProjectionResourceId(destinations.first(), uid)
                     String key = 'calendar:' + destinations.first() + ':' + resourceId
                     resources[key] = [action: before == null ? 'create' : 'update', uid: uid, id: resourceId,
