@@ -75,7 +75,7 @@ final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, Calen
             String name = row.name?.toString()
             String id = row.id?.toString()
             if (!name || !id) throw new IllegalArgumentException('configured Google calendars require name and id')
-            new CalendarMapping(name, id, row.role?.toString())
+            new CalendarMapping(name, id, row.role?.toString(), row.prefix?.toString() ?: '')
         })
         if (options.managedCalendarNames != null) {
             if (managedCalendarName || !(options.managedCalendarNames instanceof Collection)) {
@@ -396,6 +396,11 @@ final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, Calen
             'location', 'organizer', 'reminders', 'sequence', 'source', 'status', 'summary', 'transparency', 'visibility',
             'eventLabelId'] as Set
         payload.findAll { key, value -> writable.contains(key) }
+    }
+
+    @Override
+    String projectionTitle(String destination, String title) {
+        requireManagedDestination(destination).prefix + title
     }
 
     @Override
@@ -813,7 +818,10 @@ final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, Calen
         final String name
         final String id
         final String role
-        CalendarMapping(String name, String id, String role) { this.name = name; this.id = id; this.role = role }
+        final String prefix
+        CalendarMapping(String name, String id, String role, String prefix) {
+            this.name = name; this.id = id; this.role = role; this.prefix = prefix
+        }
     }
 
     private static final class GatewayResponse {

@@ -387,6 +387,11 @@ final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChan
     }
 
     @Override
+    String projectionTitle(String destination, String title) {
+        requireManagedDestination(destination).prefix + title
+    }
+
+    @Override
     String projectionResourceId(String destination, String uid) {
         CalendarEndpoint endpoint = requireManagedDestination(destination)
         if (!ManagedEventIds.isPlannerUid(uid)) throw new IllegalArgumentException('planner UID is required')
@@ -977,6 +982,7 @@ final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChan
 
     static final class CalendarEndpoint {
         final String name
+        final String prefix
         final URI uri
         final String authType
         final String username
@@ -986,8 +992,10 @@ final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChan
         final String tokenOverride
 
         private CalendarEndpoint(String name, URI uri, String authType, String username,
-                                 String passwordEnv, String tokenEnv, String passwordOverride, String tokenOverride) {
+                                 String passwordEnv, String tokenEnv, String passwordOverride, String tokenOverride,
+                                 String prefix) {
             this.name=name; this.uri=uri; this.authType=authType; this.username=username
+            this.prefix=prefix
             this.passwordEnv=passwordEnv; this.tokenEnv=tokenEnv
             this.passwordOverride=passwordOverride; this.tokenOverride=tokenOverride
         }
@@ -1011,7 +1019,8 @@ final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChan
             String tokenOverride = (auth.token_override ?: auth.tokenOverride)?.toString()
             if (type == 'basic' && (!username || (!passwordEnv && !passwordOverride))) throw new IllegalArgumentException("Basic CalDAV auth requires username/password_env for ${name}")
             if (type == 'bearer' && (!tokenEnv && !tokenOverride)) throw new IllegalArgumentException("Bearer CalDAV auth requires token_env for ${name}")
-            new CalendarEndpoint(name, uri, type, username, passwordEnv, tokenEnv, passwordOverride, tokenOverride)
+            new CalendarEndpoint(name, uri, type, username, passwordEnv, tokenEnv, passwordOverride, tokenOverride,
+                raw.prefix?.toString() ?: '')
         }
 
         String authorization(Function<String, String> resolver) {

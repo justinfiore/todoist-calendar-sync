@@ -66,6 +66,7 @@ final class RoutedPlanApplication {
                             start: start.toString(), commandId: UUID.randomUUID().toString()]
                     }
                     // Bound portability and consecutive geometry before any task moves, including undated tasks.
+                    String title = calendar.projectionTitle(destinations.first(), block.title)
                     projections.fromMembers(members.collect { Task task ->
                         MemberInterval interval = block.intervalFor(task.id)
                         [taskId: task.id, occurrenceKey: task.occurrenceIdentity().occurrenceKey(),
@@ -73,13 +74,13 @@ final class RoutedPlanApplication {
                             due: task.todoistDue?.snapshotMap() ?: [date: interval.start.toString()],
                             nativeMinutes: task.nativeDuration?.toMinutes(), effectiveMinutes: task.effectiveDuration.toMinutes(),
                             taskUpdated: task.updatedAt?.toString()]
-                    }, destinations.first(), block.title, 'Approved plan ' + plan.id)
+                    }, destinations.first(), title, 'Approved plan ' + plan.id)
                     String uid = ManagedEventIds.uidForOccurrences(members*.occurrenceIdentity()*.occurrenceKey())
                     CalendarEvent before = sources.find { it.uid == uid && it.calendarName == destinations.first() }
                     String resourceId = before?.id ?: calendar.newProjectionResourceId(destinations.first(), uid)
                     String key = 'calendar:' + destinations.first() + ':' + resourceId
                     resources[key] = [action: before == null ? 'create' : 'update', uid: uid, id: resourceId,
-                        destination: destinations.first(), title: block.title, taskIds: block.taskIds,
+                        destination: destinations.first(), title: title, taskIds: block.taskIds,
                         before: before == null ? null : ProjectionMetadata.eventMap(before),
                         revision: before == null ? 1 : ProjectionMetadata.read(before).value.revision + 1]
                 }

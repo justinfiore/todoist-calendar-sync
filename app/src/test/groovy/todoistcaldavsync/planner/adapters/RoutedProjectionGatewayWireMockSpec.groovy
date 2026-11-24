@@ -49,7 +49,8 @@ class RoutedProjectionGatewayWireMockSpec extends Specification {
         server = new WireMockServer(options().dynamicPort().extensions(transformer))
         server.start()
         server.stubFor(any(anyUrl()).willReturn(aResponse().withTransformers('caldav-storage')))
-        def provider = new CalDavHttpGateway(calendars: [[name: 'Work', url: server.baseUrl() + '/work/', managed_destination: true]],
+        def provider = new CalDavHttpGateway(calendars: [[name: 'Work', url: server.baseUrl() + '/work/',
+            managed_destination: true, prefix: 'Joint: ']],
             managedCalendarNames: ['Work'], allowInsecureHttp: true, timezone: 'Pacific/Auckland')
         def config = todoistcaldavsync.planner.config.PlannerConfig.fromMap(planner: [timezone: 'Pacific/Auckland',
             availability: [working_windows: [weekday: ['09:00-17:00']]],
@@ -59,7 +60,8 @@ class RoutedProjectionGatewayWireMockSpec extends Specification {
             def task = todoistcaldavsync.planner.domain.Task.fromTodoistMap(
                 [id: 'a', content: 'A', labels: ['work'], due: [date: due]],
                 config.durationResolver, config.manualLabel, config.timezone)
-            projections.fromMembers([projections.member(task)], 'Work', 'A', 'Human note', false, revision, task.allDayDue)
+            CalendarEvent candidate = projections.fromTask(task)
+            projections.fromMembers([projections.member(task)], 'Work', candidate.title, 'Human note', false, revision, task.allDayDue)
         }
 
         when:
@@ -67,6 +69,7 @@ class RoutedProjectionGatewayWireMockSpec extends Specification {
 
         then:
         created.allDay
+        created.title == 'Joint: A'
         created.start == Instant.parse('2026-11-23T11:00:00Z')
         created.end == Instant.parse('2026-11-24T11:00:00Z')
         payload.contains('DTSTART;VALUE=DATE:20261124\r\nDTEND;VALUE=DATE:20261125')

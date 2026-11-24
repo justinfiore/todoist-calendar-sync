@@ -24,7 +24,7 @@ final class RoutedProjections {
     CalendarEvent fromTask(Task task, String humanDescription = null) {
         String destination = config.projectionDestination(task)
         if (destination == null || task.todoistDue == null) return null
-        fromMembers([member(task)], destination, task.content,
+        fromMembers([member(task)], destination, calendar.projectionTitle(destination, task.content),
             humanDescription ?: 'https://app.todoist.com/app/task/' + task.id, false, 1, task.allDayDue)
     }
 

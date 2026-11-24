@@ -193,7 +193,8 @@ class ProjectionMembershipE2ESpec extends Specification {
         server.stubFor(any(anyUrl()).willReturn(aResponse().withTransformers('providers')))
         def providerConfig = new CalendarProviderConfig.GoogleCalendarApiConfig(Path.of('unused'), Path.of('unused'), null,
             'test@example.test', 8787, ['Work', 'Family'].collect {
-                [name: it, id: it.toLowerCase(), role: 'informational', managed_destination: true]
+                [name: it, id: it.toLowerCase(), role: 'informational', managed_destination: true,
+                    prefix: it == 'Work' ? 'Joint: ' : 'Family: ']
             })
         calendar = new GoogleCalendarApiGateway(config: providerConfig, managedCalendarNames: ['Work', 'Family'],
             baseUrl: server.baseUrl() + '/calendar/v3', allowInsecureHttp: true,
@@ -221,7 +222,7 @@ class ProjectionMembershipE2ESpec extends Specification {
 
     private void initializeSource() {
         originals = tasks.values().collect { normalize(it) }
-        CalendarEvent target = projections().fromMembers(originals.collect { projections().member(it) }, 'Work', 'Focus', 'Calendar note')
+        CalendarEvent target = projections().fromMembers(originals.collect { projections().member(it) }, 'Work', 'Joint: Focus', 'Calendar note')
         source = ProjectionMetadata.eventFromMap(ProjectionMetadata.eventMap(target) + [etag: '"original"', lastModified: '2026-11-24T11:00:00Z'])
         events.clear()
         events['work:' + source.id] = [id: source.id, summary: source.title, description: source.description,
@@ -244,7 +245,8 @@ class ProjectionMembershipE2ESpec extends Specification {
             integration: [todoist: [base_url: 'https://api.todoist.com/api/v1', token_env: 'FIXTURE_ONLY'],
                 calendar: [provider: 'google_calendar_api', google_calendar_api: [
                     oauth_client_secret_file: 'unused.json', token_store_dir: 'unused-tokens', account_email: 'test@example.test',
-                    calendars: ['Work', 'Family'].collect { [name: it, id: it.toLowerCase(), role: 'informational', managed_destination: true] }]],
+                    calendars: ['Work', 'Family'].collect { [name: it, id: it.toLowerCase(), role: 'informational', managed_destination: true,
+                        prefix: it == 'Work' ? 'Joint: ' : 'Family: '] }]],
                 state: [plans_dir: directory.resolve('plans').toString(), applications_dir: directory.toString(),
                     decisions_dir: directory.resolve('decisions').toString(), deliveries_dir: directory.resolve('deliveries').toString()]]]]
     }
@@ -713,6 +715,9 @@ class ProjectionMembershipE2ESpec extends Specification {
             normalize(tasks[id]).dueTime == (block.intervalFor(id)?.start ?: block.start)
         } }
         liveEvents().collectMany { ProjectionMetadata.read(it).value.members*.taskId }.toSet() == ['a', 'b', 'c'] as Set
+        plan.scheduledBlocks.every { block -> liveEvents().find {
+            ProjectionMetadata.read(it).value.members*.taskId == block.taskIds
+        }?.title == 'Joint: ' + block.title }
         JsonOutput.toJson(tasks.values().collect { it.subMap(['content', 'description', 'labels', 'deadline', 'completed_count', 'duration']) }) == protectedFields
 
         when:
@@ -1026,13 +1031,15 @@ class ProjectionMembershipE2ESpec extends Specification {
         !events.containsKey('work:' + source.id)
         actual.collect { ProjectionMetadata.read(it).value.members*.taskId }.toSet() == expectedRuns.toSet()
         actual.findAll { ProjectionMetadata.read(it).value.members.any { !edited.contains(it.taskId) } }.every { event ->
+            assert event.title == 'Joint: Focus'
             ProjectionMetadata.read(event).value.members.every { member ->
                 Task task = originals.find { it.id == member.taskId }
                 member.start == task.dueTime.toString() && member.effectiveMinutes == task.effectiveDuration.toMinutes()
             }
         }
         actual.findAll { ProjectionMetadata.read(it).value.members.any { edited.contains(it.taskId) } }.every {
-            it.start == Instant.parse('2026-11-24T22:10:00Z') && it.calendarName == (relocate ? 'Family' : 'Work')
+            it.start == Instant.parse('2026-11-24T22:10:00Z') && it.calendarName == (relocate ? 'Family' : 'Work') &&
+                it.title == (relocate ? 'Family: ' : 'Joint: ') + 'Task ' + ProjectionMetadata.read(it).value.members[0].taskId
         }
         store.loadProjections().values().count { it.status == 'current' } == expectedRuns.size()
 
@@ -1077,7 +1084,8 @@ class ProjectionMembershipE2ESpec extends Specification {
             (completed ? [['a'], ['b'], ['c']] : [['a'], ['c']]).toSet()
         actual.count { ProjectionMetadata.read(it).value.historical } == (completed ? 1 : 0)
         actual.findAll { ProjectionMetadata.read(it).value.historical }.every {
-            it.start == Instant.parse('2026-11-24T09:30:00Z') && it.end == Instant.parse('2026-11-24T10:30:00Z')
+            it.start == Instant.parse('2026-11-24T09:30:00Z') && it.end == Instant.parse('2026-11-24T10:30:00Z') &&
+                it.title == 'Joint: Focus'
         }
         mutations.count { it.startsWith('create:') } == actual.size()
         mutations.count { it.startsWith('delete:') } == 1
@@ -1255,6 +1263,7 @@ class ProjectionMembershipE2ESpec extends Specification {
         created.status == 'verified'
         initial.start == task.dueTime
         initial.allDay == task.allDayDue
+        initial.title == 'Joint: Task a'
         JsonOutput.toJson(tasks) == untouched
 
         when: 'a later Todoist edit is mirrored, not an optimizer-selected time'
@@ -1693,6 +1702,9 @@ class ProjectionMembershipE2ESpec extends Specification {
         then:
         migration.status().stage == 'VERIFIED'
         events.size() == 3
+        liveEvents().findAll { ManagedEventIds.isPlannerUid(it.uid) }.every {
+            it.title == 'Joint: Task ' + ProjectionMetadata.read(it).value.members[0].taskId
+        }
         mutations.take(3).every { it.startsWith('delete:work:legacy-') }
         mutations.drop(3).every { it.startsWith('create:') }
         liveEvents().find { it.start == Instant.parse('2026-11-24T23:20:00Z') }.end == Instant.parse('2026-11-24T23:50:00Z')
