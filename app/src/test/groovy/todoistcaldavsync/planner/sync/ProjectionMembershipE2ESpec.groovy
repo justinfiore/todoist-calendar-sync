@@ -703,6 +703,8 @@ class ProjectionMembershipE2ESpec extends Specification {
         applied.overallStatus == ApplyItemStatus.APPLIED
         applied.errors.empty
         liveEvents()*.title == ['Joint: Focus']
+        liveEvents().collect { ProjectionMetadata.humanDescription(it) } == ['Calendar note']
+        liveEvents().every { it.description.readLines().contains('plan-id:' + first.id) }
         liveEvents()*.start == [source.start]
         liveEvents()*.end == [source.end]
 
@@ -714,6 +716,8 @@ class ProjectionMembershipE2ESpec extends Specification {
         again.overallStatus == ApplyItemStatus.APPLIED
         again.errors.empty
         liveEvents()*.title == ['Joint: Focus']
+        liveEvents().collect { ProjectionMetadata.humanDescription(it) } == ['Calendar note']
+        liveEvents().every { it.description.readLines().contains('plan-id:' + next.id) }
         liveEvents()*.start == [source.start]
         liveEvents()*.end == [source.end]
         taskWrites.empty

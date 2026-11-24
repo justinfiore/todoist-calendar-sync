@@ -71,6 +71,7 @@ final class RoutedPlanApplication {
                     // Retained blocks carry the provider title, not a newly constructed planner title.
                     String title = block.metadata.source == 'routed_sync' && block.id == before?.uid ?
                         block.title : calendar.projectionTitle(destinations.first(), block.title)
+                    String humanDescription = before == null ? 'Approved plan ' + plan.id : ProjectionMetadata.humanDescription(before)
                     projections.fromMembers(members.collect { Task task ->
                         MemberInterval interval = block.intervalFor(task.id)
                         [taskId: task.id, occurrenceKey: task.occurrenceIdentity().occurrenceKey(),
@@ -78,7 +79,7 @@ final class RoutedPlanApplication {
                             due: task.todoistDue?.snapshotMap() ?: [date: interval.start.toString()],
                             nativeMinutes: task.nativeDuration?.toMinutes(), effectiveMinutes: task.effectiveDuration.toMinutes(),
                             taskUpdated: task.updatedAt?.toString()]
-                    }, destinations.first(), title, 'Approved plan ' + plan.id)
+                    }, destinations.first(), title, humanDescription, false, 1, false, plan.id)
                     String resourceId = before?.id ?: calendar.newProjectionResourceId(destinations.first(), uid)
                     String key = 'calendar:' + destinations.first() + ':' + resourceId
                     resources[key] = [action: before == null ? 'create' : 'update', uid: uid, id: resourceId,
@@ -140,8 +141,10 @@ final class RoutedPlanApplication {
                     List<Map> members = targetIntent.taskIds.collect { String taskId ->
                         projections.member(PlanStore.taskFromMap(current.outcomes['task:' + taskId + ':due'].evidence.task as Map))
                     }
+                    String humanDescription = targetIntent.before == null ? 'Approved plan ' + plan.id :
+                        ProjectionMetadata.humanDescription(ProjectionMetadata.eventFromMap(targetIntent.before as Map))
                     CalendarEvent generated = projections.fromMembers(members, targetIntent.destination.toString(),
-                        targetIntent.title.toString(), 'Approved plan ' + plan.id, false, targetIntent.revision as long)
+                        targetIntent.title.toString(), humanDescription, false, targetIntent.revision as long, false, plan.id)
                     target = ProjectionMetadata.eventFromMap(ProjectionMetadata.eventMap(generated) + [id: targetIntent.id])
                 }
                 CalendarEvent live = calendar.readResource(target.calendarName, target.id)

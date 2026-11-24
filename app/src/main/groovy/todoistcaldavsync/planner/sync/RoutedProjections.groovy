@@ -43,7 +43,8 @@ final class RoutedProjections {
     }
 
     CalendarEvent fromMembers(List<Map> members, String destination, String title, String humanDescription,
-                              boolean historical = false, long revision = 1, boolean allDay = false) {
+                              boolean historical = false, long revision = 1, boolean allDay = false,
+                              String planId = 'sync') {
         String uid = historical ? ManagedEventIds.uidForBlock('history:' + members[0].occurrenceKey) :
             ManagedEventIds.uidForOccurrences(members*.occurrenceKey)
         def metadata = new ProjectionMetadata([schemaVersion: 1, uid: uid, destination: destination,
@@ -52,6 +53,6 @@ final class RoutedProjections {
         CalendarEvent.builder().id(calendar.projectionResourceId(destination, uid)).uid(uid)
             .calendarName(destination).title(title).start(Instant.parse(members[0].start.toString()))
             .end(Instant.parse(members[-1].end.toString())).allDay(allDay)
-            .description(metadata.description(humanDescription, uid, 'sync')).build()
+            .description(metadata.description(humanDescription, uid, planId)).build()
     }
 }
