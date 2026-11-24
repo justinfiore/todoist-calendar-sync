@@ -56,7 +56,8 @@ Each owned projection SHALL record its destination and occurrence membership. Fo
 
 #### Scenario: Task loses inclusion
 - **WHEN** an active task becomes ineligible or unroutable
-- **THEN** sync SHALL retire its verified owned active projection with a receipt, preserve the Todoist task and historical occurrence events, and report the reason
+- **THEN** sync SHALL retire only its verified owned active coverage with a receipt, preserve the Todoist task and historical occurrence events, and report the reason
+- **AND** if it shares a focus event, sync SHALL use the verified member-departure transition to preserve remaining members at their existing Dues/durations rather than deleting their representation
 
 ### Requirement: Availability roles do not grant calendar ownership
 Routing SHALL NOT determine whether a whole calendar is free or busy. Planning SHALL reconcile owned current projections with live task placements, preserve unrelated blockers and manual placements, and avoid counting a replacement projection twice. Unknown or unavailable required calendar data SHALL NOT be treated as free capacity.

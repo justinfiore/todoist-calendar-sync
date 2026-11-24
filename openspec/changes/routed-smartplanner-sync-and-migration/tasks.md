@@ -31,6 +31,7 @@
 - [ ] 4.3 Implement member edit/route-change split-out and maximal consecutive remaining runs; verify middle/edge/multiple edited members, one/zero remainder, new individual destinations and no changes to unaffected task Dues/durations.
 - [ ] 4.4 Integrate per-member preflight, operation provenance and partial recovery for transforms/splits; verify failure after first member, ambiguous later write, concurrent completion/user edit, restart/echo replay and no double resize or self-induced split.
 - [ ] 4.5 Document group editing and rounding examples, unsupported conversions and partial/conflict status in the user guide; verify a hermetic CLI/daemon scenario produces the documented task intervals and resulting calendar membership.
+- [ ] 4.6 Implement verified member-departure reconciliation for native recurrence advancement, non-recurring completion/deletion, Due removal and inclusion/route loss independently of planning; verify asymmetric middle/edge/all-member departures, historical single-occurrence intervals without active-member coverage, unchanged residual Dues/durations, eligible dated successor projection from fresh Todoist and explicit undated/ineligible reporting. Verify partial feed absence/unexplained occurrence changes do not authorize retirement, concurrent calendar edits remain conflicts, and journal restart after each target creation/source retirement leaves no duplicate history/successors or missing residual projections.
 
 ## 5. Planning and apply integration
 
@@ -52,7 +53,7 @@
 
 ## 7. Combined acceptance and delivery evidence
 
-- [ ] 7.1 Run the full hermetic routed lifecycle scenario from legacy inventory/deletion through sync reconstruction, first approved group plan, drag, resize, split, route move and native recurrence advancement; retain sanitized provider/task/state evidence showing exclusive ownership and exact schedules.
+- [ ] 7.1 Run the full hermetic routed lifecycle scenario from legacy inventory/deletion through sync reconstruction, first approved group plan, drag, resize, split, route move and native recurrence advancement within a mixed group; include completion/deletion, Due/inclusion loss and interrupted departure recovery without planning, and retain sanitized provider/task/state evidence showing exclusive ownership, separate historical/current membership and exact schedules.
 - [ ] 7.2 Run focused suites then `./gradlew :app:test --rerun-tasks`, `./gradlew build` and `./gradlew installDist`; inspect decisive test/build results and exercise installed sync/migration help and hermetic operations without live credentials.
 - [ ] 7.3 Reconcile this change's deltas with active recurrence/planner-integration safety requirements, run strict OpenSpec validation and whitespace/secret checks, and verify no earlier live-acceptance box was marked complete without evidence.
 - [ ] 7.4 After separate authorization and isolated account setup, execute documented live Google/Todoist group-edit and migration/recovery acceptance; retain sanitized results, or leave this task unchecked with exact missing inputs. Do not copy QA credentials or mutate production to satisfy this gate.
