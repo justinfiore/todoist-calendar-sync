@@ -110,6 +110,9 @@ final class ProjectionMembershipChange {
 
     private ProjectionReplacementService replacement() {
         new ProjectionReplacementService(store, calendar, { Map evidence ->
+            if (evidence.routingFingerprint != config.routing.fingerprint) {
+                throw new IllegalStateException('routing changed during membership replacement; review required')
+            }
             evidence.taskBaselines.each { String id, Object expected ->
                 Map live = todoist.fetchTask(id)
                 if ((live == null ? null : copy(live)) != expected) {

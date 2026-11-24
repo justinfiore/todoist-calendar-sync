@@ -45,6 +45,7 @@ final class ProjectionReplacementService {
             }
             String id = UUID.randomUUID().toString()
             store.beginSyncOperation(id, [type: 'projection-replacement', taskIds: tasks.unique(),
+                routingFingerprint: ProjectionMetadata.read(sources.first()).value.routingFingerprint,
                 resources: resources, departureEvidence: departureEvidence])
             reconcile(id)
         }
@@ -137,7 +138,7 @@ final class ProjectionReplacementService {
         Map evidence = operation.intent.departureEvidence as Map
         if (evidence?.taskBaselines instanceof Map && evidence.taskBaselines) {
             if (taskPreflight == null) throw new IllegalStateException('task-bound replacement requires fresh task preflight')
-            taskPreflight.call(evidence)
+            taskPreflight.call(evidence + [routingFingerprint: operation.intent.routingFingerprint])
         }
     }
 

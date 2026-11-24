@@ -432,6 +432,29 @@ class ProjectionMembershipE2ESpec extends Specification {
         taskWrites.isEmpty()
     }
 
+    def 'CLI E2E pending relocation refuses routing drift before any further mutation'() {
+        given:
+        assert cliSync().code == 0
+        tasks.b.labels = ['work', 'family']
+        tasks.b.updated_at = '2026-11-24T20:00:00Z'
+        interruptRetirement = true
+        assert cliSync().code == 1
+        int writes = mutations.size()
+        Map root = runtimeRoot()
+        root.planner.routing.rules = root.planner.routing.rules.reverse()
+
+        when:
+        application(root).syncSchedules(Instant.parse('2026-11-24T00:00:00Z'), Instant.parse('2026-11-25T00:00:00Z'))
+
+        then:
+        def error = thrown(IllegalStateException)
+        error.message.contains('routing changed')
+        mutations.size() == writes
+        events.containsKey('work:' + source.id)
+        liveEvents().any { it.calendarName == 'Family' }
+        taskWrites.empty
+    }
+
     def 'CLI E2E withholds all initial creation for damaged membership and all writes during a destination outage'() {
         given:
         String original = events['work:' + source.id].description
