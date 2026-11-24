@@ -43,10 +43,10 @@ class ProjectBatcher {
             return ordered.collect { SchedulingUnit.single(it) }
         }
 
-        Map<String, List<Task>> byProject = new LinkedHashMap<>()
+        Map<List, List<Task>> byProject = new LinkedHashMap<>()
         ordered.each { t ->
-            def key = t.projectId ?: ''
-            if (key) {
+            if (t.projectId) {
+                List key = [t.projectId, config.projectionDestination(t)]
                 byProject.computeIfAbsent(key) { [] as List<Task> } << t
             }
         }
@@ -64,7 +64,7 @@ class ProjectBatcher {
             if (emitted.contains(t.id)) {
                 return
             }
-            List<Task> group = byProject[t.projectId] ?: [t]
+            List<Task> group = byProject[[t.projectId, config.projectionDestination(t)]] ?: [t]
             List<SchedulingUnit> split = splitIntoFocusUnits(group, now)
             split.each { u ->
                 u.tasks.each { emitted.add(it.id) }

@@ -25,6 +25,7 @@ final class PlannerConfig {
     final String mode
     final ZoneId timezone
     final String outputCalendar
+    final TaskRoutingConfig routing
     final List<WorkingWindow> workingWindows
     final List<CalendarDefault> calendarDefaults
     final List<EventRule> eventRules
@@ -50,6 +51,7 @@ final class PlannerConfig {
         this.mode = b.mode
         this.timezone = b.timezone
         this.outputCalendar = b.outputCalendar
+        this.routing = b.routing
         this.workingWindows = Collections.unmodifiableList(new ArrayList<>(b.workingWindows))
         this.calendarDefaults = Collections.unmodifiableList(new ArrayList<>(b.calendarDefaults))
         this.eventRules = Collections.unmodifiableList(new ArrayList<>(b.eventRules))
@@ -72,6 +74,17 @@ final class PlannerConfig {
 
     static Builder builder() {
         new Builder()
+    }
+
+    String projectionDestination(Task task) {
+        routing != null ? routing.destination(task) : outputCalendar
+    }
+
+    boolean planningEligible(Task task) {
+        !task.manual && (routing == null || projectionDestination(task) != null) &&
+            (!schedulingEligibleLabels || task.labels.any { String label ->
+                schedulingEligibleLabels.any { it.equalsIgnoreCase(label) }
+            })
     }
 
     static PlannerConfig load(File file) {
@@ -110,6 +123,10 @@ final class PlannerConfig {
         }
 
         def outputCalendar = p.output_calendar?.toString() ?: p.outputCalendar?.toString()
+        TaskRoutingConfig routing = TaskRoutingConfig.fromMap(p.routing)
+        if (routing != null && outputCalendar) {
+            errors << 'planner.routing and planner.output_calendar are mutually exclusive'
+        }
 
         def availability = p.availability instanceof Map ? p.availability as Map : [:]
         def workingWindows = parseWorkingWindows(availability.working_windows ?: availability.workingWindows, errors)
@@ -194,6 +211,7 @@ final class PlannerConfig {
             .mode(mode)
             .timezone(timezone)
             .outputCalendar(outputCalendar)
+            .routing(routing)
             .workingWindows(workingWindows)
             .calendarDefaults(calendarDefaults)
             .eventRules(eventRules)
@@ -2284,6 +2302,7 @@ final class PlannerConfig {
         private String mode = 'preview'
         private ZoneId timezone = ZoneId.of('UTC')
         private String outputCalendar
+        private TaskRoutingConfig routing
         private List<WorkingWindow> workingWindows = []
         private List<CalendarDefault> calendarDefaults = []
         private List<EventRule> eventRules = []
@@ -2305,6 +2324,7 @@ final class PlannerConfig {
         Builder mode(String v) { this.mode = v; this }
         Builder timezone(ZoneId v) { this.timezone = v; this }
         Builder outputCalendar(String v) { this.outputCalendar = v; this }
+        Builder routing(TaskRoutingConfig v) { this.routing = v; this }
         Builder workingWindows(List<WorkingWindow> v) { this.workingWindows = v ?: []; this }
         Builder calendarDefaults(List<CalendarDefault> v) { this.calendarDefaults = v ?: []; this }
         Builder eventRules(List<EventRule> v) { this.eventRules = v ?: []; this }
@@ -2344,6 +2364,7 @@ final class PlannerConfig {
 
         PlannerConfig build() {
             def errors = collectInvariantErrors(this)
+            if (routing != null && outputCalendar) errors << 'planner.routing and planner.output_calendar are mutually exclusive'
             if (!errors.isEmpty()) {
                 throw new IllegalArgumentException("Invalid planner configuration:\n - " + errors.join("\n - "))
             }

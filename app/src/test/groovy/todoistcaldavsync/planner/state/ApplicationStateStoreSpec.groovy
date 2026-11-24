@@ -5,6 +5,9 @@ import spock.lang.Specification
 import todoistcaldavsync.planner.domain.ApplicationReceipt
 import todoistcaldavsync.planner.domain.AppliedMapping
 import todoistcaldavsync.planner.domain.ApplyItemStatus
+import todoistcaldavsync.planner.domain.CalendarEvent
+import todoistcaldavsync.planner.domain.ManagedEventIds
+import todoistcaldavsync.planner.domain.ProjectionMetadata
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -39,6 +42,111 @@ class ApplicationStateStoreSpec extends Specification {
             .calendarStatus(ApplyItemStatus.APPLIED)
             .todoistStatus(ApplyItemStatus.APPLIED)
             .build()
+    }
+
+    def "sync intent and per-resource evidence survive every restart without changing resize weights"() {
+        given:
+        Map intent = [kind: 'resize', taskIds: ['a', 'b'], resources: [
+            'task:a': [beforeMinutes: 30, afterMinutes: 20],
+            'task:b': [beforeMinutes: 60, afterMinutes: 40],
+            'calendar:group': [etag: 'original', start: '2026-08-10T09:00:00Z']
+        ]]
+        def store = new ApplicationStateStore(dir)
+
+        when:
+        store.beginSyncOperation('resize-1', intent)
+        intent.resources['task:a'].beforeMinutes = 20
+        store = new ApplicationStateStore(dir)
+        store.checkpointSyncResource('resize-1', 'task:a', 'verified', [minutes: 20])
+        store = new ApplicationStateStore(dir)
+        store.checkpointSyncResource('resize-1', 'task:b', 'unknown')
+        store = new ApplicationStateStore(dir)
+
+        then:
+        store.loadSyncOperations()['resize-1'].intent.resources['task:a'].beforeMinutes == 30
+        store.loadSyncOperations()['resize-1'].status == 'pending'
+        store.loadSyncOperations()['resize-1'].outcomes['task:b'].state == 'unknown'
+
+        when:
+        store.checkpointSyncResource('resize-1', 'task:b', 'verified', [minutes: 40])
+        store = new ApplicationStateStore(dir)
+        store.checkpointSyncResource('resize-1', 'calendar:group', 'verified', [etag: 'updated'])
+
+        then:
+        new ApplicationStateStore(dir).loadSyncOperations()['resize-1'].status == 'verified'
+    }
+
+    def "pending intent refuses overlaps and reuse with different baselines"() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        store.beginSyncOperation('original', [taskIds: ['a'], resources: ['cal:1': [etag: 'v1']]])
+
+        when:
+        store.beginSyncOperation(id, intent)
+
+        then:
+        thrown(IllegalStateException)
+
+        where:
+        id         | intent
+        'original' | [taskIds: ['a'], resources: ['cal:1': [etag: 'changed']]]
+        'other'    | [taskIds: ['a'], resources: ['cal:2': [etag: 'v2']]]
+        'other'    | [taskIds: ['b'], resources: ['cal:1': [etag: 'v1']]]
+    }
+
+    def "failed atomic journal replacement retains prior checkpoint"() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        store.beginSyncOperation('op', [taskIds: ['a'], resources: ['task:a': [minutes: 30]]])
+        def crashing = new ApplicationStateStore(dir, { throw new IOException('interrupted before replacement') })
+
+        when:
+        crashing.checkpointSyncResource('op', 'task:a', 'verified', [minutes: 30])
+
+        then:
+        thrown(PlanStoreException)
+        new ApplicationStateStore(dir).loadSyncOperations()['op'].outcomes['task:a'].state == 'pending'
+    }
+
+    def "corrupt journal fails closed for reads and further intent creation"() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        Files.writeString(store.syncOperationsPath(), corrupt)
+
+        when:
+        store.loadSyncOperations()
+
+        then:
+        thrown(PlanStoreException)
+
+        when:
+        store.beginSyncOperation('op', [taskIds: ['a'], resources: ['task:a': [:]]])
+
+        then:
+        thrown(PlanStoreException)
+        Files.readString(store.syncOperationsPath()) == corrupt
+
+        where:
+        corrupt << ['', '{', '{"schemaVersion":99,"operations":{}}',
+            '{"schemaVersion":1,"operations":{"op":{"id":"op","status":"verified"}}}']
+    }
+
+    def "mutation lease refuses another store instance while held and releases after failure"() {
+        given:
+        def first = new ApplicationStateStore(dir)
+        def second = new ApplicationStateStore(dir)
+
+        expect:
+        first.withMutationLock { first.withMutationLock { 'nested service' } } == 'nested service'
+
+        when:
+        first.withMutationLock { second.withMutationLock { throw new AssertionError('second writer ran') } }
+
+        then:
+        thrown(IllegalStateException)
+
+        expect:
+        second.withMutationLock { 'released' } == 'released'
     }
 
     def "save and load mappings round-trip with schema version"() {
@@ -314,5 +422,92 @@ class ApplicationStateStoreSpec extends Specification {
         loaded.keySet() as Set == ['t1', 't2'] as Set
         loaded['t1'].todoistStatus == ApplyItemStatus.SKIPPED_IDEMPOTENT
         loaded['t2'].taskId == 't2'
+    }
+
+    private CalendarEvent projection(int revision = 1, String id = 'resource') {
+        String uid = ManagedEventIds.uidForOccurrences(['a:0'])
+        def metadata = new ProjectionMetadata([schemaVersion: 1, uid: uid, destination: 'Work',
+            revision: revision, routingFingerprint: 'a' * 64, historical: false, allDay: false,
+            members: [[taskId: 'a', occurrenceKey: 'a:0', start: '2026-11-24T09:00:00Z',
+                end: '2026-11-24T09:30:00Z', due: [date: '2026-11-24T09:00:00Z'],
+                nativeMinutes: null, effectiveMinutes: 30]]])
+        CalendarEvent.builder().id(id).uid(uid).calendarName('Work').title('Task')
+            .description(metadata.description('Human note', 'a', 'sync')).etag('"v' + revision + '"')
+            .start(Instant.parse('2026-11-24T09:00:00Z')).end(Instant.parse('2026-11-24T09:30:00Z')).build()
+    }
+
+    def 'portable projection adoption survives state reopening and cancellation prevents recreation'() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        CalendarEvent event = projection()
+        store.commitProjections([event])
+
+        expect:
+        new ApplicationStateStore(dir).loadProjections().values().first().event == ProjectionMetadata.eventMap(event)
+
+        when:
+        new ApplicationStateStore(dir).cancelProjection(event)
+        new ApplicationStateStore(dir).commitProjections([event])
+
+        then:
+        thrown(IllegalStateException)
+        new ApplicationStateStore(dir).loadProjections().values().first().status == 'cancelled'
+    }
+
+    def 'duplicate active membership is refused atomically without losing prior verified projection'() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        store.commitProjections([projection()])
+
+        when:
+        store.commitProjections([projection(1, 'duplicate')])
+
+        then:
+        def failure = thrown(PlanStoreException)
+        failure.cause.message.contains('duplicate active occurrence coverage')
+        store.loadProjections().size() == 1
+        store.loadProjections().values().first().event.id == 'resource'
+    }
+
+    def 'verified operation replay cannot rewind a later membership revision'() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        [1, 2].each { int revision ->
+            CalendarEvent event = projection(revision)
+            String operation = 'operation-' + revision
+            store.beginSyncOperation(operation, [taskIds: ['a'], resources: [
+                'calendar:Work:resource': [action: 'update', event: ProjectionMetadata.eventMap(event)]]])
+            store.checkpointSyncResource(operation, 'calendar:Work:resource', 'verified', [event: ProjectionMetadata.eventMap(event)])
+            assert !store.syncProjectionsCommitted(operation)
+            store.commitSyncProjections(operation)
+            assert new ApplicationStateStore(dir).syncProjectionsCommitted(operation)
+        }
+
+        when:
+        new ApplicationStateStore(dir).commitSyncProjections('operation-1')
+
+        then:
+        thrown(IllegalStateException)
+        ProjectionMetadata.read(ProjectionMetadata.eventFromMap(store.loadProjections().values().first().event as Map)).value.revision == 2
+    }
+
+    def 'unverified operations and corrupt projection state do not authorize membership commit'() {
+        given:
+        def store = new ApplicationStateStore(dir)
+        store.beginSyncOperation('pending', [taskIds: ['a'], resources: ['calendar:Work:resource': [action: 'create']]])
+
+        when:
+        store.commitProjections([projection()], [], 'pending')
+
+        then:
+        thrown(IllegalStateException)
+        !Files.exists(store.projectionsPath())
+
+        when:
+        Files.writeString(store.projectionsPath(), '{"schemaVersion":999,"records":{}}')
+        new ApplicationStateStore(dir).loadProjections()
+
+        then:
+        thrown(PlanStoreException)
     }
 }

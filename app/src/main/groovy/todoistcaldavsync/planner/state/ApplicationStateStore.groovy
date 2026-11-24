@@ -4,6 +4,8 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import todoistcaldavsync.planner.domain.ApplicationReceipt
 import todoistcaldavsync.planner.domain.AppliedMapping
+import todoistcaldavsync.planner.domain.CalendarEvent
+import todoistcaldavsync.planner.domain.ProjectionMetadata
 
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -36,6 +38,7 @@ class ApplicationStateStore {
 
     private final Path directory
     private final Runnable beforeMoveHook
+    private final ThreadLocal<Boolean> mutationHeld = ThreadLocal.withInitial { false }
 
     /**
      * Process-wide mutex registry keyed by absolute lock-file path (cross-instance same JVM).
@@ -68,6 +71,329 @@ class ApplicationStateStore {
     }
 
     Path mappingHistoryPath() { directory.resolve('mapping-history.json') }
+
+    Path syncOperationsPath() { directory.resolve('sync-operations.json') }
+
+    Path projectionsPath() { directory.resolve('projections.json') }
+
+    Map<String, Map> loadProjections() {
+        withStoreLock { immutableJson(loadProjectionsUnlocked()) }
+    }
+
+    boolean syncProjectionsCommitted(String operationId) {
+        withStoreLock {
+            loadProjectionsUnlocked()
+            committedProjectionOperationsUnlocked().contains(operationId)
+        }
+    }
+
+    private List committedProjectionOperationsUnlocked() {
+        Files.exists(projectionsPath()) ?
+            ((new JsonSlurper().parse(projectionsPath().toFile()) as Map).committedOperations ?: []) as List : []
+    }
+
+    /** Membership commits are atomic across the entire replacement set, after verified remote outcomes. */
+    void commitProjections(Collection<CalendarEvent> verified, Collection<CalendarEvent> retired = [],
+                           String operationId = null) {
+        withStoreLock {
+            Map operation = operationId != null ? loadSyncOperationsUnlocked()[operationId] : null
+            if ((operationId != null && operation?.status != 'verified') || (retired && operation == null)) {
+                throw new IllegalStateException('projection membership requires a fully verified operation')
+            }
+            Map records = loadProjectionsUnlocked()
+            if (operationId != null && committedProjectionOperationsUnlocked().contains(operationId) &&
+                (verified.any { CalendarEvent event ->
+                    Map record = records[projectionKey(event)]
+                    record?.event != ProjectionMetadata.eventMap(event) || record?.operationId != operationId ||
+                        record?.status != (ProjectionMetadata.read(event).value.historical ? 'historical' : 'current')
+                } || retired.any { CalendarEvent event ->
+                    Map record = records[projectionKey(event)]
+                    record?.event != ProjectionMetadata.eventMap(event) || record?.operationId != operationId || record?.status != 'retired'
+                })) {
+                throw new IllegalStateException('committed operation cannot rewind subsequent projection lifetimes')
+            }
+            retired.each { CalendarEvent event ->
+                String key = projectionKey(event)
+                Map previous = records[key]
+                if (previous != null && previous.operationId != operationId &&
+                    (previous.status in ['retired', 'cancelled'] ||
+                        ProjectionMetadata.read(ProjectionMetadata.eventFromMap(previous.event as Map)).value.revision >
+                            ProjectionMetadata.read(event).value.revision)) {
+                    throw new IllegalStateException('newer local projection state blocks stale retirement replay')
+                }
+                String resource = 'calendar:' + event.calendarName + ':' + event.id
+                if (operation.intent.resources[resource]?.event != ProjectionMetadata.eventMap(event) ||
+                    operation.intent.resources[resource]?.action != 'retire' ||
+                    operation.outcomes[resource]?.evidence?.absent != true) {
+                    throw new IllegalStateException('retirement does not match verified journal evidence')
+                }
+                records[key] = [event: ProjectionMetadata.eventMap(event), status: 'retired', operationId: operationId]
+            }
+            verified.each { CalendarEvent event ->
+                ProjectionMetadata metadata = ProjectionMetadata.read(event)
+                if (!event.etag || event.start.toString() != metadata.value.members[0].start ||
+                    event.end.toString() != metadata.value.members[-1].end || event.allDay != metadata.value.allDay) {
+                    throw new IllegalStateException('projection baseline requires verified schedule and provider version')
+                }
+                if (operation != null && !operation.outcomes.values().any { it.evidence?.event == ProjectionMetadata.eventMap(event) }) {
+                    throw new IllegalStateException('projection does not match verified journal evidence')
+                }
+                Map previous = records[projectionKey(event)]
+                boolean recreated = previous?.status == 'retired' && operation != null &&
+                    operation.intent.retiredBaselines?.get(projectionKey(event)) == previous
+                if (previous != null && previous.operationId != operationId &&
+                    ((previous.status == 'retired' && !recreated) || previous.status == 'cancelled' ||
+                        (!recreated && ProjectionMetadata.read(ProjectionMetadata.eventFromMap(previous.event as Map)).value.revision > metadata.value.revision))) {
+                    throw new IllegalStateException('newer local projection state blocks stale operation replay')
+                }
+                if (operation == null && previous != null && (previous.status in ['retired', 'cancelled'] ||
+                    previous.event != ProjectionMetadata.eventMap(event))) {
+                    throw new IllegalStateException('portable and local baselines disagree; reconciliation required')
+                }
+                records[projectionKey(event)] = [event: ProjectionMetadata.eventMap(event),
+                    status: metadata.value.historical ? 'historical' : 'current', operationId: operationId]
+            }
+            validateProjections(records)
+            List committed = committedProjectionOperationsUnlocked()
+            if (operationId != null && !committed.contains(operationId)) committed << operationId
+            atomicWriteJsonUnlocked(projectionsPath(), JsonOutput.toJson([
+                schemaVersion: 1, records: records, committedOperations: committed]))
+        }
+    }
+
+    void commitSyncProjections(String operationId) {
+        Map operation = loadSyncOperations()[operationId]
+        if (operation?.status != 'verified') throw new IllegalStateException('verified operation required')
+        List<CalendarEvent> verified = operation.outcomes.values().findAll { it.evidence?.event instanceof Map }
+            .collect { ProjectionMetadata.eventFromMap(it.evidence.event as Map) }
+        List<CalendarEvent> retired = operation.intent.resources.values().findAll { it.action == 'retire' }
+            .collect { ProjectionMetadata.eventFromMap(it.event as Map) }
+        commitProjections(verified, retired, operationId)
+    }
+
+    void cancelProjection(CalendarEvent expected) {
+        withStoreLock {
+            Map records = loadProjectionsUnlocked()
+            Map record = records[projectionKey(expected)]
+            if (record?.status != 'current' || record.event != ProjectionMetadata.eventMap(expected)) {
+                throw new IllegalStateException('cancellation requires the exact verified current baseline')
+            }
+            record.status = 'cancelled'
+            atomicWriteJsonUnlocked(projectionsPath(), JsonOutput.toJson([
+                schemaVersion: 1, records: records, committedOperations: committedProjectionOperationsUnlocked()]))
+        }
+    }
+
+    private Map loadProjectionsUnlocked() {
+        if (!Files.exists(projectionsPath())) return [:]
+        try {
+            Object root = new JsonSlurper().parseText(Files.readString(projectionsPath(), StandardCharsets.UTF_8))
+            if (!(root instanceof Map) || root.schemaVersion != 1 || !(root.records instanceof Map) ||
+                (root.containsKey('committedOperations') && (!(root.committedOperations instanceof List) ||
+                    root.committedOperations.any { !(it instanceof String) || !it }))) {
+                throw new IllegalArgumentException('unsupported projection state')
+            }
+            validateProjections(root.records as Map)
+            root.records as Map
+        } catch (Exception e) {
+            throw new PlanStoreException('Projection state is corrupt; reconcile/restore before mutation',
+                projectionsPath().toString(), 'load', e)
+        }
+    }
+
+    private static void validateProjections(Map records) {
+        Set<String> current = [] as Set
+        records.each { String key, Object record ->
+            if (!(record instanceof Map) || !(record.event instanceof Map) ||
+                !(record.status in ['current', 'historical', 'retired', 'cancelled'])) {
+                throw new IllegalArgumentException('invalid projection record')
+            }
+            CalendarEvent event = ProjectionMetadata.eventFromMap(record.event as Map)
+            ProjectionMetadata metadata = ProjectionMetadata.read(event)
+            if (key != projectionKey(event) || !event.etag ||
+                event.start.toString() != metadata.value.members[0].start ||
+                event.end.toString() != metadata.value.members[-1].end || event.allDay != metadata.value.allDay ||
+                (record.status == 'historical' && !metadata.value.historical) ||
+                (record.status == 'current' && metadata.value.historical)) {
+                throw new IllegalArgumentException('projection baseline identity/schedule mismatch')
+            }
+            if (record.status == 'current') {
+                metadata.value.members.each { Map member ->
+                    if (!current.add(member.occurrenceKey.toString())) {
+                        throw new IllegalArgumentException('duplicate active occurrence coverage requires reconciliation')
+                    }
+                }
+            }
+        }
+    }
+
+    static String projectionKey(CalendarEvent event) { event.calendarName + '\u0000' + event.id }
+
+    /** Intent is a JSON snapshot, never a mutable reference to partially updated provider data. */
+    Map beginSyncOperation(String id, Map intent) {
+        if (!id || !intent || !(intent.resources instanceof Map) || !intent.resources ||
+            !(intent.taskIds instanceof Collection) || !intent.taskIds ||
+            intent.taskIds.any { !(it instanceof String) || !it } ||
+            intent.resources.keySet().any { !(it instanceof String) || !it }) {
+            throw new IllegalArgumentException('sync operation requires id, taskIds and resource intents')
+        }
+        Map frozenIntent = jsonCopy(intent)
+        withStoreLock {
+            Map operations = loadSyncOperationsUnlocked()
+            if (operations.containsKey(id)) {
+                Map original = jsonCopy(operations[id].intent as Map)
+                original.remove('retiredBaselines')
+                if (original != frozenIntent) {
+                    throw new IllegalStateException('sync operation intent cannot change')
+                }
+                return immutableJson(operations[id])
+            }
+            operations.values().findAll { it.status != 'verified' }.each { Map pending ->
+                if (pending.intent.taskIds.intersect(frozenIntent.taskIds) ||
+                    pending.intent.resources.keySet().intersect(frozenIntent.resources.keySet())) {
+                    throw new IllegalStateException('overlapping sync operation requires reconciliation')
+                }
+            }
+            // A deterministic individual/group ID may legitimately return after regrouping.
+            // Bind that new lifetime to its exact tombstone and live retiring source membership;
+            // a historical successful journal can never resurrect a later tombstone/cancellation.
+            if (frozenIntent.containsKey('retiredBaselines')) throw new IllegalArgumentException('retired baselines are store-owned evidence')
+            Map records = loadProjectionsUnlocked(), baselines = [:]
+            Set<String> replacing = frozenIntent.resources.values().findAll { it.action == 'retire' }.collectMany { Map resource ->
+                CalendarEvent source = ProjectionMetadata.eventFromMap(resource.event as Map)
+                Map record = records[projectionKey(source)]
+                record?.status == 'current' && record.event == resource.event ? ProjectionMetadata.read(source).value.members*.occurrenceKey : []
+            } as Set<String>
+            frozenIntent.resources.values().findAll { it.action == 'create' }.each { Map resource ->
+                String destination = (resource.event?.calendarName ?: resource.destination)?.toString()
+                String resourceId = (resource.event?.id ?: resource.id)?.toString()
+                String key = destination + '\u0000' + resourceId
+                Map previous = records[key]
+                String uid = (resource.event?.uid ?: resource.uid)?.toString()
+                if (previous?.status == 'cancelled' || records.values().any { it.status == 'cancelled' && it.event.uid == uid }) {
+                    throw new IllegalStateException('cancelled projection requires explicit reconciliation')
+                }
+                if (previous?.status != 'retired') return
+                CalendarEvent before = ProjectionMetadata.eventFromMap(previous.event as Map)
+                boolean restoredSchedule = false
+                if (frozenIntent.type == 'schedule-forward' && resource.before == null && resource.event instanceof Map) {
+                    ProjectionMetadata target = ProjectionMetadata.read(ProjectionMetadata.eventFromMap(resource.event as Map))
+                    if (!target.value.historical && target.value.members.size() == 1 &&
+                        target.value.routingFingerprint == frozenIntent.routingFingerprint) {
+                        Map member = target.value.members[0]
+                        def task = frozenIntent.tasks?.get(member.taskId) instanceof Map ?
+                            PlanStore.taskFromMap(frozenIntent.tasks[member.taskId] as Map) : null
+                        restoredSchedule = task != null && task.occurrenceIdentity().occurrenceKey() == member.occurrenceKey &&
+                            task.todoistDue?.snapshotMap() == member.due && task.dueTime?.toString() == member.start &&
+                            task.nativeDuration?.toMinutes() == member.nativeMinutes && task.effectiveDuration.toMinutes() == member.effectiveMinutes
+                    }
+                }
+                if (before.uid != (resource.event?.uid ?: resource.uid) ||
+                    (!restoredSchedule && (!(frozenIntent.type in ['projection-replacement', 'routed-plan']) ||
+                        !replacing.containsAll(ProjectionMetadata.read(before).value.members*.occurrenceKey)))) {
+                    throw new IllegalStateException('retired resource requires current journal-bound replacement membership')
+                }
+                baselines[key] = previous
+            }
+            if (baselines) frozenIntent.retiredBaselines = baselines
+            Map operation = [id: id, intent: frozenIntent, status: 'pending',
+                outcomes: frozenIntent.resources.collectEntries { key, value -> [(key): [state: 'pending']] }]
+            operations[id] = operation
+            saveSyncOperationsUnlocked(operations)
+            immutableJson(operation)
+        }
+    }
+
+    /** Unknown outcomes can become verified only through caller-supplied live readback evidence. */
+    Map checkpointSyncResource(String id, String resource, String state, Map evidence = [:]) {
+        if (!(state in ['pending', 'verified', 'conflict', 'unknown', 'failed']) ||
+            (state == 'verified' && !evidence)) {
+            throw new IllegalArgumentException('resource outcome requires a valid state and verified evidence')
+        }
+        withStoreLock {
+            Map operations = loadSyncOperationsUnlocked()
+            Map operation = operations[id]
+            if (operation == null || !operation.outcomes.containsKey(resource)) {
+                throw new IllegalArgumentException('sync operation/resource is not journaled')
+            }
+            Map outcome = [state: state, evidence: jsonCopy(evidence)]
+            if (operation.outcomes[resource].state == 'verified' && operation.outcomes[resource] != outcome) {
+                throw new IllegalStateException('verified resource outcomes are immutable')
+            }
+            operation.outcomes[resource] = outcome
+            operation.status = operation.outcomes.values().every { it.state == 'verified' } ? 'verified' : 'pending'
+            saveSyncOperationsUnlocked(operations)
+            immutableJson(operation)
+        }
+    }
+
+    Map<String, Map> loadSyncOperations() {
+        withStoreLock { immutableJson(loadSyncOperationsUnlocked()) }
+    }
+
+    /** Hold across live preflight, mutation and verification; a second writer fails, not waits. */
+    <T> T withMutationLock(Closure<T> action) {
+        if (action == null) throw new IllegalArgumentException('mutation action is required')
+        // Composition may invoke a journaled service under this same store's outer writer lease.
+        // Another store instance/thread still has to acquire the OS lock and must fail closed.
+        if (mutationHeld.get()) return action.call()
+        Files.createDirectories(directory)
+        FileChannel.open(directory.resolve('.mutation.lock'),
+            StandardOpenOption.CREATE, StandardOpenOption.WRITE).withCloseable { FileChannel channel ->
+            FileLock lock
+            try { lock = channel.tryLock() }
+            catch (java.nio.channels.OverlappingFileLockException ignored) {
+                throw new IllegalStateException('another planner writer owns this application state')
+            }
+            if (lock == null) throw new IllegalStateException('another planner writer owns this application state')
+            mutationHeld.set(true)
+            try { action.call() }
+            finally { mutationHeld.remove(); lock.release() }
+        }
+    }
+
+    private Map loadSyncOperationsUnlocked() {
+        Path path = syncOperationsPath()
+        if (!Files.exists(path)) return [:]
+        try {
+            Object root = new JsonSlurper().parseText(Files.readString(path, StandardCharsets.UTF_8))
+            if (!(root instanceof Map) || root.schemaVersion != 1 || !(root.operations instanceof Map)) {
+                throw new IllegalArgumentException('unsupported sync journal schema')
+            }
+            root.operations.each { id, operation ->
+                if (!(operation instanceof Map) || operation.id != id ||
+                    !(operation.intent instanceof Map) || !(operation.intent.resources instanceof Map) ||
+                    !operation.intent.resources || !(operation.intent.taskIds instanceof Collection) ||
+                    !operation.intent.taskIds || !(operation.outcomes instanceof Map) ||
+                    operation.outcomes.keySet() != operation.intent.resources.keySet() ||
+                    !(operation.status in ['pending', 'verified']) ||
+                    operation.outcomes.values().any { !(it instanceof Map) ||
+                        !(it.state in ['pending', 'verified', 'conflict', 'unknown', 'failed']) ||
+                        (it.state == 'verified' && !(it.evidence instanceof Map && it.evidence)) } ||
+                    (operation.status == 'verified') != operation.outcomes.values().every { it.state == 'verified' }) {
+                    throw new IllegalArgumentException('invalid sync operation')
+                }
+            }
+            root.operations as Map
+        } catch (Exception e) {
+            throw new PlanStoreException('Sync journal is corrupt; restore/reconcile before mutations',
+                path.toString(), 'load', e)
+        }
+    }
+
+    private void saveSyncOperationsUnlocked(Map operations) {
+        atomicWriteJsonUnlocked(syncOperationsPath(), JsonOutput.toJson([schemaVersion: 1, operations: operations]))
+    }
+
+    private static Map jsonCopy(Map value) {
+        new JsonSlurper().parseText(JsonOutput.toJson(value)) as Map
+    }
+
+    private static Object immutableJson(Object value) {
+        if (value instanceof Map) return Collections.unmodifiableMap(value.collectEntries { k, v -> [(k): immutableJson(v)] })
+        if (value instanceof Collection) return Collections.unmodifiableList(value.collect { immutableJson(it) })
+        value
+    }
 
     Path receiptPath(String receiptId) {
         directory.resolve("receipt-${encodeKey(receiptId)}.json")

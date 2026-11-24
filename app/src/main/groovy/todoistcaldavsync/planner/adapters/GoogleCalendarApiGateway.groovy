@@ -6,6 +6,9 @@ import groovy.json.JsonSlurper
 import todoistcaldavsync.planner.CalendarProviderConfig
 import todoistcaldavsync.planner.domain.CalendarEvent
 import todoistcaldavsync.planner.domain.ManagedEventIds
+import todoistcaldavsync.planner.domain.ProjectionMetadata
+import todoistcaldavsync.planner.state.ProjectionReplacementPermit
+import todoistcaldavsync.planner.migration.LegacyMigrationPermit
 import todoistcaldavsync.planner.oauth.GoogleOAuthClientMaterialLoader
 import todoistcaldavsync.planner.oauth.GoogleOAuthCredentialService
 import todoistcaldavsync.planner.oauth.GoogleOAuthScopes
@@ -34,7 +37,7 @@ import java.util.function.Supplier
  * Reads are bounded per configured calendar. Mutations are at-most-once and are
  * guarded again here even when composition also uses ManagedCalendarWriteGateway.
  */
-final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWriteGateway, CalendarChangeGateway {
+final class GoogleCalendarApiGateway implements ProjectionCalendarGateway, CalendarChangeGateway, MigrationCalendarGateway {
     static final String DEFAULT_BASE_URL = 'https://www.googleapis.com/calendar/v3'
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10)
     static final int DEFAULT_MAX_PAGES = 20
@@ -44,6 +47,7 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
 
     final CalendarProviderConfig.GoogleCalendarApiConfig config
     final String managedCalendarName
+    final Set<String> managedCalendarNames
     final ZoneId timezone
 
     private final URI baseUri
@@ -58,7 +62,6 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
     private final int readAttempts
     private final Function<Integer, String> exceptionClassifier
     private final List<CalendarMapping> calendars
-    private final CalendarMapping managedCalendar
 
     GoogleCalendarApiGateway(Map options) {
         if (!(options?.config instanceof CalendarProviderConfig.GoogleCalendarApiConfig)) {
@@ -72,13 +75,24 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
             String name = row.name?.toString()
             String id = row.id?.toString()
             if (!name || !id) throw new IllegalArgumentException('configured Google calendars require name and id')
-            new CalendarMapping(name, id, row.role?.toString())
+            new CalendarMapping(name, id, row.role?.toString(), row.prefix?.toString() ?: '')
         })
-        this.managedCalendar = calendars.find {
-            it.name == managedCalendarName && it.role == 'managed_output'
-        }
-        if (!managedCalendarName || managedCalendar == null) {
-            throw new IllegalArgumentException('managed calendar must match the configured Google managed_output mapping')
+        if (options.managedCalendarNames != null) {
+            if (managedCalendarName || !(options.managedCalendarNames instanceof Collection)) {
+                throw new IllegalArgumentException('single and routed managed calendar models cannot be mixed')
+            }
+            Set<String> requested = options.managedCalendarNames as Set<String>
+            Set<String> configured = config.calendars.findAll { it.managed_destination == true }*.name as Set<String>
+            if (!requested || requested != configured || !calendars*.name.containsAll(requested) ||
+                calendars.any { it.role == 'managed_output' }) {
+                throw new IllegalArgumentException('routed managed destinations must match explicitly configured mappings')
+            }
+            this.managedCalendarNames = Collections.unmodifiableSet(new LinkedHashSet<>(requested))
+        } else {
+            if (!managedCalendarName || !calendars.any { it.name == managedCalendarName && it.role == 'managed_output' }) {
+                throw new IllegalArgumentException('managed calendar must match the configured Google managed_output mapping')
+            }
+            this.managedCalendarNames = Collections.singleton(managedCalendarName)
         }
 
         String rawBase = (options.baseUrl ?: options.base_url ?: DEFAULT_BASE_URL).toString()
@@ -129,13 +143,15 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
         if (calendar == null) {
             throw new IllegalArgumentException("unknown configured Google calendar '${calendarName}'")
         }
-        Set<String> candidates = candidateUids == null ? Collections.emptySet() :
+        if (candidateUids == null) requireManagedDestination(calendarName)
+        Set<String> candidates = candidateUids == null ? null :
             new HashSet<>(candidateUids.findAll { it }*.toString())
+        Closure<Boolean> accepts = { String uid -> candidates == null ? !!uid : candidates.contains(uid) }
         String cursor = state?.cursor?.toString()
         Map<String, String> resourceUids = new LinkedHashMap<>()
         if (state?.resourceUids instanceof Map) {
             (state.resourceUids as Map).each { id, uid ->
-                if (id != null && uid != null && candidates.contains(uid.toString())) {
+                if (id != null && uid != null && accepts(uid.toString())) {
                     resourceUids[id.toString()] = uid.toString()
                 }
             }
@@ -172,7 +188,10 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
                 Map resource = item as Map
                 String id = resource.id?.toString()
                 String uid = managedUid(resource) ?: (id ? resourceUids[id] : null)
-                if (!id || !uid || !candidates.contains(uid)) return
+                if (!id || !uid || !accepts(uid)) return
+                if (candidates == null && !resourceUids.containsKey(id) && !ManagedEventIds.isPlannerUid(uid) &&
+                    !ManagedEventIds.hasOwnershipMarker(resource.description?.toString()) &&
+                    !resource.description?.toString()?.contains(ProjectionMetadata.PREFIX)) return
                 resourceUids[id] = uid
                 if (resource.status?.toString() == 'cancelled') {
                     deleted << [id: id, uid: uid]
@@ -205,6 +224,15 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
 
     @Override
     CalendarEvent findEventByUid(String uid) {
+        List<CalendarEvent> matches = findIdentityResources(uid)
+        if (matches.size() > 1) {
+            throw new GoogleCalendarGatewayException('UID_COLLISION',
+                "Google Calendar iCalUID collision across configured calendars: ${uid}")
+        }
+        matches ? matches[0] : null
+    }
+
+    private List<CalendarEvent> findIdentityResources(String uid) {
         if (!uid) throw new IllegalArgumentException('event iCalUID is required')
         // A provider event can legitimately match both the iCalUID collision
         // query and the private planner-UID query; count it once.
@@ -237,24 +265,23 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
                     .allDay(event.allDay).build()
             }
         }
-        List<CalendarEvent> matches = new ArrayList<>(matchesByProviderId.values())
-        if (matches.size() > 1) {
-            throw new GoogleCalendarGatewayException('UID_COLLISION',
-                "Google Calendar iCalUID collision across configured calendars: ${uid}")
-        }
-        matches ? matches[0] : null
+        new ArrayList<>(matchesByProviderId.values())
     }
 
     @Override
     void upsertEvent(CalendarEvent event) {
         requireOwnedIncoming(event)
+        if (managedCalendarName == null) {
+            throw new IllegalStateException('routed writes require an exact-resource projection operation')
+        }
         CalendarEvent existing = findEventByUid(event.uid)
         if (existing != null) {
             requireOwnedExisting(existing, ManagedEventIds.extractBlockId(event.description))
         }
         Map body = toGoogleEvent(event, timezone)
-        String path = existing == null ? eventsPath(managedCalendar.id) :
-            eventsPath(managedCalendar.id) + '/' + segment(existing.id)
+        CalendarMapping destination = calendars.find { it.name == event.calendarName }
+        String path = existing == null ? eventsPath(destination.id) :
+            eventsPath(destination.id) + '/' + segment(existing.id)
         String expectedEtag = event.etag ?: existing?.etag
         Map headers = expectedEtag ? ['If-Match': expectedEtag] : [:]
         GatewayResponse response = send(existing == null ? 'POST' : 'PUT', path, [:],
@@ -276,15 +303,243 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
 
     @Override
     void deleteOwnedEvent(String eventUid, String expectedBlockId) {
+        if (managedCalendarName == null) throw new IllegalStateException('routed deletion requires an exact-resource projection operation')
         if (!eventUid || !expectedBlockId) {
             throw new IllegalArgumentException('event iCalUID and expected block id are required')
         }
         CalendarEvent live = findEventByUid(eventUid)
         if (live == null) throw new IllegalStateException("Cannot delete missing event uid=${eventUid}")
         requireOwnedExisting(live, expectedBlockId)
-        GatewayResponse response = send('DELETE', eventsPath(managedCalendar.id) + '/' + segment(live.id),
+        CalendarMapping destination = calendars.find { it.name == live.calendarName }
+        GatewayResponse response = send('DELETE', eventsPath(destination.id) + '/' + segment(live.id),
             [:], null, true)
         requireSuccess(response, 'delete event')
+    }
+
+    @Override
+    List<Map> inventoryLegacyResources() {
+        managedCalendarNames.collectMany { String destination ->
+            CalendarMapping mapping = requireManagedDestination(destination)
+            // Do not expand or time-bound: retain full, restorable resources and visible exclusions.
+            readAllPages(mapping, [showDeleted: 'false']).collect { migrationResource(destination, it) }
+        }
+    }
+
+    @Override
+    Map readLegacyResource(String destination, String id) {
+        CalendarMapping mapping = requireManagedDestination(destination)
+        if (!id) throw new IllegalArgumentException('exact legacy resource ID required')
+        GatewayResponse response = sendReadWithRetry(eventsPath(mapping.id) + '/' + segment(id), [:])
+        if (response.statusCode() in [404, 410]) return null
+        requireSuccess(response, 'read legacy resource')
+        Map payload = parseObject(response.body(), false)
+        if (payload.id != id) throw malformed('legacy exact read returned another resource')
+        payload.status == 'cancelled' ? null : migrationResource(destination, payload)
+    }
+
+    @Override
+    void deleteLegacyResource(String destination, String id, LegacyMigrationPermit permit) {
+        if (permit?.action != 'delete') throw new IllegalArgumentException('legacy deletion capability required')
+        Map expected = permit.resource(destination, id)
+        permit.requireUnchanged(expected, readLegacyResource(destination, id))
+        CalendarMapping mapping = requireManagedDestination(destination)
+        requireSuccess(send('DELETE', eventsPath(mapping.id) + '/' + segment(id), [:], null, true,
+            ['If-Match': expected.etag.toString()]), 'delete reviewed legacy resource')
+    }
+
+    @Override
+    Map restoreLegacyResource(String destination, String id, LegacyMigrationPermit permit) {
+        if (permit?.action != 'restore') throw new IllegalArgumentException('legacy restoration capability required')
+        Map expected = permit.resource(destination, id)
+        if (!expected.restorable) throw new IllegalStateException('resource has no verified restoration format')
+        CalendarMapping mapping = requireManagedDestination(destination)
+        Map body = googleRestorePayload(expected.payload as Map)
+        Map properties = new LinkedHashMap(body.extendedProperties ?: [:])
+        properties.private = new LinkedHashMap(properties.private ?: [:]) + [todoistMigrationRestore: permit.manifestHash]
+        body.extendedProperties = properties
+        List<Map> existing = readAllPages(mapping, [iCalUID: expected.uid, showDeleted: 'false'])
+        if (existing.size() > 1 || (existing && googleRestorePayload(existing[0]) != body)) {
+            throw new IllegalStateException('legacy restore identity changed/collided; preserve human resource')
+        }
+        CalendarEvent identity = findEventByUid(expected.uid.toString())
+        if (identity != null && (!existing || identity.calendarName != destination || identity.id != existing[0].id)) {
+            throw new IllegalStateException('legacy restore UID exists in another configured calendar')
+        }
+        if (!existing) {
+            // Import creates a private copy. Never supply both id and iCalUID (Google's contract).
+            GatewayResponse response = send('POST', eventsPath(mapping.id) + '/import',
+                [conferenceDataVersion: '1', supportsAttachments: 'true', eventLabelVersion: body.eventLabelId ? '1' : '0'],
+                JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true)
+            requireSuccess(response, 'restore private legacy copy')
+            existing = readAllPages(mapping, [iCalUID: expected.uid, showDeleted: 'false'])
+        }
+        if (existing.size() != 1 || googleRestorePayload(existing[0]) != body || !existing[0].etag) {
+            throw new IllegalStateException('legacy restore readback mismatch; reconcile before retry')
+        }
+        migrationResource(destination, existing[0])
+    }
+
+    private Map migrationResource(String destination, Map payload) {
+        Map event = null
+        try { event = ProjectionMetadata.eventMap(fromGoogleEvent(payload, destination, timezone)) }
+        catch (RuntimeException ignored) { /* Export unsupported resources intact, never authorize their deletion. */ }
+        [destination: destination, id: payload.id, uid: payload.iCalUID, etag: payload.etag,
+            payload: payload, event: event,
+            restorable: event != null && (!payload.eventType || payload.eventType == 'default') &&
+                !payload.recurrence && !payload.recurringEventId && !!payload.iCalUID]
+    }
+
+    private static Map googleRestorePayload(Map payload) {
+        Set<String> writable = ['iCalUID', 'start', 'end', 'anyoneCanAddSelf', 'attachments', 'attendees',
+            'attendeesOmitted', 'colorId', 'conferenceData', 'description', 'endTimeUnspecified',
+            'extendedProperties', 'gadget', 'guestsCanInviteOthers', 'guestsCanModify', 'guestsCanSeeOtherGuests',
+            'location', 'organizer', 'reminders', 'sequence', 'source', 'status', 'summary', 'transparency', 'visibility',
+            'eventLabelId'] as Set
+        payload.findAll { key, value -> writable.contains(key) }
+    }
+
+    @Override
+    String projectionTitle(String destination, String title) {
+        requireManagedDestination(destination).prefix + title
+    }
+
+    @Override
+    String projectionResourceId(String destination, String uid) {
+        requireManagedDestination(destination)
+        if (!ManagedEventIds.isPlannerUid(uid)) throw new IllegalArgumentException('planner UID is required')
+        java.security.MessageDigest.getInstance('SHA-256')
+            .digest((destination + '\u0000' + uid).getBytes(StandardCharsets.UTF_8)).encodeHex().toString()
+    }
+
+    @Override
+    String newProjectionResourceId(String destination, String uid) {
+        // Google retains cancelled IDs. Logical UID is stable; each resource lifetime is new.
+        projectionResourceId(destination, uid) + UUID.randomUUID().toString().replace('-', '')
+    }
+
+    @Override
+    CalendarEvent readResource(String destination, String resourceId) {
+        CalendarMapping mapping = requireManagedDestination(destination)
+        if (!resourceId) throw new IllegalArgumentException('exact Google resource ID is required')
+        GatewayResponse response = sendReadWithRetry(eventsPath(mapping.id) + '/' + segment(resourceId), [:])
+        if (response.statusCode() == 404 || response.statusCode() == 410) return null
+        requireSuccess(response, 'read exact projection')
+        Map resource = parseObject(response.body(), false)
+        if (resource.id != resourceId) throw malformed('exact Google read returned a different resource')
+        if (resource.status == 'cancelled') return null
+        fromGoogleEvent(resource, destination, timezone)
+    }
+
+    @Override
+    CalendarEvent createProjection(CalendarEvent target) {
+        createProjectionResource(target, null)
+    }
+
+    @Override
+    CalendarEvent createReplacement(CalendarEvent target, ProjectionReplacementPermit permit) {
+        if (permit == null) throw new IllegalArgumentException('replacement permit is required')
+        createProjectionResource(target, permit)
+    }
+
+    @Override
+    CalendarEvent verifyReplacement(CalendarEvent target, ProjectionReplacementPermit permit) {
+        requireOwnedIncoming(target)
+        if (permit == null) throw new IllegalArgumentException('replacement permit is required')
+        permit.validate(target, findIdentityResources(target.uid))
+        verifyProjectionWrite(target)
+    }
+
+    private CalendarEvent createProjectionResource(CalendarEvent target, ProjectionReplacementPermit permit) {
+        requireOwnedIncoming(target)
+        ProjectionMetadata.read(target)
+        String prefix = projectionResourceId(target.calendarName, target.uid)
+        if (target.id != prefix && !(target.id ==~ (java.util.regex.Pattern.quote(prefix) + '[a-f0-9]{32}'))) {
+            throw new IllegalArgumentException('projection create requires a UID-bound provider resource lifetime')
+        }
+        List<CalendarEvent> collisions = findIdentityResources(target.uid)
+        if (permit != null) permit.validate(target, collisions)
+        if ((permit == null && collisions) || readResource(target.calendarName, target.id) != null) {
+            throw new IllegalStateException('projection identity already exists; reconcile before create')
+        }
+        Map body = toGoogleEvent(target, timezone)
+        body.id = target.id
+        CalendarMapping mapping = requireManagedDestination(target.calendarName)
+        GatewayResponse response = send('POST', eventsPath(mapping.id), [:],
+            JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true)
+        requireSuccess(response, 'create exact projection')
+        verifyProjectionWrite(target)
+    }
+
+    @Override
+    CalendarEvent replaceProjection(CalendarEvent expected, CalendarEvent target) {
+        requireOwnedIncoming(target)
+        ProjectionMetadata next = ProjectionMetadata.read(target)
+        ProjectionMetadata prior = ProjectionMetadata.read(expected)
+        if (target.id != expected.id || target.uid != expected.uid || target.calendarName != expected.calendarName ||
+            next.value.historical != prior.value.historical ||
+            next.value.revision != prior.value.revision + 1 ||
+            next.value.members*.occurrenceKey != prior.value.members*.occurrenceKey) {
+            throw new IllegalArgumentException('in-place projection updates must preserve identity/membership and advance one revision')
+        }
+        ProjectionMetadata.requireUnchanged(expected, readResource(expected.calendarName, expected.id))
+        CalendarMapping mapping = requireManagedDestination(target.calendarName)
+        Map body = toGoogleEvent(target, timezone)
+        if (expected.allDay != target.allDay) {
+            // PATCH retains omitted nested fields; explicitly remove the old representation.
+            [body.start, body.end].each { Map time ->
+                if (target.allDay) { time.dateTime = null; time.timeZone = null }
+                else time.date = null
+            }
+        }
+        GatewayResponse response = send('PATCH', eventsPath(mapping.id) + '/' + segment(expected.id), [:],
+            JsonOutput.toJson(body).getBytes(StandardCharsets.UTF_8), true,
+            ['If-Match': expected.etag])
+        requireSuccess(response, 'replace exact projection')
+        verifyProjectionWrite(target)
+    }
+
+    @Override
+    CalendarEvent upgradeSingleProjection(CalendarEvent expected, CalendarEvent target) {
+        requireOwnedIncoming(target)
+        ProjectionMetadata.requireSingleUpgrade(expected, target)
+        ProjectionMetadata.requireResourceUnchanged(expected, readResource(expected.calendarName, expected.id))
+        ProjectionMetadata.requireResourceUnchanged(expected, findEventByUid(expected.uid))
+        CalendarMapping mapping = requireManagedDestination(target.calendarName)
+        GatewayResponse response = send('PATCH', eventsPath(mapping.id) + '/' + segment(expected.id), [:],
+            JsonOutput.toJson(toGoogleEvent(target, timezone)).getBytes(StandardCharsets.UTF_8), true,
+            ['If-Match': expected.etag])
+        requireSuccess(response, 'upgrade exact single projection')
+        verifyProjectionWrite(target)
+    }
+
+    @Override
+    void retireProjection(CalendarEvent expected) {
+        requireOwnedIncoming(expected)
+        ProjectionMetadata.requireUnchanged(expected, readResource(expected.calendarName, expected.id))
+        CalendarMapping mapping = requireManagedDestination(expected.calendarName)
+        GatewayResponse response = send('DELETE', eventsPath(mapping.id) + '/' + segment(expected.id), [:], null, true,
+            ['If-Match': expected.etag])
+        requireSuccess(response, 'retire exact projection')
+        if (readResource(expected.calendarName, expected.id) != null) {
+            throw new GoogleCalendarGatewayException('AMBIGUOUS_WRITE', 'projection retirement was not verified absent')
+        }
+    }
+
+    private CalendarEvent verifyProjectionWrite(CalendarEvent target) {
+        try {
+            CalendarEvent live = readResource(target.calendarName, target.id)
+            if (live == null || !live.etag || live.uid != target.uid || live.start != target.start || live.end != target.end ||
+                live.allDay != target.allDay || live.title != target.title || live.description != target.description) {
+                throw new IllegalStateException('projection postconditions differ')
+            }
+            ProjectionMetadata.read(live)
+            live
+        } catch (Exception e) { throw ambiguous(e) }
+    }
+
+    private CalendarMapping requireManagedDestination(String name) {
+        if (!managedCalendarNames.contains(name)) throw new IllegalStateException('destination is not explicitly managed')
+        calendars.find { it.name == name }
     }
 
     private List<Map> readAllPages(CalendarMapping calendar, Map baseQuery) {
@@ -413,17 +668,17 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
 
     private void requireOwnedIncoming(CalendarEvent event) {
         if (event == null) throw new IllegalArgumentException('event is required')
-        if (event.calendarName != managedCalendarName) {
+        if (!managedCalendarNames.contains(event.calendarName)) {
             throw new IllegalStateException("Refusing Google Calendar write outside managed calendar '${managedCalendarName}'")
         }
         String blockId = ManagedEventIds.extractBlockId(event.description)
-        if (!ManagedEventIds.isOwned(event, managedCalendarName) || !blockId) {
+        if (!ManagedEventIds.isOwned(event, event.calendarName) || !blockId) {
             throw new IllegalStateException('Refusing Google Calendar write without planner UID, ownership, and block metadata')
         }
     }
 
     private void requireOwnedExisting(CalendarEvent existing, String expectedBlockId) {
-        if (!ManagedEventIds.isOwned(existing, managedCalendarName)) {
+        if (!managedCalendarNames.contains(existing?.calendarName) || !ManagedEventIds.isOwned(existing, existing?.calendarName)) {
             throw new IllegalStateException("Refusing Google Calendar mutation of external or unowned event uid=${existing?.uid}")
         }
         if (!expectedBlockId || !ManagedEventIds.descriptionHasBlockId(existing.description, expectedBlockId)) {
@@ -563,7 +818,10 @@ final class GoogleCalendarApiGateway implements CalendarReadGateway, CalendarWri
         final String name
         final String id
         final String role
-        CalendarMapping(String name, String id, String role) { this.name = name; this.id = id; this.role = role }
+        final String prefix
+        CalendarMapping(String name, String id, String role, String prefix) {
+            this.name = name; this.id = id; this.role = role; this.prefix = prefix
+        }
     }
 
     private static final class GatewayResponse {

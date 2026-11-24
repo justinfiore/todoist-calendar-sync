@@ -9,8 +9,39 @@ planner:
   timezone: America/New_York
   output_calendar: Todoist Planned
 
+  # Routed sync is implemented; routed planning/migration acceptance is not complete.
+  # Keep the compatible single-output model above until the complete routed
+  # lifecycle/recovery acceptance is implemented. Never enable this on production
+  # as an ownership handoff. See docs/SMART_PLANNER_CONFIGURATION.md.
+  # To validate a reviewed routed model offline, remove output_calendar and add:
+  # routing:
+  #   mode: legacy_rules
+  #   labelsToInclude: [calendar]
+  #   projectsToInclude: [Family]
+  #   rules:
+  #     - {calendarName: 'J&J', rule: 'joint'}
+  #     - {calendarName: Jack, rule: jack}
+  #     - {calendarName: Evan, rule: evan}
+  #     - {calendarName: Emily, rule: emily}
+  #     - {calendarName: Colin, rule: colin}
+  #     - {calendarName: Kids, rule: 'p:Family AND NOT joint'}
+  #     - {calendarName: Todoist, rule: calendar}
+  # Every destination requires an explicit provider mapping with
+  # managed_destination: true. Availability roles remain independent; a routed
+  # destination may be informational, hard_blocker or soft_blocker, never the
+  # single-output managed_output role. Names and predicates here are illustrative,
+  # not the owner's effective rules; no IDs or credentials are inferred.
+
+  # Independent current-schedule mirroring, never optimization or plan approval.
+  # Enabling requires explicit routed mappings and a separately authorized writer
+  # handoff. False is required for the compatible single-output example above.
+  sync:
+    enabled: false
+    interval: PT1M
+
   # Optional calendar-to-Todoist Due writeback for newer moves of owned,
-  # single-task managed events. Omitted/false preserves one-way behavior.
+  # single-task managed events in compatible mode. Routed sync also writes native
+  # durations and supports group edits only when this AND sync.enabled are true.
   calendarWriteback:
     enabled: false
 

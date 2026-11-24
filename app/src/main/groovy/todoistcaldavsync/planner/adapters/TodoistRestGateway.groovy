@@ -23,7 +23,7 @@ import java.util.function.Function
  * GETs retry boundedly for transient status codes. Writes are at-most-once: an
  * ambiguous failed write is surfaced for reconciliation rather than replayed.
  */
-final class TodoistRestGateway implements TodoistLifecycleGateway {
+final class TodoistRestGateway implements TodoistScheduleGateway, TodoistMigrationGateway {
     static final String DEFAULT_BASE_URL = 'https://api.todoist.com/api/v1'
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10)
     static final int DEFAULT_PAGE_SIZE = 200
@@ -80,6 +80,17 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
             }
             copy
         })
+    }
+
+    @Override
+    Map fetchAccountIdentity() {
+        GatewayResponse response = sendReadWithRetry('/user', null)
+        requireSuccess(response, 'read authenticated Todoist identity')
+        def parsed = parseJson(response.body(), 'user')
+        if (!(parsed instanceof Map) || !parsed.id || !parsed.email) {
+            throw new TodoistGatewayException('SCHEMA', 'Todoist authenticated identity is incomplete')
+        }
+        Collections.unmodifiableMap([id: parsed.id.toString(), email: parsed.email.toString()])
     }
 
     @Override
@@ -146,6 +157,14 @@ final class TodoistRestGateway implements TodoistLifecycleGateway {
         byte[] body = JsonOutput.toJson([due_datetime: dueDateTimeIso]).getBytes(StandardCharsets.UTF_8)
         GatewayResponse response = send('POST', "/tasks/${segment(taskId)}", null, body)
         requireSuccess(response, 'update task due')
+    }
+
+    @Override
+    TodoistCommandResult updateTaskDuration(String taskId, int minutes, String commandId) {
+        if (!taskId || minutes <= 0 || !validUuid(commandId)) {
+            throw new IllegalArgumentException('taskId, positive whole minutes, and UUID commandId are required')
+        }
+        sendItemUpdate(taskId, commandId, [duration: [amount: minutes, unit: 'minute']])
     }
 
     @Override

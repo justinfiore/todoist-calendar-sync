@@ -1,6 +1,7 @@
 package todoistcaldavsync.planner.adapters
 
 import todoistcaldavsync.planner.domain.CalendarEvent
+import todoistcaldavsync.planner.state.ProjectionReplacementPermit
 
 import java.time.Instant
 
@@ -21,6 +22,8 @@ interface CalendarChangeGateway {
      * State contains cursor, collectionTag, syncSupported, stamps and resourceUids as applicable.
      * Invalid cursors throw CalendarCursorExpiredException; no partial results are returned.
      * candidateUids restricts body reads/classification, never provider sync-token filters.
+     * A null candidate set discovers planner identities only on an explicitly managed destination;
+     * an empty set still selects nothing. Discovery itself grants no ownership/write authority.
      */
     Map readChanges(String calendarName, Map state, Set<String> candidateUids,
                     Instant rangeStart, Instant rangeEnd)
@@ -71,4 +74,20 @@ interface CalendarWriteGateway {
      * @param expectedBlockId   block id that must appear in ownership metadata
      */
     void deleteOwnedEvent(String eventUid, String expectedBlockId)
+}
+
+/** Exact-resource capabilities used by durable routed operations, never generic UID adoption. */
+interface ProjectionCalendarGateway extends CalendarReadGateway, CalendarWriteGateway {
+    /** Prefix a newly constructed title; retained provider titles must not be decorated again. */
+    String projectionTitle(String destination, String title)
+    String projectionResourceId(String destination, String uid)
+    /** Allocate once before journaling a create; retries must use the journaled ID. */
+    String newProjectionResourceId(String destination, String uid)
+    CalendarEvent readResource(String destination, String resourceId)
+    CalendarEvent createProjection(CalendarEvent target)
+    CalendarEvent createReplacement(CalendarEvent target, ProjectionReplacementPermit permit)
+    CalendarEvent verifyReplacement(CalendarEvent target, ProjectionReplacementPermit permit)
+    CalendarEvent replaceProjection(CalendarEvent expected, CalendarEvent target)
+    CalendarEvent upgradeSingleProjection(CalendarEvent expected, CalendarEvent target)
+    void retireProjection(CalendarEvent expected)
 }

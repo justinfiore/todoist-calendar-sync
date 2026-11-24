@@ -23,7 +23,7 @@ final class GuardedRecurringDueUpdate {
      * @throws GuardedRecurringDueUpdateException for skipped, unsuccessful, or ambiguous outcomes
      */
     static Task update(TodoistLifecycleGateway gateway, PlannerConfig config, String taskId,
-                       String replacementDate, String commandId = null) {
+                       String replacementDate, String commandId = null, Task expected = null) {
         if (gateway == null || config == null || !taskId || !replacementDate) {
             throw new IllegalArgumentException('gateway, config, taskId, and replacementDate are required')
         }
@@ -50,6 +50,17 @@ final class GuardedRecurringDueUpdate {
                 "Recurring due update skipped for task ${taskId} title=${title}: " +
                     "unusable prewrite task originalDue=${originalDue.render()}", e)
         }
+        if (expected != null && (originalRaw.checked == true || originalRaw.checked == 1 ||
+            originalRaw.is_deleted == true || originalRaw.is_deleted == 1 || originalRaw.completed_at != null ||
+            original.completedCount != expected.completedCount || original.id != expected.id ||
+            original.todoistDue.snapshotMap() != expected.todoistDue?.snapshotMap() ||
+            original.nativeDuration != expected.nativeDuration || original.updatedAt != expected.updatedAt ||
+            original.deadline != expected.deadline || original.labels.toSet() != expected.labels.toSet() ||
+            original.description != expected.description || original.content != expected.content ||
+            original.priority != expected.priority || original.projectId != expected.projectId)) {
+            throw failure(GuardedRecurringDueOutcome.UNSUCCESSFUL,
+                "Recurring task ${taskId} changed after schedule preflight; reconcile before mutation")
+        }
         DueObservation intendedDue = originalDue.withDate(replacementDate)
 
         if (original.todoistDue.date == replacementDate) return original
@@ -74,6 +85,11 @@ final class GuardedRecurringDueUpdate {
 
         ReadResult first = verifyRead(gateway, config, taskId, original, intendedDue)
         if (first.verified != null) return first.verified
+        if (first.lifecycleChanged) {
+            throw diagnosedFailure(GuardedRecurringDueOutcome.UNSUCCESSFUL, taskId, title,
+                originalDue, intendedDue, first, null,
+                'native lifecycle changed; repairing the successor is not authorized', first.error)
+        }
         if (intendedDue.matches(first.observation)) {
             throw diagnosedFailure(GuardedRecurringDueOutcome.UNSUCCESSFUL, taskId, title,
                 originalDue, intendedDue, first, null,
@@ -128,6 +144,10 @@ final class GuardedRecurringDueUpdate {
             task = toTask(raw, config)
         } catch (Throwable e) {
             return ReadResult.observed(due, null, e)
+        }
+        if (task.completedCount != original.completedCount || raw.checked == true || raw.checked == 1 ||
+            raw.is_deleted == true || raw.is_deleted == 1 || raw.completed_at != null) {
+            return ReadResult.observed(due, task, null, true)
         }
         boolean nonDueMatches = task.deadlineDate == original.deadlineDate &&
             task.labels.toSet() == original.labels.toSet() &&
@@ -211,18 +231,20 @@ final class GuardedRecurringDueUpdate {
         final Task verified
         final boolean unavailable
         final Throwable error
+        final boolean lifecycleChanged
 
         private ReadResult(DueObservation observation, Task task, Task verified,
-                           boolean unavailable, Throwable error) {
+                           boolean unavailable, Throwable error, boolean lifecycleChanged = false) {
             this.observation = observation; this.task = task; this.verified = verified
             this.unavailable = unavailable; this.error = error
+            this.lifecycleChanged = lifecycleChanged
         }
 
         static ReadResult success(DueObservation due, Task task) {
             new ReadResult(due, task, task, false, null)
         }
-        static ReadResult observed(DueObservation due, Task task, Throwable error) {
-            new ReadResult(due, task, null, false, error)
+        static ReadResult observed(DueObservation due, Task task, Throwable error, boolean lifecycleChanged = false) {
+            new ReadResult(due, task, null, false, error, lifecycleChanged)
         }
         static ReadResult unavailable(Throwable error) {
             new ReadResult(null, null, null, true, error)

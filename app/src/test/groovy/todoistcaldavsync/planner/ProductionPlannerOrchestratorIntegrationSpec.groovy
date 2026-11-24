@@ -19,6 +19,7 @@ import todoistcaldavsync.planner.ai.LlmRequest
 import todoistcaldavsync.planner.ai.LlmResponse
 import todoistcaldavsync.planner.recurrence.LifecycleMarkerCodec
 import todoistcaldavsync.planner.state.PlanStore
+import todoistcaldavsync.planner.state.ApplicationStateStore
 
 import java.nio.file.Files
 import java.nio.file.Path
@@ -59,6 +60,33 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         def config = PlannerConfig.fromMap(root)
         def integration = ProductionIntegrationConfig.fromMap(root, Path.of('.').toAbsolutePath())
         new ProductionPlannerOrchestrator(config, integration, td, td, cal, cal, { now })
+    }
+
+    def "pending sync operations block independent apply and writeback but not read-only capacity"() {
+        given:
+        File stateRoot = Files.createTempDirectory('phase7-pending-sync-').toFile()
+        Map cfg = root('apply_safe_changes', stateRoot)
+        def td = todoist()
+        def cal = new InMemoryCalendarGateway('Planned', true, [])
+        def app = orchestrator(cfg, td, cal, start.minusSeconds(86400))
+        Plan plan = app.preview(start, end)
+        def store = new ApplicationStateStore(new File(stateRoot, 'applications').toPath())
+        store.beginSyncOperation('pending', [taskIds: ['t1'], resources: ['calendar:group': [etag: 'v1']]])
+
+        when:
+        app.applySafe(plan.id)
+
+        then:
+        thrown(IllegalStateException)
+
+        when:
+        app.pollCalendarWriteback(start, end)
+
+        then:
+        thrown(IllegalStateException)
+        td.dueUpdates.empty
+        cal.upserts.empty
+        app.capacity(start, end, 'json').contains('"taskDemandMinutes"')
     }
 
     def "live capacity and persisted deterministic preview preserve previous-plan stability with zero writes"() {
@@ -196,13 +224,19 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         cal.deletes.empty
     }
 
-    def "incremental added_at item onboards automatically while tombstone is excluded from active processing"() {
+    def "incremental lifecycle onboarding respects planner eligibility and excludes tombstones"() {
         given:
         File stateRoot = Files.createTempDirectory('phase7-recurrence-delta-').toFile()
         Map cfg = root('preview', stateRoot)
         cfg.planner.timezone = 'America/New_York'
         cfg.planner.tasks.recurrence = [enabled: true, rollout_cutoff: '2026-10-02T00:00:00Z']
-        Map active = [id: 'new', content: 'Automatic recurrence', labels: ['schedule'], priority: 2,
+        if (routed) {
+            cfg.planner.remove('output_calendar')
+            cfg.planner.routing = [mode: 'legacy_rules', projectsToInclude: ['Work'], rules: [[rule: 'p:Work', calendarName: 'Planned']]]
+            cfg.planner.integration.caldav.calendars[0].managed_destination = true
+        }
+        Map active = [id: 'new', content: 'Automatic recurrence', labels: labels, priority: 2,
+            project_id: 'p1', project_name: 'Work',
             due: [date: '2026-10-03T09:00:00', string: 'every day @ 09:00',
                 is_recurring: true, lang: 'en', timezone: null],
             description: '', added_at: '2026-10-02T12:34:56Z',
@@ -243,14 +277,23 @@ class ProductionPlannerOrchestratorIntegrationSpec extends Specification {
         result.status == 'processed'
         result.processed == 2
         inventoryFetches == 0
-        fetchedIds == ['new']
-        lifecycleWrites*.taskId == ['new']
-        active.deadline.date == '2026-10-03'
-        active.labels.toSet() == ['schedule', 'smartplanner-seen'] as Set
+        fetchedIds == (eligible ? ['new'] : [])
+        lifecycleWrites*.taskId == (eligible ? ['new'] : [])
+        active.deadline?.date == (eligible ? '2026-10-03' : null)
+        active.labels.toSet() == (eligible ? ['schedule', 'smartplanner-seen'] : labels) as Set
         def marker = new LifecycleMarkerCodec().read(active.description).marker
-        marker.deadlineSource == 'initial_user_due'
-        marker.completedCount == 0
+        marker?.deadlineSource == (eligible ? 'initial_user_due' : null)
+        marker?.completedCount == (eligible ? 0 : null)
         !fetchedIds.contains('gone')
+
+        where:
+        labels                 | eligible | routed
+        ['schedule']           | true     | false
+        ['schedule', 'manual'] | false    | false
+        ['excluded']           | false    | false
+        ['schedule']           | true     | true
+        ['schedule', 'manual'] | false    | true
+        ['excluded']           | false    | true
     }
 
     def "weather provider failure reaches configured fallback policy through production composition"() {

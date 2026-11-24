@@ -1,5 +1,6 @@
 package todoistcaldavsync.planner.domain
 
+import groovy.json.JsonOutput
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
@@ -28,6 +29,9 @@ final class PlanHash {
         sb.append('id=').append(plan.id).append('\n')
         sb.append('version=').append(plan.version).append('\n')
         sb.append('mode=').append(plan.mode).append('\n')
+        if (plan.metrics.routedSource != null) {
+            sb.append('routed-source|').append(JsonOutput.toJson(canonicalSource(plan.metrics.routedSource))).append('\n')
+        }
         plan.tasks.toSorted { a, b -> a.id <=> b.id }.each { Task t ->
             sb.append('task|').append(t.id).append('|').append(t.completedCount).append('|')
                 .append(t.deadlineDate ?: '').append('|')
@@ -70,5 +74,11 @@ final class PlanHash {
                 .append(e.subjectType ?: '').append('|').append(e.subjectId ?: '').append('\n')
         }
         return sb.toString()
+    }
+
+    private static Object canonicalSource(Object value) {
+        if (value instanceof Map) return new TreeMap(value.collectEntries { key, nested -> [(key): canonicalSource(nested)] })
+        if (value instanceof Collection) return value.collect { canonicalSource(it) }
+        value
     }
 }

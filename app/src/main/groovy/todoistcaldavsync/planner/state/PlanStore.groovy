@@ -377,7 +377,7 @@ class PlanStore {
         }
     }
 
-    private static Map taskToMap(Task t) {
+    static Map taskToMap(Task t) {
         [
             id              : t.id,
             content         : t.content,
@@ -401,7 +401,7 @@ class PlanStore {
         ]
     }
 
-    private static Task taskFromMap(Map m, String path) {
+    static Task taskFromMap(Map m, String path = 'task-snapshot') {
         if (m == null || m.id == null) {
             throw new PlanStoreException("Task missing required id: ${m}", path, 'parse')
         }

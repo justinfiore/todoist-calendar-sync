@@ -24,6 +24,11 @@ interface TodoistReadGateway extends TodoistGateway {
     // marker: read-only
 }
 
+/** Account evidence is deliberately whitelisted: /user may also return a secret token. */
+interface TodoistMigrationGateway extends TodoistReadGateway {
+    Map fetchAccountIdentity()
+}
+
 /**
  * Write surface deliberately separate — Phase 1 must not wire this into PlannerCli.
  */
@@ -39,6 +44,11 @@ interface TodoistLifecycleGateway extends TodoistReadGateway, TodoistWriteGatewa
                                              String replacementDate, String commandId)
     TodoistCommandResult updateLifecycleFields(LifecycleMutation mutation)
     TodoistSyncPage syncItems(String syncToken)
+}
+
+/** Native-duration writes are separate from Due-only legacy and planner authority. */
+interface TodoistScheduleGateway extends TodoistLifecycleGateway {
+    TodoistCommandResult updateTaskDuration(String taskId, int minutes, String commandId)
 }
 
 final class LifecycleMutation {

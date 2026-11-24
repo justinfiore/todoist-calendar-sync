@@ -62,6 +62,316 @@ available and record an echo so their inbound copy cannot be mistaken for a user
 
 ## Production integration
 
+### Routed configuration foundation
+
+**Implementation status:** shared routing/configuration, exact-resource provider write ports,
+schedule reconciliation and recoverable group replacement services have hermetic test coverage.
+The routed CLI, independent daemon sync, approved-plan application and reviewed migration boundary
+are connected. Migration and combined acceptance pass hermetic verification. This section
+is not production rollout authorization. Keep existing operational configuration until live gates pass.
+No service or destructive migration is authorized by parsing this example.
+
+Omitting `planner.routing` retains the compatible `output_calendar` boundary. Opting in requires
+`routing.mode: legacy_rules`, explicit `labelsToInclude` and/or `projectsToInclude`, and ordered
+`rules` containing `calendarName` and `rule`. Inclusion is label **or** exact project name; only the
+first matching destination rule wins. Matching is case-sensitive. Terms support ` AND ` and leading
+`NOT `; `p:` names a project. There is no OR operator: repeat a destination in multiple rules.
+Blank/unsupported expressions fail validation. Included tasks with no destination are unroutable,
+not assigned a default calendar. Undated tasks acquire no schedule merely by matching a rule.
+
+The following sanitized fragment replaces `output_calendar` and the selected calendar provider
+section; retain the template's Todoist, state, and availability sections. Predicates, prefixes,
+account and IDs are illustrative and **not** the owner's effective configuration.
+
+<!-- routed-example:start -->
+```yaml
+planner:
+  routing:
+    mode: legacy_rules
+    labelsToInclude: [calendar]
+    projectsToInclude: [Family]
+    rules:
+      - {calendarName: 'J&J', rule: joint}
+      - {calendarName: Jack, rule: jack}
+      - {calendarName: Evan, rule: evan}
+      - {calendarName: Emily, rule: emily}
+      - {calendarName: Colin, rule: colin}
+      - {calendarName: Kids, rule: 'p:Family AND NOT joint'}
+      - {calendarName: Todoist, rule: calendar}
+  integration:
+    calendar:
+      provider: google_calendar_api
+      google_calendar_api:
+        oauth_client_secret_file: planner-private/google-oauth-client.json
+        token_store_dir: planner-private/normal-event-only
+        account_email: operator@example.test
+        calendars:
+          - {name: 'J&J', id: joint@example.test, role: informational, managed_destination: true, prefix: 'Joint: '}
+          - {name: Todoist, id: todoist@example.test, role: informational, managed_destination: true}
+          - {name: Jack, id: jack@example.test, role: informational, managed_destination: true}
+          - {name: Evan, id: evan@example.test, role: informational, managed_destination: true}
+          - {name: Emily, id: emily@example.test, role: informational, managed_destination: true}
+          - {name: Colin, id: colin@example.test, role: informational, managed_destination: true}
+          - {name: Kids, id: kids@example.test, role: informational, managed_destination: true}
+```
+<!-- routed-example:end -->
+
+Every rule destination must match exactly one explicit `managed_destination: true` mapping.
+Duplicate names/provider IDs, unknown destinations, mixed providers, and overlapping output models
+fail validation before credential resolution or network requests. For CalDAV use the selected
+`integration.caldav.calendars` with unique `name`/HTTPS `url`, existing environment-referenced `auth`,
+and `managed_destination: true`; do not supply Google fields. Calendar prefixes belong to mappings,
+not predicate expressions. `managed_destination` is a write allowlist flag, **not** an availability
+role: managed calendars may still contain unrelated appointments. Routed mappings do not use the
+single-output `managed_output` role. Routing fingerprints bind inclusion and rule order so future
+sync/apply can reject stale routing snapshots rather than silently moving resources after rule edits.
+
+Projection scope is distinct from optimizer/lifecycle scope: an included manual task can resolve a
+destination but does not become eligible for automatic scheduling or lifecycle initialization.
+The full schedule-mirroring acceptance remains open in the change's task list.
+
+#### Routed service state and recovery (not a runtime enablement procedure)
+
+The new service boundary writes version-1 `projections.json` and `sync-operations.json` beneath
+`applications_dir`. This does not replace existing mappings/occurrence history or the separate
+single-output calendar-writeback state. Portable version-1 `todoist-projection:` description
+metadata retains destination, ordered occurrence intervals, membership revision, routing
+fingerprint, Due tuple, native-duration presence, effective minutes and task timestamps. The
+local projection also retains exact resource ID, ETag and verified event schedule. Historical
+records contain only one completed occurrence; active records cannot overlap occurrence coverage.
+Logical UIDs remain stable across regrouping, but Google provider IDs identify a single resource
+lifetime: a fresh UID-bound ID is allocated and journaled before creation, then reused on recovery.
+Cancelled Google IDs are never reinserted. CalDAV may reuse an absent resource URL conditionally.
+
+Replacement operations persist their immutable source/target resources, task/lifecycle evidence
+and per-resource pending/unknown/conflict/verified outcomes **before** mutation. They create and
+verify replacements before conditionally retiring sources. Membership commits atomically only
+after the whole set verifies. A restart reconciles the exact journaled resources, not a generic
+UID match. Ordinary duplicate detection remains strict. Changed task/resource baselines stop
+recovery; never delete a pending journal, rerun a resize as a fresh operation, or clear an unknown
+outcome merely to resume writes. Cancelled calendar projections remain cancelled after restart;
+calendar deletion does not complete the task or immediately recreate its event.
+
+Restore the **entire** application state and associated plans, decisions, deliveries, cursor/inbox,
+conversation and provider-resource evidence as one reviewed backup unit. Copying an old mappings
+file alone cannot roll back remote changes or authorize stale cursor replay. Backups may contain
+private task/calendar text and must stay outside published artifacts and source control; do not
+bundle credentials. Portable metadata permits conservative recovery only when live task schedules,
+routes and event intervals agree. Disagreement, stripped/malformed metadata and old groups without
+trustworthy intervals require explicit review/repair, never guessed title/link-based membership.
+Old single-task events can acquire portable state only when one fully applied local mapping,
+exact series/occurrence markers, owned UID/block, fresh Todoist schedule and resolved destination
+all agree. Upgrade conditionally changes only event metadata, retains the resource ID, schedule,
+human text and mapping history, and journals ambiguous outcomes for exact-resource restart.
+Lost old local mappings, old groups, malformed portable metadata or schedule disagreement stop
+creation with an actionable repair report. Restore the complete evidence or review repair first;
+task links and event titles are not substitutes for missing membership evidence.
+
+Group splits retain maximal consecutive unchanged runs and leave gaps untouched. Completed
+departures get individual historical intervals, not a historical copy of the former full group.
+Eligible native successors project at fresh Todoist Due; undated/ineligible successors are reported.
+No split/departure changes residual Todoist Dues, native durations, Deadline or completion. Group
+resizes allocate positive whole minutes proportionally: [30,60] → 60 gives [20,40], [10,10] → 21
+gives [11,10] (persisted-order tie), and [1,1,98] → 3 gives [1,1,1]. Too-short/non-minute spans and
+calendar all-day/timed conversions are withheld. Hermetic CLI/daemon scenarios cover these contracts;
+fresh synthetic installed-launcher checks also cover enabled CalDAV sync, ambiguous-create restart,
+and deletion-first migration through verified sync release. Installed release-planning and rollback
+were not exercised in that follow-up; rollback has in-process provider E2E coverage. These checks
+do not substitute for isolated live Google/Todoist acceptance or production handoff approval.
+
+#### Independent routed synchronization
+
+`planner.sync.enabled` defaults to false. Its validated `interval` defaults to `PT1M` and accepts
+`PT10S` through `P1D`. Enabled sync requires explicit routed managed mappings. Do not enable it
+over an active overlapping legacy writer: operational handoff/deletion/reconstruction approvals
+remain separate; neither implementation nor a passing hermetic test authorizes production execution.
+
+`planner-sync` performs one current-schedule reconciliation, requiring sync enablement;
+`planner-sync-preview` reads and reports intended actions without provider mutations, cursor
+checkpoints, operation replay or membership adoption. Both require `--range-start` and `--range-end`
+as positive ISO instant bounds. Google incremental discovery covers the complete managed collection;
+the range bounds CalDAV fallback reads, not authorization or a reason to infer missing tasks.
+Only explicit managed destinations are polled; read-only blockers are not writeback targets.
+
+Forward sync creates individual current projections and mirrors task edits without optimization,
+including manual tasks, outside-hours scheduling and local-date all-day events. Reverse Due/native
+duration mutation additionally requires `planner.calendarWriteback.enabled: true`. Sync never
+authorizes plan application, Deadline initialization or completion. Existing single-output
+writeback retains its due-only behavior outside routed mode. Standalone `capacity`, `preview` and
+sync-preview remain read-only even when daemon sync is enabled; proposal-only is **not** read-only
+when independent sync or lifecycle writes are enabled.
+
+The daemon can use `planning_runs: []` when sync is enabled; its existing configured Slack control
+surface is still required. Sync runs independently at the configured interval, serializes with
+other mutation work, and exposes forward/reverse/lifecycle/planning authorities in status. Provider
+outages retain last-success and retry/backoff status; no cross-destination write starts until all
+managed feeds are available. Required-provider authentication errors stop the daemon.
+
+Dedicated state lives under `applications_dir/sync/`: `todoist-items-sync.json` has its own cursor
+and durable items inbox, and `calendar-writeback.json` retains per-destination cursors plus pending
+event/tombstone evidence. Neither is the legacy cursor nor the separate recurrence lifecycle cursor.
+All feeds are read before mutations; checkpoints retain unprocessed evidence for restart. Expired
+calendar cursors reset only disposable provider caches, never membership/journals or cancellations.
+Corrupt state fails closed rather than being silently cleared. The projection file atomically
+retains verified-operation commit receipts so restart can finish a crash between remote verification
+and local membership commit without replaying older revisions.
+
+Exit status is 0 for successful/preview reconciliation, 1 for visible conflicts/pending recovery or
+provider failure, and 2 for invalid configuration/arguments. A cancelled event suppresses immediate
+recreation. Conflicts show the resource/destination and reason; inspect both live schedules and the
+retained operation evidence, resolve the actual provider disagreement under review, then rerun preview.
+Do not delete a journal, infer completion from feed absence, or reapply an old plan as conflict repair.
+Historical events never write back to a current task. Lost-state groups are adopted only when their
+portable intervals, fresh tasks and current event agree; otherwise initial creation is withheld to
+avoid duplicate active coverage. Old group metadata upgrade still requires explicit repair.
+
+#### Routed proposals, approval and manual intent
+
+Planning reads current verified placements rather than borrowing a previous proposal's times. A
+synced manual move remains the baseline, including outside working hours; `keep_manual_moves`,
+explicit freezes and the freeze horizon retain occupied placements. Real appointments and included
+manual tasks remain blockers even when their managed calendar is informational. Replaceable task
+projections do not block themselves. Focus batching partitions by destination as well as project and
+context; sync itself never invents focus groups or work times. A mixed group with a protected member
+is retained whole, not partly moved. Missing required calendars or disagreeing membership/schedules
+withhold planning rather than treating unavailable time as free.
+
+Every routed proposal stores and hashes its original Due, native/resolved duration, occurrence,
+routing fingerprint and current resource/membership snapshots separately from proposed intervals.
+An exact approval authorizes those proposed intervals only while the source remains unchanged.
+Moving/resizing a calendar event, editing Due/duration, changing route, or syncing a manual edit
+between proposal and approval requires a fresh proposal and review; approval of the old Slack message
+cannot overwrite the edit. The Slack response reports failed/stale application rather than claiming
+success. Generating or acknowledging a proposal never changes remote schedules.
+
+Routed apply uses the same writer lease and durable operation store as synchronization. It verifies
+all members/sources before writes, journals each Due and exact calendar resource, verifies target
+projections, then conditionally retires superseded representations. A partial apply keeps its journal
+and blocks overlapping sync/lifecycle/planning. Resume only the same stored plan with its original
+authorization; sync authority cannot complete a pending plan. Reapplying a successful plan is a no-op
+only when its own operation's verified tasks/resources still match live state. A later human edit is
+not an idempotent echo. Never clear operation evidence to make an old proposal applicable.
+
+Existing authorization policies remain: `approval_required` needs an exact plan/version/hash;
+`apply_safe_changes` withholds frozen, manual-override and approval-required blocks without valid
+explicit approval; `fully_automated` continues to refuse writes. Sync enablement grants none of
+these planning permissions. Operational migration/release approvals remain separate.
+
+#### Reviewed deletion-first migration
+
+**Production/live gates remain unavailable and unchecked.** Owner-reported legacy-active/planner-disabled
+state is context, not verified runner evidence. Do not copy QA credentials, infer account/IDs/rules from
+this example, or enable/stop production services to test this implementation. Before live acceptance,
+obtain isolated Google/Todoist accounts, credentials provisioned through their authorized mechanisms,
+scopes/calendar IDs and permission to mutate only those fixtures. Production handoff additionally needs
+sanitized runner-side routing/inclusion/prefix/timezone/account checks, writer-stop evidence, an exact
+manifest deletion approval and separate approval for each service/configuration change.
+
+The installed command is `todoist-caldav-sync -f <config> -l <logging> --operation planner-migrate`.
+It defaults to read-only remote inventory; `--migration-step` selects an explicit step:
+
+| Step | Authority and outcome |
+| --- | --- |
+| `inventory` | Reads full managed collections and live Todoist identity/tasks; writes only private local export/evidence. |
+| `status` | Reads local stage, hashes, counts, exclusions, skipped tasks and per-resource outcomes. |
+| `approve-delete --approval <file>` | Revalidates exact manifest/account/routing/versions, private complete backup, authorized actor and writer handoff; persists approval only. |
+| `delete` | Uses that live expiring capability and conditional exact-resource deletion. No reconstruction happens here. |
+| `reconstruct` | Requires **every** approved legacy deletion absent; creates only individual projections at fresh Todoist Due/resolved duration. |
+| `verify` | Requires exact schedules/destinations/membership, complete coverage, no legacy IDs/UIDs or duplicates, and unchanged Todoist input. Commits verified local projection baselines. |
+| `release-sync --approval <file>` | Separately permits normal sync after parity. It does not enable sync or change a service. |
+| `release-planning --approval <file>` | Separately releases first proposals after sync release and fresh parity. Normal exact plan application approval still applies. |
+| `review-rollback` | Reads live replacement versions and missing/surviving legacy resources; persists a new rollback review hash without remote writes. |
+| `rollback --approval <file>` | Removes only reviewed unchanged migration-created replacements, then restores reviewed missing legacy payloads. Preserves newer human edits and all current Todoist fields. |
+
+Stages persist as `INVENTORIED → DELETION_APPROVED → LEGACY_DELETED → RECONSTRUCTING → VERIFIED →
+PLANNING_RELEASED`, with separately persisted normal-sync release. Rollback uses `ROLLING_BACK →
+ROLLED_BACK`; planner authorities remain held afterwards. The migration directory is
+`applications_dir/migration`, with atomic checksummed `state.json` and immutable hash-named exports.
+Back up the **entire** directory after every maintenance-window step along with the four normal state
+units. A missing/corrupt state file is a stop condition, not permission to reset the migration.
+
+Inventory candidates need a current task association and exact legacy user/task-derived UID, a strong
+provider version, and a restorable payload. Appointments, uncertain/unmapped history, duplicate UIDs,
+native calendar series and unsupported resources remain visible exclusions. Full raw Google JSON or
+original GET iCalendar is retained, including reminders, locations and unknown iCalendar properties;
+normalized planner events alone are not a backup. The private export also holds raw task schedules/
+recurrence, routing snapshot/fingerprints and complete plans/applications/decisions/deliveries file
+contents (including cursors/conversations, excluding live lock files and recursive migration exports).
+Credential paths must not overlap state units; authenticated `/user` response export is whitelisted to
+ID/email because Todoist may return a secret token in that response. Exports are owner-only files under
+an owner-only directory. Keep these private files out of repository artifacts/logs.
+
+Review the actual private export before approval. Calendar/task schedule disagreements are flagged;
+adopt intended calendar edits into Todoist through the existing reviewed process **before inventory**,
+or list each exact resource ID in `declinedCalendarEdits` to explicitly choose fresh Todoist instead.
+Reinventory before any deletion attempt can replace an unexecuted manifest and revoke its approval;
+old hash-named exports remain. After a journaled deletion starts, retain its evidence and resume or
+review rollback instead of replacing the manifest.
+
+An approval JSON/YAML object uses these fields (placeholders are not authorizations):
+
+```json
+{
+  "action": "delete",
+  "manifestHash": "<status.manifestHash>",
+  "reviewHash": "<status.manifestHash>",
+  "actor": "<configured feedback.allowed_actors member>",
+  "approvedAt": "<reviewed ISO-8601 instant>",
+  "expiresAt": "<later ISO-8601 instant, at most 24 hours after approval>",
+  "declinedCalendarEdits": [],
+  "handoff": {
+    "legacyWritersStopped": true,
+    "otherMutationLoopsHeld": true,
+    "scopeHash": "<status.scopeHash>",
+    "checkedAt": "<recent ISO-8601 instant>",
+    "evidence": "<operator-reviewed runner maintenance/service-stop evidence reference>"
+  }
+}
+```
+
+The handoff is an explicit, scope-bound **operator attestation**, not automatic inspection of another
+runner's services. Do not fill it from an orb assumption. Deletion/reconstruction require disabled
+daemon/sync/writeback/lifecycle configuration, the application-store writer lease and recent handoff
+evidence. Local migration guards also hold all normal planner/lifecycle writes until release.
+Expiry/version/account/routing drift requires renewed exact review; no boolean cleanup flag bypasses it.
+For release, use a distinct action `release-sync` or `release-planning` with the exact manifest review
+hash. For rollback, use action `rollback`, original manifest hash and the new `status.rollbackReviewHash`
+as `reviewHash`, plus renewed writer-stop evidence. Approval records do not change services or acquire
+credentials. Operator service changes require their separate authorization.
+
+During the intentional empty-calendar window, rerun the same `delete` or `reconstruct` step after
+restart. Unknown writes are reread before retry: an already absent approved deletion or exactly matching
+created target is reconciled, not repeated. Any remaining uncertain deletion blocks **all** creation.
+Reconstruction preserves outside-hours and date-only local dates, explicitly reports undated/ineligible/
+unroutable tasks, never batches/plans, and never changes Due, native duration, Deadline, recurrence,
+description/labels/priority or completion. Task edits **before** reconstruction supply its fresh inputs;
+concurrent changes during a partial reconstruction/parity stop for review rather than restoring an old
+task snapshot. After normal sync release, first-planning parity checks fresh live common baselines,
+not the inventory's obsolete schedule.
+
+For rollback, stop/hold new writers again, inspect subsequent edits and run `review-rollback` before
+the separate approval. Changed replacements are conflicts, never deletion candidates. Conditional
+CalDAV restoration uses the complete original payload and `If-None-Match: *`; Google restoration uses
+`events.import` for a private copy with the original iCalUID and records the **new** provider ID/ETag.
+Read-only Google identity/version fields are retained in backup but regenerated by the provider;
+full writable event fields are verified on restoration. Never supply both Google `id` and `iCalUID`.
+Ambiguous imports reconcile the exact migration marker and payload before any retry. Do not restore
+old Todoist Due/completed counts, blindly reinstall old application snapshots/cursors, or restart
+legacy automatically. Reconcile current local/remote ownership and obtain new exclusive-writer/service
+approval before any operational restart.
+
+Hermetic acceptance lives in `ProjectionMembershipE2ESpec` (real HTTP adapters, durable restart, CLI,
+daemon and approved plan application; only provider servers are fixtures) and
+`RoutedProjectionGatewayWireMockSpec` (including original CalDAV payload restoration). The combined
+scenario runs inventory/deletion, individual reconstruction, parity/release, approved grouping, drag,
+proportional resize, split/route move and interrupted native-departure recovery without planning.
+It also removes Due/inclusion and verifies deletion evidence without changing unrelated task fields.
+These checks do **not** satisfy the separately authorized isolated live or production gates.
+
+Provider contracts: [Todoist API v1](https://developer.todoist.com/api/v1/) (`/user` and Sync
+`item_update.duration` with `{amount, unit}`), [Google events.import](https://developers.google.com/workspace/calendar/api/v3/reference/events/import),
+and [CalDAV RFC 4791 §§5.3, 7.8](https://www.rfc-editor.org/rfc/rfc4791).
+
 `planner.integration.todoist` requires:
 
 - `base_url`: explicit absolute HTTPS REST base (normally `https://api.todoist.com/api/v1`).
@@ -205,6 +515,8 @@ All operations use `TodoistCalDavSync`/the installed `todoist-caldav-sync` launc
   authenticated, and enabled. See
   [`AI_SUBSCRIPTION_AUTH.md`](AI_SUBSCRIPTION_AUTH.md).
 - `planner-daemon`: primary long-running multi-horizon planning, Slack proposal/thread feedback, and graceful shutdown.
+- `planner-sync`: independently authorized routed mirroring; explicit start/end required, no plan generation.
+- `planner-sync-preview`: read-only routed reconciliation inspection; explicit start/end required.
 - `capacity`: live read-only capacity report; requires explicit start/end instants.
 - `preview`: live deterministic proposal + local persistence; requires explicit start/end.
 - `apply`, `apply-safe`: stored plan application through safety gates.

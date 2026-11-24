@@ -3,6 +3,9 @@ package todoistcaldavsync.planner.adapters
 import groovy.xml.XmlSlurper
 import todoistcaldavsync.planner.domain.CalendarEvent
 import todoistcaldavsync.planner.domain.ManagedEventIds
+import todoistcaldavsync.planner.domain.ProjectionMetadata
+import todoistcaldavsync.planner.state.ProjectionReplacementPermit
+import todoistcaldavsync.planner.migration.LegacyMigrationPermit
 
 import java.net.URI
 import java.net.URLEncoder
@@ -27,7 +30,7 @@ import java.util.function.Function
  * Calendar names are configuration identities and are retained on every event.
  * UID lookup always REPORTs every configured calendar and rejects collisions.
  */
-final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGateway, CalendarChangeGateway {
+final class CalDavHttpGateway implements ProjectionCalendarGateway, CalendarChangeGateway, MigrationCalendarGateway {
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(15)
     static final int DEFAULT_MAX_SYNC_PAGES = 200
     private static final int SYNC_PAGE_SIZE = 500
@@ -39,6 +42,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private final List<CalendarEndpoint> calendars
     private final Map<String, CalendarEndpoint> byName
     private final String managedCalendarName
+    final Set<String> managedCalendarNames
     private final ZoneId defaultZone
     private final Duration timeout
     private final long maxResponseBytes
@@ -62,8 +66,21 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         }
         this.byName = Collections.unmodifiableMap(calendars.collectEntries { [(it.name): it] })
         this.managedCalendarName = (options.managedCalendarName ?: options.managed_calendar_name)?.toString()
-        if (!managedCalendarName || !byName.containsKey(managedCalendarName)) {
-            throw new IllegalArgumentException('managed calendar must name one configured CalDAV calendar')
+        if (options.managedCalendarNames != null) {
+            if (managedCalendarName || !(options.managedCalendarNames instanceof Collection)) {
+                throw new IllegalArgumentException('single and routed managed calendar models cannot be mixed')
+            }
+            Set<String> requested = options.managedCalendarNames as Set<String>
+            Set<String> configured = rawCalendars.findAll { it.managed_destination == true }*.name as Set<String>
+            if (!requested || requested != configured || !byName.keySet().containsAll(requested)) {
+                throw new IllegalArgumentException('routed managed destinations must match explicitly configured mappings')
+            }
+            this.managedCalendarNames = Collections.unmodifiableSet(new LinkedHashSet<>(requested))
+        } else {
+            if (!managedCalendarName || !byName.containsKey(managedCalendarName)) {
+                throw new IllegalArgumentException('managed calendar must name one configured CalDAV calendar')
+            }
+            this.managedCalendarNames = Collections.singleton(managedCalendarName)
         }
         this.defaultZone = options.timezone instanceof ZoneId ? options.timezone as ZoneId :
             ZoneId.of((options.timezone ?: 'UTC').toString())
@@ -109,6 +126,15 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
 
     @Override
     CalendarEvent findEventByUid(String uid) {
+        List<CalendarEvent> matches = findIdentityResources(uid)
+        if (matches.size() > 1) {
+            throw new CalDavGatewayException('UID_COLLISION',
+                "CalDAV UID ${uid} exists in multiple configured calendars: ${matches*.calendarName}")
+        }
+        matches ? matches[0] : null
+    }
+
+    private List<CalendarEvent> findIdentityResources(String uid) {
         if (!uid) throw new IllegalArgumentException('uid is required')
         List<CalendarEvent> matches = []
         calendars.each { CalendarEndpoint endpoint ->
@@ -122,11 +148,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                     resource.lastModified, resource.etag).findAll { it.uid == uid }.each { matches << it }
             }
         }
-        if (matches.size() > 1) {
-            throw new CalDavGatewayException('UID_COLLISION',
-                "CalDAV UID ${uid} exists in multiple configured calendars: ${matches*.calendarName}")
-        }
-        return matches ? matches[0] : null
+        matches
     }
 
     @Override
@@ -137,7 +159,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         if (rangeStart == null || rangeEnd == null || !rangeEnd.isAfter(rangeStart)) {
             throw new IllegalArgumentException('rangeStart/rangeEnd must form a positive interval')
         }
-        Set<String> candidates = Collections.unmodifiableSet(new LinkedHashSet<>(candidateUids ?: []))
+        if (candidateUids == null) requireManagedDestination(calendarName)
+        Set<String> candidates = candidateUids == null ? null : Collections.unmodifiableSet(new LinkedHashSet<>(candidateUids))
         Map input = state ?: [:]
         Map<String, String> stamps = new LinkedHashMap<>((input.stamps instanceof Map ? input.stamps : [:]) as Map)
         Map<String, String> resourceUids = new LinkedHashMap<>((input.resourceUids instanceof Map ? input.resourceUids : [:]) as Map)
@@ -191,17 +214,17 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                 "CalDAV sync-collection exceeded the page bound for ${endpoint.name}")
         }
         Map<String, String> resolved = resolveCandidateResources(endpoint, candidates,
-            members.keySet(), resourceUids)
+            candidates == null ? members.values().findAll { !it.deleted }*.href as Set<URI> : members.keySet(), resourceUids)
         List<CalendarEvent> events = []
         List<Map> deleted = []
         members.values().each { ReportResource resource ->
             String hrefKey = resource.href.toString()
             String uid = resourceUids[hrefKey] ?: resolved[hrefKey]
             if (resource.deleted) {
-                if (uid && candidates.contains(uid)) deleted << [id: hrefKey, uid: uid]
+                if (uid && acceptsCandidate(candidates, uid)) deleted << [id: hrefKey, uid: uid]
                 resourceUids.remove(hrefKey)
                 if (uid) stamps.remove(uid)
-            } else if (uid && candidates.contains(uid)) {
+            } else if (uid && acceptsCandidate(candidates, uid)) {
                 String data = resource.calendarData ?: getResource(endpoint, resource.href)
                 List<CalendarEvent> found = parseCalendar(data, endpoint.name, resource.href, defaultZone,
                     resource.lastModified, resource.etag).findAll { it.uid == uid }
@@ -234,7 +257,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         members.each { ReportResource member ->
             String hrefKey = member.href.toString()
             String uid = resourceUids[hrefKey] ?: resolved[hrefKey]
-            if (uid && candidates.contains(uid)) candidateMembers[uid] = member
+            if (uid && acceptsCandidate(candidates, uid)) candidateMembers[uid] = member
         }
         List<CalendarEvent> events = []
         candidateMembers.each { String uid, ReportResource member ->
@@ -252,7 +275,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         }
         List<Map> deleted = []
         resourceUids.findAll { String href, String uid ->
-            candidates.contains(uid) && !candidateMembers.containsKey(uid)
+            acceptsCandidate(candidates, uid) && !candidateMembers.containsKey(uid)
         }.each { String href, String uid ->
             deleted << [id: href, uid: uid]
             resourceUids.remove(href)
@@ -266,6 +289,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     @Override
     void upsertEvent(CalendarEvent event) {
         if (event == null) throw new IllegalArgumentException('event is required')
+        if (managedCalendarName == null) throw new IllegalStateException('routed writes require exact-resource projection operations')
         if (event.calendarName != managedCalendarName) {
             throw new IllegalStateException("Refusing CalDAV write outside managed calendar ${managedCalendarName}")
         }
@@ -284,6 +308,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
 
     @Override
     void deleteOwnedEvent(String eventUid, String expectedBlockId) {
+        if (managedCalendarName == null) throw new IllegalStateException('routed deletion requires exact-resource projection operations')
         if (!eventUid || !expectedBlockId) throw new IllegalArgumentException('eventUid and expectedBlockId are required')
         CalendarEvent live = findEventByUid(eventUid)
         if (!ManagedEventIds.isOwned(live, managedCalendarName) ||
@@ -297,6 +322,207 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         }
         GatewayResponse response = send(endpoint, 'DELETE', target, [:], null)
         requireStatus(response, [200, 202, 204] as Set, 'DELETE', endpoint.name)
+    }
+
+    @Override
+    List<Map> inventoryLegacyResources() {
+        managedCalendarNames.collectMany { String destination ->
+            CalendarEndpoint endpoint = requireManagedDestination(destination)
+            String query = '''<?xml version="1.0" encoding="utf-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+<d:prop><d:getetag/><c:calendar-data/></d:prop>
+<c:filter><c:comp-filter name="VCALENDAR"/></c:filter></c:calendar-query>'''
+            // GET the original resource, not XML-normalized/expanded calendar-data.
+            report(endpoint, query).collect { readLegacyResource(destination, it.href.toString()) }
+        }
+    }
+
+    @Override
+    Map readLegacyResource(String destination, String id) {
+        CalendarEndpoint endpoint = requireManagedDestination(destination)
+        URI uri = URI.create(id)
+        if (!isWithinCollection(endpoint.uri, uri) || uri.query || uri.fragment || uri.userInfo) {
+            throw new IllegalArgumentException('legacy resource must be inside its managed collection')
+        }
+        GatewayResponse response = send(endpoint, 'GET', uri, ['Accept': 'text/calendar'], null)
+        if (response.statusCode() in [404, 410]) return null
+        requireStatus(response, [200] as Set, 'read legacy resource', destination)
+        List<CalendarEvent> parsed = []
+        try { parsed = parseCalendar(response.body(), destination, uri, defaultZone, response.lastModified, response.etag) }
+        catch (RuntimeException ignored) { /* Unsupported resources remain intact in export/exclusions. */ }
+        Map event = parsed.size() == 1 ? ProjectionMetadata.eventMap(parsed[0]) : null
+        [destination: destination, id: id, uid: event?.uid, etag: response.etag, payload: response.body(),
+            event: event, restorable: event != null && !response.body().contains('RRULE:') &&
+                !response.body().contains('RECURRENCE-ID')]
+    }
+
+    @Override
+    void deleteLegacyResource(String destination, String id, LegacyMigrationPermit permit) {
+        if (permit?.action != 'delete') throw new IllegalArgumentException('legacy deletion capability required')
+        Map expected = permit.resource(destination, id)
+        permit.requireUnchanged(expected, readLegacyResource(destination, id))
+        CalendarEndpoint endpoint = requireManagedDestination(destination)
+        requireStatus(send(endpoint, 'DELETE', URI.create(id), ['If-Match': expected.etag.toString()], null),
+            [200, 202, 204] as Set, 'delete reviewed legacy resource', destination)
+    }
+
+    @Override
+    Map restoreLegacyResource(String destination, String id, LegacyMigrationPermit permit) {
+        if (permit?.action != 'restore') throw new IllegalArgumentException('legacy restoration capability required')
+        Map expected = permit.resource(destination, id)
+        if (!expected.restorable) throw new IllegalStateException('resource has no verified restoration format')
+        CalendarEndpoint endpoint = requireManagedDestination(destination)
+        Map live = readLegacyResource(destination, id)
+        if (live == null) {
+            if (findEventByUid(expected.uid.toString()) != null) throw new IllegalStateException('legacy restore UID already exists elsewhere')
+            requireStatus(send(endpoint, 'PUT', URI.create(id),
+                ['Content-Type': 'text/calendar; charset=utf-8', 'If-None-Match': '*'], expected.payload.toString()),
+                [201, 204] as Set, 'restore complete legacy resource', destination)
+            live = readLegacyResource(destination, id)
+        }
+        if (live == null || live.payload != expected.payload || live.uid != expected.uid || !live.etag) {
+            throw new IllegalStateException('legacy restore changed/readback mismatch; preserve human edit')
+        }
+        live
+    }
+
+    @Override
+    String projectionTitle(String destination, String title) {
+        requireManagedDestination(destination).prefix + title
+    }
+
+    @Override
+    String projectionResourceId(String destination, String uid) {
+        CalendarEndpoint endpoint = requireManagedDestination(destination)
+        if (!ManagedEventIds.isPlannerUid(uid)) throw new IllegalArgumentException('planner UID is required')
+        resourceUri(endpoint, uid).toString()
+    }
+
+    @Override
+    String newProjectionResourceId(String destination, String uid) {
+        projectionResourceId(destination, uid)
+    }
+
+    @Override
+    CalendarEvent readResource(String destination, String resourceId) {
+        CalendarEndpoint endpoint = requireManagedDestination(destination)
+        URI resource = URI.create(resourceId)
+        if (!isWithinCollection(endpoint.uri, resource) || resource.query || resource.fragment || resource.userInfo) {
+            throw new IllegalArgumentException('exact CalDAV resource must be within its managed collection')
+        }
+        GatewayResponse response = send(endpoint, 'GET', resource, ['Accept': 'text/calendar'], null)
+        if (response.statusCode() == 404 || response.statusCode() == 410) return null
+        requireStatus(response, [200] as Set, 'GET', destination)
+        List<CalendarEvent> events = parseCalendar(response.body(), destination, resource, defaultZone,
+            response.lastModified, response.etag)
+        if (events.size() != 1) throw new CalDavGatewayException('SCHEMA', 'projection resource must contain exactly one event')
+        events[0]
+    }
+
+    @Override
+    CalendarEvent createProjection(CalendarEvent target) {
+        createProjectionResource(target, null)
+    }
+
+    @Override
+    CalendarEvent createReplacement(CalendarEvent target, ProjectionReplacementPermit permit) {
+        if (permit == null) throw new IllegalArgumentException('replacement permit is required')
+        createProjectionResource(target, permit)
+    }
+
+    @Override
+    CalendarEvent verifyReplacement(CalendarEvent target, ProjectionReplacementPermit permit) {
+        requireProjection(target)
+        if (permit == null) throw new IllegalArgumentException('replacement permit is required')
+        permit.validate(target, findIdentityResources(target.uid))
+        verifyProjectionWrite(target)
+    }
+
+    private CalendarEvent createProjectionResource(CalendarEvent target, ProjectionReplacementPermit permit) {
+        CalendarEndpoint endpoint = requireProjection(target)
+        if (target.id != projectionResourceId(target.calendarName, target.uid)) {
+            throw new IllegalArgumentException('projection create requires its deterministic provider resource ID')
+        }
+        List<CalendarEvent> collisions = findIdentityResources(target.uid)
+        if (permit != null) permit.validate(target, collisions)
+        if ((permit == null && collisions) || readResource(target.calendarName, target.id) != null) {
+            throw new IllegalStateException('projection identity already exists; reconcile before create')
+        }
+        GatewayResponse response = send(endpoint, 'PUT', URI.create(target.id),
+            ['Content-Type': 'text/calendar; charset=utf-8', 'If-None-Match': '*'], renderCalendar(target))
+        requireStatus(response, [201, 204] as Set, 'create projection', target.calendarName)
+        verifyProjectionWrite(target)
+    }
+
+    @Override
+    CalendarEvent replaceProjection(CalendarEvent expected, CalendarEvent target) {
+        CalendarEndpoint endpoint = requireProjection(target)
+        ProjectionMetadata next = ProjectionMetadata.read(target)
+        ProjectionMetadata prior = ProjectionMetadata.read(expected)
+        if (target.id != expected.id || target.uid != expected.uid || target.calendarName != expected.calendarName ||
+            next.value.historical != prior.value.historical ||
+            next.value.revision != prior.value.revision + 1 ||
+            next.value.members*.occurrenceKey != prior.value.members*.occurrenceKey) {
+            throw new IllegalArgumentException('in-place projection updates must preserve identity/membership and advance one revision')
+        }
+        ProjectionMetadata.requireUnchanged(expected, readResource(expected.calendarName, expected.id))
+        GatewayResponse response = send(endpoint, 'PUT', URI.create(expected.id),
+            ['Content-Type': 'text/calendar; charset=utf-8', 'If-Match': expected.etag], renderCalendar(target))
+        requireStatus(response, [200, 204] as Set, 'replace projection', target.calendarName)
+        verifyProjectionWrite(target)
+    }
+
+    @Override
+    CalendarEvent upgradeSingleProjection(CalendarEvent expected, CalendarEvent target) {
+        CalendarEndpoint endpoint = requireProjection(target)
+        ProjectionMetadata.requireSingleUpgrade(expected, target)
+        ProjectionMetadata.requireResourceUnchanged(expected, readResource(expected.calendarName, expected.id))
+        ProjectionMetadata.requireResourceUnchanged(expected, findEventByUid(expected.uid))
+        GatewayResponse response = send(endpoint, 'PUT', URI.create(expected.id),
+            ['Content-Type': 'text/calendar; charset=utf-8', 'If-Match': expected.etag], renderCalendar(target))
+        requireStatus(response, [200, 204] as Set, 'upgrade exact single projection', target.calendarName)
+        verifyProjectionWrite(target)
+    }
+
+    @Override
+    void retireProjection(CalendarEvent expected) {
+        CalendarEndpoint endpoint = requireProjection(expected)
+        ProjectionMetadata.requireUnchanged(expected, readResource(expected.calendarName, expected.id))
+        GatewayResponse response = send(endpoint, 'DELETE', URI.create(expected.id), ['If-Match': expected.etag], null)
+        requireStatus(response, [200, 202, 204] as Set, 'retire projection', expected.calendarName)
+        try {
+            if (readResource(expected.calendarName, expected.id) != null) {
+                throw new IllegalStateException('retirement not verified absent')
+            }
+        } catch (Exception e) {
+            throw new CalDavGatewayException('AMBIGUOUS_WRITE', 'projection retirement requires reconciliation', e)
+        }
+    }
+
+    private CalendarEvent verifyProjectionWrite(CalendarEvent target) {
+        try {
+            CalendarEvent live = readResource(target.calendarName, target.id)
+            if (live == null || !live.etag || live.uid != target.uid || live.start != target.start || live.end != target.end ||
+                live.allDay != target.allDay || live.title != target.title || live.description != target.description) {
+                throw new IllegalStateException('projection postconditions differ')
+            }
+            ProjectionMetadata.read(live)
+            live
+        } catch (Exception e) {
+            throw new CalDavGatewayException('AMBIGUOUS_WRITE', 'projection write requires reconciliation', e)
+        }
+    }
+
+    private CalendarEndpoint requireManagedDestination(String destination) {
+        if (!managedCalendarNames.contains(destination)) throw new IllegalStateException('destination is not explicitly managed')
+        byName[destination]
+    }
+
+    private CalendarEndpoint requireProjection(CalendarEvent event) {
+        CalendarEndpoint endpoint = requireManagedDestination(event?.calendarName)
+        ProjectionMetadata.read(event)
+        if (!ManagedEventIds.extractBlockId(event.description)) throw new IllegalStateException('projection block identity is missing')
+        endpoint
     }
 
     private List<ReportResource> report(CalendarEndpoint endpoint, String body) {
@@ -425,6 +651,18 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                                                            Set<URI> relevantHrefs, Map<String, String> known) {
         Map<String, String> found = [:]
         if (relevantHrefs.isEmpty()) return found
+        if (candidates == null) {
+            // Discovery is scoped to one explicitly managed collection. UID shape only selects
+            // reads: portable ownership/membership and exact resource versions still gate writes.
+            relevantHrefs.findAll { !known[it.toString()] }.each { URI href ->
+                List<CalendarEvent> events = parseCalendar(getResource(endpoint, href), endpoint.name, href,
+                    defaultZone, null, null).findAll { ManagedEventIds.isPlannerUid(it.uid) ||
+                        ManagedEventIds.hasOwnershipMarker(it.description) || it.description?.contains(ProjectionMetadata.PREFIX) }
+                if (events.size() > 1) throw new CalDavGatewayException('SCHEMA', 'ambiguous planner resource during discovery')
+                if (events) found[href.toString()] = events[0].uid
+            }
+            return found
+        }
         if (deterministicResourceNames) {
             Map<String, String> candidatesByPath = candidates.collectEntries { String uid ->
                 [(resourceUri(endpoint, uid).path): uid]
@@ -445,6 +683,10 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             }
         }
         found
+    }
+
+    private static boolean acceptsCandidate(Set<String> candidates, String uid) {
+        candidates == null ? !!uid : candidates.contains(uid)
     }
 
     private static String stamp(ReportResource resource, CalendarEvent event) {
@@ -478,7 +720,9 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
                 ? HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)
                 : HttpRequest.BodyPublishers.noBody())
             HttpResponse<InputStream> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
-            return new GatewayResponse(response.statusCode(), readBounded(response.body()))
+            return new GatewayResponse(response.statusCode(), readBounded(response.body()),
+                response.headers().firstValue('ETag').orElse(null),
+                parseHttpInstant(response.headers().firstValue('Last-Modified').orElse(null)))
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt()
             throw new CalDavGatewayException(isMutation(method) ? 'AMBIGUOUS_WRITE' : 'INTERRUPTED',
@@ -600,12 +844,15 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         }
     }
 
-    private static String renderCalendar(CalendarEvent event) {
+    private String renderCalendar(CalendarEvent event) {
         [
             'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//todoist-caldav-sync//planner//EN',
             'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
             "UID:${escape(event.uid)}", "DTSTAMP:${ICAL_UTC.format(Instant.now())}",
-            "DTSTART:${ICAL_UTC.format(event.start)}", "DTEND:${ICAL_UTC.format(event.end)}",
+            event.allDay ? "DTSTART;VALUE=DATE:${ICAL_DATE.format(event.start.atZone(defaultZone).toLocalDate())}" :
+                "DTSTART:${ICAL_UTC.format(event.start)}",
+            event.allDay ? "DTEND;VALUE=DATE:${ICAL_DATE.format(event.end.atZone(defaultZone).toLocalDate())}" :
+                "DTEND:${ICAL_UTC.format(event.end)}",
             "SUMMARY:${escape(event.title)}", "DESCRIPTION:${escape(event.description ?: '')}",
             'END:VEVENT', 'END:VCALENDAR', ''
         ].join('\r\n')
@@ -735,6 +982,7 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
 
     static final class CalendarEndpoint {
         final String name
+        final String prefix
         final URI uri
         final String authType
         final String username
@@ -744,8 +992,10 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
         final String tokenOverride
 
         private CalendarEndpoint(String name, URI uri, String authType, String username,
-                                 String passwordEnv, String tokenEnv, String passwordOverride, String tokenOverride) {
+                                 String passwordEnv, String tokenEnv, String passwordOverride, String tokenOverride,
+                                 String prefix) {
             this.name=name; this.uri=uri; this.authType=authType; this.username=username
+            this.prefix=prefix
             this.passwordEnv=passwordEnv; this.tokenEnv=tokenEnv
             this.passwordOverride=passwordOverride; this.tokenOverride=tokenOverride
         }
@@ -769,7 +1019,8 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
             String tokenOverride = (auth.token_override ?: auth.tokenOverride)?.toString()
             if (type == 'basic' && (!username || (!passwordEnv && !passwordOverride))) throw new IllegalArgumentException("Basic CalDAV auth requires username/password_env for ${name}")
             if (type == 'bearer' && (!tokenEnv && !tokenOverride)) throw new IllegalArgumentException("Bearer CalDAV auth requires token_env for ${name}")
-            new CalendarEndpoint(name, uri, type, username, passwordEnv, tokenEnv, passwordOverride, tokenOverride)
+            new CalendarEndpoint(name, uri, type, username, passwordEnv, tokenEnv, passwordOverride, tokenOverride,
+                raw.prefix?.toString() ?: '')
         }
 
         String authorization(Function<String, String> resolver) {
@@ -791,7 +1042,11 @@ final class CalDavHttpGateway implements CalendarReadGateway, CalendarWriteGatew
     private static final class GatewayResponse {
         final int status
         final String content
-        GatewayResponse(int status, String content) { this.status = status; this.content = content }
+        final String etag
+        final Instant lastModified
+        GatewayResponse(int status, String content, String etag = null, Instant lastModified = null) {
+            this.status = status; this.content = content; this.etag = etag; this.lastModified = lastModified
+        }
         int statusCode() { status }
         String body() { content }
     }
