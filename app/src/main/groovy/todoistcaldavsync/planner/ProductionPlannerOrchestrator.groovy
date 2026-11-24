@@ -15,6 +15,8 @@ import todoistcaldavsync.planner.ai.SubscriptionProviderAdapter
 import todoistcaldavsync.planner.ai.XaiDeviceOAuthAdapter
 import todoistcaldavsync.planner.ai.*
 import todoistcaldavsync.planner.apply.PlanApplier
+import todoistcaldavsync.planner.migration.LegacyCalendarMigration
+import todoistcaldavsync.planner.migration.MigrationState
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.*
 import todoistcaldavsync.planner.feedback.FeedbackParser
@@ -29,7 +31,10 @@ import todoistcaldavsync.planner.recurrence.RecurrenceLifecycleManager
 import todoistcaldavsync.planner.recurrence.TodoistItemsPoller
 import todoistcaldavsync.planner.scheduling.AvailabilityCalculator
 import todoistcaldavsync.planner.scheduling.DeterministicScheduler
+import todoistcaldavsync.planner.scheduling.PlanDiffFormatter
 import todoistcaldavsync.planner.state.*
+import todoistcaldavsync.planner.sync.RoutedPlanningInputs
+import todoistcaldavsync.planner.sync.RoutedSyncCycle
 import todoistcaldavsync.planner.writeback.CalendarWritebackStore
 import todoistcaldavsync.planner.writeback.PlannerCalendarWritebackService
 
@@ -90,6 +95,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
             calendarGateway = calDavGatewayFactory.call([
                 calendars          : integrationConfig.calendars,
                 managedCalendarName: plannerConfig.outputCalendar,
+                *: (plannerConfig.routing == null ? [:] : [managedCalendarNames: plannerConfig.routing.destinations]),
                 timezone           : plannerConfig.timezone,
                 timeout            : integrationConfig.caldav.timeout,
                 maxResponseBytes   : integrationConfig.caldav.maxResponseBytes
@@ -98,6 +104,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
             calendarGateway = googleGatewayFactory.call([
                 config             : integrationConfig.calendarProvider.googleCalendarApi,
                 managedCalendarName: plannerConfig.outputCalendar,
+                *: (plannerConfig.routing == null ? [:] : [managedCalendarNames: plannerConfig.routing.destinations]),
                 timezone           : plannerConfig.timezone
             ])
         }
@@ -162,21 +169,60 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
         def state = new ItemsSyncStateStore(integrationConfig.applicationsDir.resolve('recurrence'))
         new TodoistItemsPoller(lifecycle, state, { Map item ->
             if (item.is_deleted == true || item.isDeleted == true) return
-            Task task = Task.fromTodoistMap(item, plannerConfig.durationResolver,
+            Map resolved = item
+            if (plannerConfig.routing != null && !item.project_name) {
+                // Sync items have project IDs, not names. Never infer a name or route from an ID.
+                Map snapshot = todoistRead.fetchTasks().find { it.id?.toString() == item.id?.toString() }
+                if (snapshot == null || snapshot.project_id != item.project_id) return
+                resolved = new LinkedHashMap(item)
+                resolved.project_name = snapshot.project_name
+            }
+            Task task = Task.fromTodoistMap(resolved, plannerConfig.durationResolver,
                 plannerConfig.manualLabel, plannerConfig.timezone)
-            manager.process(task)
+            if (plannerConfig.planningEligible(task)) manager.process(task)
         })
     }
 
     /** Execute one crash-safe incremental Todoist items lifecycle poll. */
     PollResult pollTodoistItems() {
         if (itemsPoller == null) throw new IllegalStateException('recurrence lifecycle is disabled')
-        itemsPoller.poll()
+        applicationState.withMutationLock {
+            if (plannerConfig.routing != null && integrationConfig.sync.enabled == true) {
+                Map result = syncSchedules(clock.get(), clock.get().plusSeconds(86400))
+                if (result.status != 'synchronized') throw new IllegalStateException('resolve routed sync conflicts before lifecycle mutation')
+            }
+            withReconciledMutation { itemsPoller.poll() }
+        }
+    }
+
+    LegacyCalendarMigration migration() {
+        if (!(calendarRead instanceof ProjectionCalendarGateway) || !(todoistRead instanceof TodoistMigrationGateway)) {
+            throw new IllegalStateException('provider lacks full-payload migration/account evidence ports')
+        }
+        new LegacyCalendarMigration(plannerConfig, integrationConfig, applicationState,
+            calendarRead as ProjectionCalendarGateway, todoistRead as TodoistMigrationGateway, clock)
+    }
+
+    /** Explicit independent authority; standalone capacity/preview do not invoke this boundary. */
+    Map syncSchedules(Instant rangeStart, Instant rangeEnd, boolean preview = false) {
+        if (!preview && integrationConfig.sync.enabled != true) throw new IllegalStateException('planner.sync.enabled must be true for planner-sync')
+        if (!(calendarRead instanceof ProjectionCalendarGateway) || !(calendarRead instanceof CalendarChangeGateway) ||
+            !(todoistRead instanceof TodoistScheduleGateway)) {
+            throw new IllegalStateException('routed sync requires exact-resource calendar/change and guarded Todoist schedule ports')
+        }
+        new RoutedSyncCycle(plannerConfig, applicationState, calendarRead as ProjectionCalendarGateway,
+            calendarRead as CalendarChangeGateway, todoistRead as TodoistScheduleGateway).run(rangeStart, rangeEnd, preview)
     }
 
     /** Mutating daemon-only pre-plan writeback. Standalone preview/capacity never call this method. */
     List<Map> pollCalendarWriteback(Instant rangeStart, Instant rangeEnd) {
-        calendarWriteback.pollAndApply(rangeStart, rangeEnd)
+        if (plannerConfig.routing != null) {
+            if (integrationConfig.sync.enabled != true) return []
+            Map result = syncSchedules(rangeStart, rangeEnd)
+            if (result.status != 'synchronized') throw new IllegalStateException('resolve routed sync conflicts before planning')
+            return result.results as List<Map>
+        }
+        withReconciledMutation { calendarWriteback.pollAndApply(rangeStart, rangeEnd) }
     }
 
     /** Read-only live capacity operation. */
@@ -205,9 +251,30 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     private Plan propose(List<Task> tasks, List<CalendarEvent> events, Instant rangeStart, Instant rangeEnd,
                          String previousPlanId, Map overrides, Instant now, List<PlanningExplanation> explanations,
                          String confirmedPlanId = null) {
+        new MigrationState(applicationState.directory).requireAuthority('planning')
         List<CalendarEvent> classified = new EventClassifier(plannerConfig).classifyAll(events)
-        def availability = new AvailabilityCalculator(plannerConfig).calculate(rangeStart, rangeEnd, classified)
         Plan previous = loadPrevious(previousPlanId ?: integrationConfig.previousPlanId)
+        Set<String> frozen = overrides.freeze_task_ids instanceof Collection
+            ? (overrides.freeze_task_ids as Collection).collect { it.toString() } as Set : [] as Set
+        Map routed = null
+        List<Task> proposalTasks = tasks
+        if (plannerConfig.routing != null) {
+            List<Task> inventory = todoistRead.fetchTasks().collect {
+                Task.fromTodoistMap(it, plannerConfig.durationResolver, plannerConfig.manualLabel, plannerConfig.timezone)
+            }
+            Set<String> requested = tasks*.id as Set
+            tasks = applyTemporaryOverrides(inventory.findAll {
+                requested.contains(it.id) && plannerConfig.planningEligible(it)
+            }, overrides)
+            proposalTasks = tasks
+            routed = new RoutedPlanningInputs(plannerConfig, applicationState, calendarRead)
+                .prepare(inventory, classified, rangeStart, rangeEnd, now, frozen, tasks*.id as Set)
+            Set<String> retained = routed.retained.collectMany { it.taskIds } as Set
+            tasks = tasks.findAll { !retained.contains(it.id) }
+            classified = routed.events as List<CalendarEvent>
+            previous = routed.previous as Plan
+        }
+        def availability = new AvailabilityCalculator(plannerConfig).calculate(rangeStart, rangeEnd, classified)
         WeatherForecast forecast = null
         if (plannerConfig.weather.enabled) {
             try {
@@ -218,15 +285,32 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
                 forecast = null
             }
         }
-        Set<String> frozen = overrides.freeze_task_ids instanceof Collection
-            ? (overrides.freeze_task_ids as Collection).collect { it.toString() } as Set : [] as Set
         Plan plan = new DeterministicScheduler(plannerConfig).propose(
             tasks, availability.slots, rangeStart, rangeEnd, now, previous, frozen, forecast)
-        if (explanations) {
-            plan = Plan.builder().id(confirmedPlanId ?: plan.id).version(plan.version).createdAt(plan.createdAt).mode(plan.mode)
-                .tasks(plan.tasks).slots(plan.slots).scheduledBlocks(plan.scheduledBlocks).unscheduled(plan.unscheduled)
-                .changes(plan.changes).explanations(plan.explanations + explanations).metrics(plan.metrics)
-                .humanDiff(plan.humanDiff).build()
+        if (routed != null || explanations) {
+            List<ScheduledBlock> retained = routed?.retained ?: []
+            List<PlanChange> kept = retained.collectMany { ScheduledBlock block ->
+                block.memberIntervals.collect { MemberInterval member ->
+                    PlanChange.builder().id('chg-keep-' + member.taskId).type('keep').taskId(member.taskId)
+                        .previousStart(member.start).previousEnd(member.end).newStart(member.start).newEnd(member.end)
+                        .reason(block.reason).build()
+                }
+            }
+            if (routed != null) {
+                Set<String> present = proposalTasks*.id as Set
+                proposalTasks = proposalTasks + routed.allTasks.findAll { !present.contains(it.id) }
+            }
+            def builder = Plan.builder().id(confirmedPlanId ?: plan.id).version(plan.version).createdAt(plan.createdAt).mode(plan.mode)
+                .tasks(routed != null ? proposalTasks : plan.tasks).slots(plan.slots)
+                .scheduledBlocks((plan.scheduledBlocks + retained).toSorted { it.start })
+                .unscheduled(plan.unscheduled).changes(plan.changes + kept)
+                .explanations(plan.explanations + explanations)
+                .metrics(routed != null ? plan.metrics + [routedSource: routed.source,
+                    scheduledTaskCount: plan.metrics.scheduledTaskCount + retained.sum(0) { it.taskIds.size() },
+                    scheduledBlockCount: plan.scheduledBlocks.size() + retained.size()] : plan.metrics)
+                .humanDiff(plan.humanDiff)
+            plan = builder.build()
+            if (routed != null) plan = builder.humanDiff(PlanDiffFormatter.toMarkdown(plan, plannerConfig.timezone)).build()
         }
         planStore.save(plan)
         return plan
@@ -384,12 +468,13 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     /** Apply a stored plan using its configured mode and exact optional approval. */
     ApplicationReceipt apply(String planId, Approval approval = null) {
         Plan plan = requirePlan(planId)
-        return applier().apply(plan, approval)
+        withReconciledMutation(PlanHash.compute(plan)) { applier().apply(plan, approval) }
     }
 
     /** Explicit safe-only entry; protected/frozen/manual items remain withheld. */
     ApplicationReceipt applySafe(String planId) {
-        return applier().applySafeChanges(requirePlan(planId))
+        Plan plan = requirePlan(planId)
+        withReconciledMutation(PlanHash.compute(plan)) { applier().applySafeChanges(plan) }
     }
 
     List<DeliveryReceipt> deliver(String planId, String kind = null, Instant now = clock.get()) {
@@ -412,7 +497,7 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     MessagingService.ApplyDecisionResult applyDecision(String planId, String decisionId) {
         def decision = decisionStore.load(decisionId)
         if (decision == null) throw new IllegalArgumentException("Decision not found: ${decisionId}")
-        return messagingService(false).applyDecision(planId, decision)
+        withReconciledMutation(PlanHash.compute(requirePlan(planId))) { messagingService(false).applyDecision(planId, decision) }
     }
 
     /** AI side service: bounded suggestions/audit only, with no persistence or mutation port. */
@@ -455,15 +540,22 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     }
 
     private List<Task> normalizedEligibleTasks() {
-        List<Task> tasks = todoistRead.fetchTasks().collect {
+        todoistRead.fetchTasks().collect {
             Task.fromTodoistMap(it, plannerConfig.durationResolver, plannerConfig.manualLabel, plannerConfig.timezone)
-        }.findAll { !it.manual }
-        if (plannerConfig.schedulingEligibleLabels) {
-            tasks = tasks.findAll { Task task ->
-                task.labels.any { label -> plannerConfig.schedulingEligibleLabels.any { it.equalsIgnoreCase(label) } }
+        }.findAll { plannerConfig.planningEligible(it) }
+    }
+
+    private <T> T withReconciledMutation(String approvedPlanHash = null, Closure<T> action) {
+        applicationState.withMutationLock {
+            new MigrationState(applicationState.directory).requireAuthority('planning')
+            if (applicationState.loadSyncOperations().values().any {
+                (it.status != 'verified' || !applicationState.syncProjectionsCommitted(it.id.toString())) &&
+                    !(approvedPlanHash != null && it.intent.type == 'routed-plan' && it.intent.planHash == approvedPlanHash)
+            }) {
+                throw new IllegalStateException('pending sync operations must reconcile before lifecycle/apply/writeback')
             }
+            action.call()
         }
-        tasks
     }
 
     private Plan loadPrevious(String explicitId) {
@@ -484,7 +576,8 @@ final class ProductionPlannerOrchestrator implements AutoCloseable {
     }
 
     private PlanApplier applier() {
-        CalendarWriteGateway managed = new ManagedCalendarWriteGateway(calendarWrite, calendarRead, plannerConfig.outputCalendar)
+        CalendarWriteGateway managed = new ManagedCalendarWriteGateway(calendarWrite, calendarRead,
+            plannerConfig.routing != null ? plannerConfig.routing.destinations : plannerConfig.outputCalendar)
         new PlanApplier(plannerConfig, managed, calendarRead, todoistWrite, todoistRead,
             applicationState, clock, calendarWriteback)
     }

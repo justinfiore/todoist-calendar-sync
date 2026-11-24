@@ -63,6 +63,26 @@ class ProjectBatcherSpec extends Specification {
         ]
     ])
 
+    def 'same-project compatible contexts batch only within each resolved destination'() {
+        given:
+        PlannerConfig routed = PlannerConfig.fromMap(planner: [timezone: 'UTC',
+            routing: [mode: 'legacy_rules', projectsToInclude: ['shared'], rules: [
+                [rule: 'family', calendarName: 'Family'], [rule: 'work', calendarName: 'Work']]],
+            availability: [working_windows: [weekday: ['09:00-17:00']]],
+            batching: [enabled: true, max_focus_block_minutes: 90, minimum_focus_block_minutes: 30]])
+        List<Task> tasks = [task('a', 'shared', 20, 4, null, ['work']),
+            task('b', 'shared', 25, 3, null, ['family']), task('c', 'shared', 30, 2, null, ['work']),
+            task('d', 'shared', 10, 1, null, ['family'])]
+
+        when:
+        List units = new ProjectBatcher(routed).buildUnits(tasks, now)
+
+        then:
+        units*.tasks.collect { it*.id }.toSet() == [['a', 'c'], ['b', 'd']].toSet()
+        units.every { it.focusBlock && it.tasks.collect { routed.projectionDestination(it) }.unique().size() == 1 }
+        units*.totalMinutes.toSet() == [50L, 35L] as Set
+    }
+
     def "same-project small tasks form an explicit focus unit"() {
         given:
         def tasks = [

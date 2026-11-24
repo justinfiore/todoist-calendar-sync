@@ -2,6 +2,7 @@ package todoistcaldavsync.planner
 
 import todoistcaldavsync.planner.oauth.GoogleOAuthException
 import todoistcaldavsync.planner.oauth.GoogleOAuthStoreIsolation
+import todoistcaldavsync.planner.config.TaskRoutingConfig
 
 import java.net.URI
 import java.nio.file.Files
@@ -23,6 +24,7 @@ final class ProductionIntegrationConfig {
     final CalendarProviderConfig calendarProvider
     final Map weather
     final Map feedback
+    final Map sync
     final Map daemon
     final Map slack
     final Path plansDir
@@ -52,6 +54,7 @@ final class ProductionIntegrationConfig {
             this.calendarProvider = new CalendarProviderConfig(provider, null, google)
             this.weather = Collections.emptyMap()
             this.feedback = Collections.emptyMap()
+            this.sync = Collections.emptyMap()
             this.daemon = Collections.emptyMap()
             this.slack = Collections.emptyMap()
             this.plansDir = null
@@ -99,11 +102,15 @@ final class ProductionIntegrationConfig {
             throw new IllegalArgumentException('planner.integration.calendar contains mixed or unsupported provider fields')
         }
         String outputCalendar = planner.output_calendar?.toString()
+        TaskRoutingConfig routing = TaskRoutingConfig.fromMap(planner.routing)
+        if (routing != null && (outputCalendar || planner.outputCalendar)) {
+            throw new IllegalArgumentException('planner.routing and planner.output_calendar are mutually exclusive')
+        }
         if (provider == CalendarProviderConfig.CALDAV) {
             if (calendarRaw.containsKey('google_calendar_api')) {
                 throw new IllegalArgumentException('mixed calendar provider sections are not allowed when provider is caldav')
             }
-            Map parsed = parseCalDav(integration.caldav, outputCalendar)
+            Map parsed = parseCalDav(integration.caldav, outputCalendar, routing)
             Map providerCalDav = Collections.unmodifiableMap([
                 calendars: parsed.calendars,
                 timeout: parsed.settings.timeout,
@@ -120,7 +127,7 @@ final class ProductionIntegrationConfig {
                 throw new IllegalArgumentException('mixed CalDAV and Google calendar provider sections are not allowed')
             }
             Map googleRaw = calendarRaw.google_calendar_api instanceof Map ? calendarRaw.google_calendar_api as Map : [:]
-            def google = parseGoogleCalendarApi(googleRaw, configDir, outputCalendar, googleBootstrapOnly, false)
+            def google = parseGoogleCalendarApi(googleRaw, configDir, outputCalendar, googleBootstrapOnly, false, routing)
             this.calendars = google.calendars
             this.caldav = null
             this.calendarProvider = new CalendarProviderConfig(provider, null, google)
@@ -137,7 +144,8 @@ final class ProductionIntegrationConfig {
 
         Map feedbackRaw = integration.feedback instanceof Map ? new LinkedHashMap(integration.feedback as Map) : [:]
         this.feedback = Collections.unmodifiableMap(parseFeedback(feedbackRaw))
-        this.daemon = Collections.unmodifiableMap(parseDaemon(planner.daemon instanceof Map ? planner.daemon as Map : [:]))
+        this.sync = Collections.unmodifiableMap(parseSync(planner.sync, routing))
+        this.daemon = Collections.unmodifiableMap(parseDaemon(planner.daemon instanceof Map ? planner.daemon as Map : [:], sync.enabled == true))
         this.slack = Collections.unmodifiableMap(parseSlack(planner.messaging instanceof Map ? planner.messaging as Map : [:], daemon.enabled == true))
 
         Map state = integration.state instanceof Map ? integration.state as Map : [:]
@@ -171,7 +179,7 @@ final class ProductionIntegrationConfig {
     List<Map> planningRuns() { daemon.planningRuns as List<Map> }
     List<Map> feedbackRules() { feedback.rules as List<Map> }
 
-    private static Map parseCalDav(def raw, String outputCalendar) {
+    private static Map parseCalDav(def raw, String outputCalendar, TaskRoutingConfig routing = null) {
         Map caldavRaw = raw instanceof Map ? raw as Map : [:]
         if (caldavRaw.keySet().any { it.toString() in [
             'google_calendar_api', 'oauth_client_secret_file', 'token_store_dir', 'qa_token_store_dir',
@@ -211,8 +219,16 @@ final class ProductionIntegrationConfig {
         if (parsedCalendars*.name.toSet().size() != parsedCalendars.size()) {
             throw new IllegalArgumentException('planner.integration.caldav calendar names must be unique')
         }
-        if (!outputCalendar || !parsedCalendars*.name.contains(outputCalendar)) {
+        if (parsedCalendars*.url.toSet().size() != parsedCalendars.size()) {
+            throw new IllegalArgumentException('planner.integration.caldav calendar URLs must be unique')
+        }
+        if (routing != null) {
+            validateManagedDestinations(parsedCalendars, routing)
+        } else if (!outputCalendar || !parsedCalendars*.name.contains(outputCalendar)) {
             throw new IllegalArgumentException('planner.output_calendar must name one configured integration CalDAV calendar')
+        }
+        if (routing == null && parsedCalendars.any { it.managed_destination == true }) {
+            throw new IllegalArgumentException('managed_destination requires planner.routing')
         }
         Map settings = Collections.unmodifiableMap([
             timeout         : parseDuration(caldavRaw.timeout, Duration.ofSeconds(15), 'planner.integration.caldav.timeout'),
@@ -223,7 +239,8 @@ final class ProductionIntegrationConfig {
     }
 
     private static CalendarProviderConfig.GoogleCalendarApiConfig parseGoogleCalendarApi(
-        Map raw, Path configDir, String outputCalendar, boolean bootstrapOnly, boolean qaBootstrap) {
+        Map raw, Path configDir, String outputCalendar, boolean bootstrapOnly, boolean qaBootstrap,
+        TaskRoutingConfig routing = null) {
         rejectInlineSecrets(raw, 'planner.integration.calendar.google_calendar_api')
         Set<String> allowed = ['oauth_client_secret_file', 'token_store_dir', 'qa_token_store_dir', 'account_email',
                                'oauth_callback_port', 'calendars'] as Set
@@ -254,12 +271,13 @@ final class ProductionIntegrationConfig {
         }
         int callbackPort = positiveInt(raw.oauth_callback_port, 8787, 65535,
             'planner.integration.calendar.google_calendar_api.oauth_callback_port')
-        List<Map> calendars = parseGoogleCalendars(raw.calendars, outputCalendar, bootstrapOnly)
+        List<Map> calendars = parseGoogleCalendars(raw.calendars, outputCalendar, bootstrapOnly, routing)
         new CalendarProviderConfig.GoogleCalendarApiConfig(
             clientFile, tokenStore, qaTokenStore, accountEmail, callbackPort, calendars)
     }
 
-    private static List<Map> parseGoogleCalendars(def raw, String outputCalendar, boolean bootstrapOnly) {
+    private static List<Map> parseGoogleCalendars(def raw, String outputCalendar, boolean bootstrapOnly,
+                                                  TaskRoutingConfig routing = null) {
         if (bootstrapOnly) return Collections.emptyList()
         if (!(raw instanceof Collection) || (raw as Collection).isEmpty()) {
             throw new IllegalArgumentException('planner.integration.calendar.google_calendar_api.calendars must be a non-empty list')
@@ -270,7 +288,7 @@ final class ProductionIntegrationConfig {
                 throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}] must be a map")
             }
             Set<String> keys = (row as Map).keySet().collect { it.toString() } as Set
-            if (keys.any { !(it in ['name', 'id', 'role']) }) {
+            if (keys.any { !(it in ['name', 'id', 'role', 'managed_destination', 'prefix']) }) {
                 throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}] contains mixed or unsupported fields")
             }
             String name = row.name?.toString()?.trim()
@@ -282,19 +300,42 @@ final class ProductionIntegrationConfig {
             if (!(role in ['hard_blocker', 'soft_blocker', 'informational', 'managed_output'])) {
                 throw new IllegalArgumentException("planner.integration.calendar.google_calendar_api.calendars[${idx}].role is unsupported")
             }
-            calendars << Collections.unmodifiableMap([name: name, id: id, role: role])
+            Map calendar = [name: name, id: id, role: role]
+            if (row.containsKey('managed_destination')) calendar.managed_destination = row.managed_destination
+            if (row.containsKey('prefix')) calendar.prefix = row.prefix
+            calendars << Collections.unmodifiableMap(calendar)
         }
         if (calendars*.name.toSet().size() != calendars.size() || calendars*.id.toSet().size() != calendars.size()) {
             throw new IllegalArgumentException('Google calendar names and IDs must be unique')
         }
         List<Map> managed = calendars.findAll { it.role == 'managed_output' }
-        if (managed.size() != 1) {
+        if (routing != null) {
+            if (managed) throw new IllegalArgumentException('routed calendars cannot use single managed_output role')
+            validateManagedDestinations(calendars, routing)
+        } else if (managed.size() != 1) {
             throw new IllegalArgumentException('Google calendars require exactly one managed_output mapping')
-        }
-        if (!outputCalendar || managed[0].name != outputCalendar) {
+        } else if (!outputCalendar || managed[0].name != outputCalendar) {
             throw new IllegalArgumentException('planner.output_calendar must match the Google managed_output calendar name')
         }
+        if (routing == null && calendars.any { it.managed_destination == true }) {
+            throw new IllegalArgumentException('managed_destination requires planner.routing')
+        }
         Collections.unmodifiableList(calendars)
+    }
+
+    private static void validateManagedDestinations(List<Map> calendars, TaskRoutingConfig routing) {
+        calendars.each { Map row ->
+            if (row.containsKey('managed_destination') && !(row.managed_destination instanceof Boolean)) {
+                throw new IllegalArgumentException('managed_destination must be a boolean')
+            }
+            if (row.containsKey('prefix') && !(row.prefix instanceof String)) {
+                throw new IllegalArgumentException('calendar prefix must be a string')
+            }
+        }
+        Set<String> managed = calendars.findAll { it.managed_destination == true }*.name as Set<String>
+        if (managed != routing.destinations) {
+            throw new IllegalArgumentException('routing destinations must exactly match explicit managed_destination calendar mappings')
+        }
     }
 
     private static Map parseFeedback(Map raw) {
@@ -377,10 +418,25 @@ final class ProductionIntegrationConfig {
         }
     }
 
-    private static Map parseDaemon(Map raw) {
+    private static Map parseSync(Object section, TaskRoutingConfig routing) {
+        if (section != null && !(section instanceof Map)) throw new IllegalArgumentException('planner.sync must be a map')
+        Map raw = section == null ? [:] : section as Map
+        if (raw.keySet().any { !(it in ['enabled', 'interval']) } ||
+            (raw.containsKey('enabled') && !(raw.enabled instanceof Boolean))) {
+            throw new IllegalArgumentException('planner.sync accepts boolean enabled and interval only')
+        }
+        if (raw.enabled == true && routing == null) throw new IllegalArgumentException('planner.sync requires explicit routing')
+        Duration interval = parseDuration(raw.interval, Duration.ofMinutes(1), 'planner.sync.interval')
+        if (interval < Duration.ofSeconds(10) || interval > Duration.ofDays(1)) {
+            throw new IllegalArgumentException('planner.sync.interval must be PT10S..P1D')
+        }
+        [enabled: raw.enabled == true, interval: interval]
+    }
+
+    private static Map parseDaemon(Map raw, boolean syncEnabled = false) {
         boolean enabled = raw.enabled == true || raw.enabled?.toString()?.equalsIgnoreCase('true')
         def runsRaw = raw.planning_runs ?: raw.planningRuns ?: []
-        if (enabled && (!(runsRaw instanceof Collection) || (runsRaw as Collection).isEmpty())) {
+        if (enabled && !syncEnabled && (!(runsRaw instanceof Collection) || (runsRaw as Collection).isEmpty())) {
             throw new IllegalArgumentException('planner.daemon.planning_runs must be a non-empty list when daemon is enabled')
         }
         if (!(runsRaw instanceof Collection)) throw new IllegalArgumentException('planner.daemon.planning_runs must be a list')

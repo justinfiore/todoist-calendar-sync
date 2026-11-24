@@ -9,6 +9,7 @@ import groovy.util.logging.*
 import groovy.yaml.YamlSlurper
 import groovy.yaml.YamlBuilder
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import org.apache.commons.io.*
 import org.apache.commons.io.filefilter.*
 import java.text.SimpleDateFormat
@@ -102,7 +103,7 @@ class TodoistCalDavSync {
                    Closure plannerFactory = { configFile -> new ProductionPlannerOrchestrator(configFile) }) {
         def cli = new CliBuilder(usage: 'TodoistCalDavSync -f config.yaml -l log4j.groovy [--operation OP]',
             writer: new PrintWriter(new AppendableWriter(out), true))
-        cli.setFooter('Operations: legacy-sync (default), slack-app-manifest (no config or credentials required), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, ai-auth-login, ai-auth-status, ai-auth-logout, planner-daemon, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
+        cli.setFooter('Operations: legacy-sync (default), slack-app-manifest (no config or credentials required), google-oauth-bootstrap, google-oauth-bootstrap-qa, google-oauth-import-legacy-qa, google-qa-calendars-list, google-qa-calendars-provision, ai-auth-login, ai-auth-status, ai-auth-logout, planner-daemon, planner-sync, planner-sync-preview, planner-migrate, capacity, preview, apply, apply-safe, deliver, feedback, apply-decision, ai-suggest')
         cli.f(args: 1, argName: "configFile", "Specify the YAML config file to use")
         cli.l(args: 1, argName: "log4j.groovy", "the Log4j Configuration groovy file")
         cli.h(longOpt: 'help', args: 0, 'Show the help')
@@ -116,6 +117,7 @@ class TodoistCalDavSync {
         cli._(longOpt: 'plan-id', args: 1, argName: 'id', 'Stored plan id')
         cli._(longOpt: 'previous-plan-id', args: 1, argName: 'id', 'Explicit stability baseline plan id')
         cli._(longOpt: 'approval', args: 1, argName: 'file', 'Exact approval JSON/YAML file')
+        cli._(longOpt: 'migration-step', args: 1, argName: 'step', 'planner-migrate: inventory (default), status, approve-delete, delete, reconstruct, verify, release-sync, release-planning, review-rollback, rollback')
         cli._(longOpt: 'kind', args: 1, argName: 'kind', 'Message kind (omit for deliver-due)')
         cli._(longOpt: 'feedback', args: 1, argName: 'command', 'Structured feedback command')
         cli._(longOpt: 'actor', args: 1, argName: 'id', 'Feedback actor id')
@@ -177,7 +179,7 @@ class TodoistCalDavSync {
                 PropertyConfigurator.configure(logConfig.toProperties())
                 log.info('----------------------------------------------------------------')
             }
-            Set<String> supportedOperations = ['legacy-sync', 'planner-daemon', 'capacity', 'preview', 'apply', 'apply-safe',
+            Set<String> supportedOperations = ['legacy-sync', 'planner-daemon', 'planner-sync', 'planner-sync-preview', 'planner-migrate', 'capacity', 'preview', 'apply', 'apply-safe',
                 'deliver', 'feedback', 'apply-decision', 'ai-suggest',
                 'ai-auth-login', 'ai-auth-status', 'ai-auth-logout',
                 'google-oauth-bootstrap', 'google-oauth-bootstrap-qa', 'google-oauth-import-legacy-qa',
@@ -285,6 +287,38 @@ class TodoistCalDavSync {
                             try { Runtime.runtime.removeShutdownHook(shutdownHook) } catch (IllegalStateException ignored) {}
                             daemon.close()
                         }
+                        break
+                    case 'planner-migrate':
+                        def migration = orchestrator.migration()
+                        String step = optionString(options, 'migration-step') ?: 'inventory'
+                        Map migrationResult
+                        Map migrationApproval = null
+                        if (step in ['approve-delete', 'release-sync', 'release-planning', 'rollback']) {
+                            File approvalFile = new File(requiredOption(options, 'approval'))
+                            migrationApproval = approvalFile.name.endsWith('.json') ?
+                                new JsonSlurper().parse(approvalFile) as Map : new YamlSlurper().parse(approvalFile) as Map
+                        }
+                        switch (step) {
+                            case 'inventory': migrationResult = migration.inventory(); break
+                            case 'status': migrationResult = migration.status(); break
+                            case 'approve-delete': migrationResult = migration.approveDeletion(migrationApproval); break
+                            case 'delete': migrationResult = migration.deleteApproved(); break
+                            case 'reconstruct': migrationResult = migration.reconstruct(); break
+                            case 'verify': migrationResult = migration.verify(); break
+                            case 'release-sync': migrationResult = migration.release('sync', migrationApproval); break
+                            case 'release-planning': migrationResult = migration.release('planning', migrationApproval); break
+                            case 'review-rollback': migrationResult = migration.reviewRollback(); break
+                            case 'rollback': migrationResult = migration.rollback(migrationApproval); break
+                            default: throw new IllegalArgumentException('unsupported migration step')
+                        }
+                        out.append(json(migrationResult)).append('\n')
+                        break
+                    case 'planner-sync':
+                    case 'planner-sync-preview':
+                        def syncBounds = requireBounds(options)
+                        Map syncResult = orchestrator.syncSchedules(syncBounds[0], syncBounds[1], operation == 'planner-sync-preview')
+                        out.append(json(syncResult)).append('\n')
+                        if (syncResult.status in ['conflict', 'pending']) return 1
                         break
                     case 'capacity':
                         def bounds = requireBounds(options)
@@ -769,41 +803,7 @@ class TodoistCalDavSync {
     }
 
     def identifyCalendarName(item) {
-        def calendarName = null
-        config.caldav.rules.each { rule ->
-            log.info(rule)
-            if(calendarName == null) {
-                log.info("Applying rule: ${rule.rule}")
-                if(rule.rule) {
-                    def labelsMustMatch = rule.rule.split(" AND ")
-                    def labelMatches = labelsMustMatch.collect { labelName ->
-                        labelName = labelName.trim()
-                        if(labelName.startsWith("NOT ")){
-                            labelName = labelName.replaceFirst("NOT ", "")
-                            if(labelName.startsWith("p:")) {
-                                def projectName = labelName.replaceFirst("p:", "")
-                                return item.project_name != projectName
-                            } else {
-                                return !item.label_names.contains(labelName)
-                            }
-                        } else {
-                            if(labelName.startsWith("p:")) {
-                                def projectName = labelName.replaceFirst("p:", "")
-                                return item.project_name == projectName
-                            } else {
-                                return item.label_names.contains(labelName)
-                            }
-                        }
-                    }
-                    if(labelMatches.findAll{ it -> it == false}.size() == 0) {
-                        log.info("Item: ${item.content} with labels: ${item.label_names} matched rule: ${rule.rule} for calendarName: ${rule.calendarName}")
-                        calendarName = rule.calendarName
-                    }
-                }
-            }
-
-        }
-        return calendarName
+        TaskCalendarRouting.destination(item.label_names, item.project_name, config.caldav.rules)
     }
 
     def doRateLimit() {
@@ -1560,12 +1560,7 @@ class TodoistCalDavSync {
 
     def filterItemsForInclusionInCalendar(items, labelsToInclude, projectsToInclude) {
         return items.findAll { item ->
-            def includedLabels = item.labels.findAll { labelName ->
-                labelsToInclude.contains(labelName)
-            }
-            def includedByLabels = includedLabels.size() > 0
-            def includedByProjectName = projectsToInclude.contains(item.project_name)
-            return includedByLabels || includedByProjectName
+            TaskCalendarRouting.includes(item.labels, item.project_name, labelsToInclude, projectsToInclude)
         }
 
     }

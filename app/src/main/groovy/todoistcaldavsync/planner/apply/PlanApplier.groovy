@@ -5,6 +5,8 @@ import todoistcaldavsync.planner.adapters.CalendarWriteGateway
 import todoistcaldavsync.planner.adapters.TodoistReadGateway
 import todoistcaldavsync.planner.adapters.TodoistWriteGateway
 import todoistcaldavsync.planner.adapters.TodoistLifecycleGateway
+import todoistcaldavsync.planner.adapters.TodoistScheduleGateway
+import todoistcaldavsync.planner.adapters.ProjectionCalendarGateway
 import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.domain.ApplicationReceipt
 import todoistcaldavsync.planner.domain.AppliedMapping
@@ -17,6 +19,7 @@ import todoistcaldavsync.planner.domain.MemberInterval
 import todoistcaldavsync.planner.domain.Plan
 import todoistcaldavsync.planner.domain.PlanChange
 import todoistcaldavsync.planner.domain.PlanHash
+import todoistcaldavsync.planner.domain.ProjectionMetadata
 import todoistcaldavsync.planner.domain.ScheduledBlock
 import todoistcaldavsync.planner.domain.Task
 import todoistcaldavsync.planner.recurrence.LifecycleMarker
@@ -95,7 +98,7 @@ class PlanApplier {
             throw new IllegalArgumentException('stateStore is required')
         }
         String outCal = config.outputCalendar
-        if (outCal == null || outCal.trim().isEmpty()) {
+        if (config.routing == null && (outCal == null || outCal.trim().isEmpty())) {
             throw new IllegalArgumentException('planner.output_calendar is required and must be non-blank')
         }
         this.config = config
@@ -246,6 +249,63 @@ class PlanApplier {
         // items, but still surface the failure in structured audit while safe items may apply.
         if (gate.invalidApprovalReason) {
             errors << gate.invalidApprovalReason
+        }
+
+        if (config.routing != null) {
+            List<ScheduledBlock> selected = []
+            plan.scheduledBlocks.each { ScheduledBlock block ->
+                ApplyItemStatus withheld = !gate.explicitApproval && (block.frozen || block.manualOverride) ?
+                    ApplyItemStatus.SKIPPED_PROTECTED : !gate.explicitApproval && blockRequiresApproval(plan, block) ?
+                    ApplyItemStatus.SKIPPED_UNAPPROVED : null
+                if (withheld == null) selected << block
+                else block.taskIds.each { String taskId ->
+                    MemberInterval interval = block.intervalFor(taskId)
+                    items << AppliedMapping.builder().taskId(taskId).blockId(block.id)
+                        .eventUid(ManagedEventIds.uidForBlock(block.id))
+                        .slotStart(interval?.start ?: block.start).slotEnd(interval?.end ?: block.end)
+                        .planId(plan.id).planVersion(plan.version).planHash(planHash).appliedAt(started)
+                        .calendarStatus(withheld).todoistStatus(withheld).build()
+                }
+            }
+            try {
+                if (!(calendarWrite instanceof ProjectionCalendarGateway) || !(todoistWrite instanceof TodoistScheduleGateway)) {
+                    throw new IllegalStateException('routed apply requires exact calendar and guarded schedule ports')
+                }
+                Map result = new RoutedPlanApplication(config, stateStore, calendarWrite as ProjectionCalendarGateway,
+                    todoistWrite as TodoistScheduleGateway, todoistRead).apply(plan, selected, approval)
+                result.events.each { CalendarEvent event ->
+                    ProjectionMetadata.read(event).value.members.each { Map member ->
+                        ScheduledBlock block = selected.find { it.taskIds.contains(member.taskId) }
+                        ApplyItemStatus status = result.status == 'idempotent' ? ApplyItemStatus.SKIPPED_IDEMPOTENT : ApplyItemStatus.APPLIED
+                        AppliedMapping mapping = AppliedMapping.builder().taskId(member.taskId.toString())
+                            .seriesTaskId(member.taskId.toString()).occurrenceKey(member.occurrenceKey.toString())
+                            .blockId(block.id).eventUid(event.uid).slotStart(Instant.parse(member.start.toString()))
+                            .slotEnd(Instant.parse(member.end.toString())).planId(plan.id).planVersion(plan.version)
+                            .planHash(planHash).approvalId(approval?.id).approvalTime(approval?.approvedAt).appliedAt(clock.get())
+                            .calendarStatus(status).todoistStatus(status)
+                            .metadata([destination: event.calendarName, resourceId: event.id, operationId: result.operationId,
+                                blockStart: event.start.toString(), blockEnd: event.end.toString()]).build()
+                        stateStore.putMapping(mapping)
+                        items << mapping
+                    }
+                }
+            } catch (Exception e) {
+                errors << e.message
+            }
+            Map operation = stateStore.loadSyncOperations()['plan-' + planHash]
+            ApplyItemStatus overall = deriveOverall(items, errors, drifts)
+            if (errors && operation?.status == 'pending') {
+                if (operation.outcomes.values().any { it.state == 'unknown' }) overall = ApplyItemStatus.UNKNOWN
+                else if (operation.outcomes.values().any { it.state == 'verified' }) overall = ApplyItemStatus.PARTIAL
+            }
+            ApplicationReceipt receipt = ApplicationReceipt.builder().id(receiptId).planId(plan.id)
+                .planVersion(plan.version).planHash(planHash).mode(mode).approvalId(approval?.id)
+                .startedAt(started).finishedAt(clock.get()).overallStatus(overall)
+                .items(items).errors(errors).metadata([approvalBound: gate.explicitApproval,
+                    explicitApproval: gate.explicitApproval, approvalValid: gate.invalidApprovalReason == null,
+                    routed: true, operationId: operation?.id, pending: operation?.status == 'pending']).build()
+            stateStore.saveReceipt(receipt)
+            return receipt
         }
 
         // In-memory snapshot drives one run; persistence uses per-key putMapping merge only.

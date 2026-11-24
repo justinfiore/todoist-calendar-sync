@@ -1,6 +1,8 @@
 package todoistcaldavsync.planner
 
 import spock.lang.Specification
+import groovy.yaml.YamlSlurper
+import todoistcaldavsync.planner.config.PlannerConfig
 import todoistcaldavsync.planner.adapters.CalendarChangeGateway
 import todoistcaldavsync.planner.adapters.InMemoryCalendarGateway
 
@@ -43,6 +45,130 @@ class ProductionIntegrationConfigSpec extends Specification {
             ]
         ]]
         root
+    }
+
+    def "documented seven-destination model and compatible template validate offline"() {
+        given:
+        File docs = new File('../docs/SMART_PLANNER_CONFIGURATION.md')
+        String fragment = (docs.text =~ /(?s)<!-- routed-example:start -->\s*```yaml\s*(.*?)```/)[0][1]
+        Map sample = new YamlSlurper().parseText(fragment) as Map
+        Map root = new YamlSlurper().parse(new File('../conf/todoist-planner.conf.example.yaml')) as Map
+
+        expect:
+        PlannerConfig.fromMap(root).routing == null
+        ProductionIntegrationConfig.fromMap(root, configDir).calendarProvider.isCalDav()
+
+        when:
+        root.planner.remove('output_calendar')
+        root.planner.routing = sample.planner.routing
+        root.planner.integration.remove('caldav')
+        root.planner.integration.calendar = sample.planner.integration.calendar
+        def planner = PlannerConfig.fromMap(root)
+        def integration = ProductionIntegrationConfig.fromMap(root, configDir)
+
+        then:
+        planner.routing.destinations == ['J&J', 'Todoist', 'Jack', 'Evan', 'Emily', 'Colin', 'Kids'] as Set
+        integration.calendars*.name.toSet() == planner.routing.destinations
+        integration.calendars.every { it.id.endsWith('@example.test') && it.managed_destination == true }
+        integration.calendarProvider.googleCalendarApi.accountEmail == 'operator@example.test'
+    }
+
+    def 'sync-only daemon accepts no planning schedules with explicit interval and forward authority'() {
+        given:
+        Map root = validRoot()
+        root.planner.remove('output_calendar')
+        root.planner.routing = [mode: 'legacy_rules', labelsToInclude: ['work'], rules: [
+            [rule: 'work', calendarName: 'Planned'], [rule: 'family', calendarName: 'Busy']]]
+        root.planner.integration.caldav.calendars.each { it.managed_destination = true }
+        root.planner.sync = [enabled: true, interval: 'PT37S']
+        root.planner.daemon = [enabled: true, planning_runs: []]
+        root.planner.messaging = [enabled: true, provider: 'slack', slack_mode: 'socket_mode',
+            destination: 'C1', bot_token_env: 'SLACK_BOT', app_token_env: 'SLACK_APP']
+
+        when:
+        def config = ProductionIntegrationConfig.fromMap(root, configDir)
+
+        then:
+        config.sync == [enabled: true, interval: java.time.Duration.ofSeconds(37)]
+        config.planningRuns().isEmpty()
+
+        when:
+        root.planner.sync.enabled = false
+        ProductionIntegrationConfig.fromMap(root, configDir)
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def 'sync refuses malformed authority and interval before any credential resolution'() {
+        given:
+        Map root = validRoot()
+        root.planner.sync = section
+
+        when:
+        ProductionIntegrationConfig.fromMap(root, configDir)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        section << ['true', [enabled: 'true'], [enabled: true], [enabled: false, interval: 'PT9S'],
+            [enabled: false, interval: 'P2D'], [enabled: false, interval: 'bad'], [enabled: false, reverse: true]]
+    }
+
+    def "routed mappings are explicit independently of availability roles"() {
+        given:
+        Map root = google ? validGoogleRoot() : validRoot()
+        root.planner.remove('output_calendar')
+        root.planner.routing = [mode: 'legacy_rules', projectsToInclude: ['Home'], rules: [
+            [rule: 'p:Home', calendarName: 'Planned'], [rule: 'work', calendarName: 'Busy']
+        ]]
+        List calendars = google ? root.planner.integration.calendar.google_calendar_api.calendars :
+            root.planner.integration.caldav.calendars
+        calendars.each { it.managed_destination = true }
+        if (google) calendars[0].role = 'informational'
+
+        when:
+        def config = ProductionIntegrationConfig.fromMap(root, configDir)
+
+        then:
+        config.calendars*.name == ['Planned', 'Busy']
+        config.calendars.every { it.managed_destination == true }
+
+        where:
+        google << [false, true]
+    }
+
+    def "invalid routed mappings fail during configuration before provider construction"() {
+        given:
+        Map root = validGoogleRoot()
+        root.planner.remove('output_calendar')
+        root.planner.routing = [mode: 'legacy_rules', projectsToInclude: ['Home'], rules: [
+            [rule: 'p:Home', calendarName: 'Planned']
+        ]]
+        def calendars = root.planner.integration.calendar.google_calendar_api.calendars
+        calendars[0].role = 'informational'
+        calendars[0].managed_destination = true
+        mutate.call(root)
+
+        when:
+        ProductionIntegrationConfig.fromMap(root, configDir)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        mutate << [
+            { it.planner.routing.rules[0].calendarName = 'Unknown' },
+            { it.planner.routing.rules[0].rule = 'a OR b' },
+            { it.planner.output_calendar = 'Planned' },
+            { it.planner.integration.calendar.google_calendar_api.calendars[0].managed_destination = false },
+            { it.planner.integration.calendar.google_calendar_api.calendars[1].managed_destination = true },
+            { it.planner.integration.calendar.google_calendar_api.calendars[0].managed_destination = 'true' },
+            { it.planner.integration.calendar.google_calendar_api.calendars[1].id = 'planned@example.test' },
+            { it.planner.integration.calendar.google_calendar_api.calendars[1].name = 'Planned' },
+            { it.planner.integration.calendar.google_calendar_api.calendars[0].role = 'managed_output' }
+        ]
     }
 
     def "valid production configuration resolves independent relative state paths"() {
