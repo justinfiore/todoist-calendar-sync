@@ -101,6 +101,17 @@ class ApplicationStateStore {
                 throw new IllegalStateException('projection membership requires a fully verified operation')
             }
             Map records = loadProjectionsUnlocked()
+            if (operationId != null && committedProjectionOperationsUnlocked().contains(operationId) &&
+                (verified.any { CalendarEvent event ->
+                    Map record = records[projectionKey(event)]
+                    record?.event != ProjectionMetadata.eventMap(event) || record?.operationId != operationId ||
+                        record?.status != (ProjectionMetadata.read(event).value.historical ? 'historical' : 'current')
+                } || retired.any { CalendarEvent event ->
+                    Map record = records[projectionKey(event)]
+                    record?.event != ProjectionMetadata.eventMap(event) || record?.operationId != operationId || record?.status != 'retired'
+                })) {
+                throw new IllegalStateException('committed operation cannot rewind subsequent projection lifetimes')
+            }
             retired.each { CalendarEvent event ->
                 String key = projectionKey(event)
                 Map previous = records[key]
@@ -261,9 +272,22 @@ class ApplicationStateStore {
                 if (previous?.status == 'cancelled') throw new IllegalStateException('cancelled projection requires explicit reconciliation')
                 if (previous?.status != 'retired') return
                 CalendarEvent before = ProjectionMetadata.eventFromMap(previous.event as Map)
-                if (!(frozenIntent.type in ['projection-replacement', 'routed-plan']) ||
-                    before.uid != (resource.event?.uid ?: resource.uid) ||
-                    !replacing.containsAll(ProjectionMetadata.read(before).value.members*.occurrenceKey)) {
+                boolean restoredSchedule = false
+                if (frozenIntent.type == 'schedule-forward' && resource.before == null && resource.event instanceof Map) {
+                    ProjectionMetadata target = ProjectionMetadata.read(ProjectionMetadata.eventFromMap(resource.event as Map))
+                    if (!target.value.historical && target.value.members.size() == 1 &&
+                        target.value.routingFingerprint == frozenIntent.routingFingerprint) {
+                        Map member = target.value.members[0]
+                        def task = frozenIntent.tasks?.get(member.taskId) instanceof Map ?
+                            PlanStore.taskFromMap(frozenIntent.tasks[member.taskId] as Map) : null
+                        restoredSchedule = task != null && task.occurrenceIdentity().occurrenceKey() == member.occurrenceKey &&
+                            task.todoistDue?.snapshotMap() == member.due && task.dueTime?.toString() == member.start &&
+                            task.nativeDuration?.toMinutes() == member.nativeMinutes && task.effectiveDuration.toMinutes() == member.effectiveMinutes
+                    }
+                }
+                if (before.uid != (resource.event?.uid ?: resource.uid) ||
+                    (!restoredSchedule && (!(frozenIntent.type in ['projection-replacement', 'routed-plan']) ||
+                        !replacing.containsAll(ProjectionMetadata.read(before).value.members*.occurrenceKey)))) {
                     throw new IllegalStateException('retired resource requires current journal-bound replacement membership')
                 }
                 baselines[key] = previous

@@ -1330,6 +1330,46 @@ class ProjectionMembershipE2ESpec extends Specification {
         '2026-11-24T20:10:00Z' | '2026-11-24T20:40:00Z' | 30      | ['due']
     }
 
+    def 'provider E2E restores a retired projection when #removed returns without replaying stale creates'() {
+        given:
+        events.clear()
+        Map created = sync().project(normalize(tasks.a))
+        CalendarEvent initial = liveEvents().first()
+        if (removed == 'Due') tasks.a.due = null
+        else tasks.a.labels = []
+        tasks.a.updated_at = '2026-11-24T20:00:00Z'
+
+        when:
+        sync().reconcile(initial, [normalize(tasks.a)], true)
+
+        then:
+        events.isEmpty()
+        store.loadProjections().values().every { it.status == 'retired' }
+
+        when:
+        tasks.a.labels = ['work']
+        tasks.a.due = [date: '2026-11-25T22:13:00Z']
+        tasks.a.updated_at = '2026-11-24T21:00:00Z'
+        Map restored = sync().project(normalize(tasks.a))
+
+        then:
+        restored.status == 'verified'
+        liveEvents().size() == 1
+        liveEvents().first().start == Instant.parse('2026-11-25T22:13:00Z')
+        store.loadProjections().values().count { it.status == 'current' } == 1
+        taskWrites.empty
+
+        when:
+        store.commitSyncProjections(created.id.toString())
+
+        then:
+        thrown(IllegalStateException)
+        liveEvents().first().start == Instant.parse('2026-11-25T22:13:00Z')
+
+        where:
+        removed << ['Due', 'inclusion']
+    }
+
     def 'provider E2E competing edits cancellation and lost-state disagreements never choose a winner'() {
         given:
         events.clear()
